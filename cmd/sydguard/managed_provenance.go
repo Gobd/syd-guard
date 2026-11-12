@@ -32,7 +32,7 @@ var lookupSelectedProvenance = func(ctx context.Context, project, name, revision
 	if errors.Is(err, learning.ErrReviewPending) {
 		return selectedProvenance{Status: "pending"}, nil
 	}
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, learning.ErrCurrentAuthorized) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, learning.ErrCurrentAuthorized) || errors.Is(err, learning.ErrHistoricalProvenance) {
 		// Current-byte authorization after an uncertain operation is not an
 		// acknowledged learning CAS. The separate exact-revision manual receipt
 		// remains mandatory and no learning completeness/provenance is invented.

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Gobd/syd-guard/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 func TestLearnCLINoNetworkCandidateIntegration(t *testing.T) {
@@ -91,6 +94,27 @@ func TestLearnCLICancellationPreservesIncompleteCandidateIntegration(t *testing.
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// A concurrent selected run may retain review.lock throughout its lifetime.
+	// Cancellation must still persist the learning candidate independently.
+	initialStore, err := candidateStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = initialStore.Close()
+	state, err := config.StateDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(state, config.PrivateAuthorityFolder, "candidates", "review.lock")
+	fd, err := unix.Open(lockPath, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
 	marker := filepath.Join(base, "after-cancel")
 	var out, stderr bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)

@@ -19,7 +19,10 @@ Operator requested a committed backup while work continues. **Not ready/green en
   known-not-submitted typing, atomic no-replace publication, output/SIGPIPE handling,
   guest-authority instructions and learning capability negotiation. Reviewer still
   found selected flags, publication-lock and historical hash-origin issues; repair
-  child `da2ad303-55e7-44f5-8f91-45d894de2124` completed and is NOT merged yet.
+  child `da2ad303-55e7-44f5-8f91-45d894de2124` is now merged. Focused reviewer
+  `865c3ec3-f877-4ab4-8701-99387571c5b3` found no introduced issues. Native and
+  Linux full vet/uncached race/build/lint checks passed after merge. Historical
+  learning hash matches map to manual/unknown and still require explicit current review.
 - Saved replay source supports ONLY the first project-relative READ, no-network
   subset and explicitly rejects write/delete/network/external paths. Fresh ext4
   generation handles, exact expected revision/manual review, root-controlled private
@@ -31,10 +34,29 @@ Operator requested a committed backup while work continues. **Not ready/green en
   Fixed runtime `/run/sydguard-launch` and dedicated cgroup-v2 root
   `/sys/fs/cgroup/sydguard-launch` were precreated and added to installation manifest.
   Fresh test-owned registry/enrollment replaced only the earlier test-owned registry.
-- First ACTUAL pinned launch reached the dedicated helper but failed `invalid argument`
-  (exit1). No successful privileged mount/watchdog/replay proof yet. Investigate
-  `/home/briankemper.guest/sydguard-helper-e2e.kFnn2q/pinned-launch.log` and recorded
-  `pinned-fixture.json`; inspect retained slot journals/resources before retry/cleanup.
+- First ACTUAL pinned launch failed `invalid argument` (exit1), localized by added
+  error context to the initial pinned-project FD bind. Namespace entry now precedes
+  registry/handle/engine FD acquisition. Watchdog independently clones the already
+  private namespace before binds, preserving an unmounted crash-recovery view;
+  reviewer `f019f64c-341c-4880-8da6-f419e8bd965a` accepted source for disposable
+  fixtures only. The matching immutable test helper was installed and identity recorded.
+- Latest ACTUAL retry passed the earlier error stage but failed `sydguard launch:
+  signal: killed` before supervisor announcement; no successful replay proof yet.
+  Do not infer kill origin or complete mount proof from this message. Watchdog cleanup
+  left only intended persistent empty UID502 slot0; no anchor/journal/cgroup children.
+  Privileged retries stopped pending bounded stage/poll/elapsed-time diagnostics.
+  Evidence: fixture `pinned-launch-reviewed.log`, `pinned-fixture.json`, and report
+  `pinned-launch-einval-diagnosis.f5831b7e.1f826671.md`. Preserve both launch and
+  cleanup errors in the next diagnostic patch; watchdog-trigger/wait races can mask cause.
+- Real candidate `b4d5f82cbc12667e4571a5b8f121e038` -> explicitly edited read-only
+  intent -> matching installed immutable helper CAS -> authenticated reread PASSED.
+  Review `44fb42fcdd5427792bfc26bb4c7af9ec`, project
+  `3011ecc32b14606af5dcd72b4f140d629cabac428b01bf5e2956fbfbf67bb99b`;
+  retained evidence `learn-real-save.json` and `learn-real-review.json`. This proves
+  save, not replay, current learning origin, complete coverage or successful observed I/O.
+- Attempted isolated diagnostic-worker launch failed because checkout was dirty; no
+  child ran. Delegation stopped and failure reported. Checkpoint before a new launch;
+  do not substitute external CLIs or treat the failed launch as completed diagnostics.
 - Standard native full vet/race/build/lint and Linux full Go checks passed before
   this runtime failure. Two retained hardlink gates remain failing, unchanged.
 - PIE toolchain investigation left a private ~971MiB copy under fixture/toolchains;

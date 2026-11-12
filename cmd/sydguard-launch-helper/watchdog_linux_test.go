@@ -11,6 +11,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestWatchdogHasIndependentUnmountedRecoveryNamespace(t *testing.T) {
+	attributes := watchdogProcessAttributes()
+	if !attributes.Setsid || attributes.Cloneflags != unix.CLONE_NEWNS {
+		t.Fatalf("watchdog must clone mount namespace independently: %+v", attributes)
+	}
+}
+
 func TestWatchdogSocketpairSupportsBoundedHandshake(t *testing.T) {
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {

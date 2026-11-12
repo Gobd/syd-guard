@@ -168,27 +168,55 @@ hardlink under an unrelated name can bypass pathname-based protection, including
 secret reads: do not place such aliases in the workspace. This is not a universal
 secret classifier or a proven inode-level boundary. Other aliases, inherited
 FDs, concurrent renames and browser locations remain subject to audit. Future
-permissive learn must reuse this preset; learn is not implemented.
+experimental permissive learn reuses this preset. Its known hardlink limitation
+still requires explicit risk consent; it is not a secret-safe discovery boundary.
 
 ## Checkpointed experimental components
 
-The source includes a strict file-profile compiler, a bounded review-only
-permission-check collector, Linux managed-policy helper/admin/client code, and
-an unactivated managed-client profile adapter for registered refs and a bounded
-authenticated helper catalog.
-They are **not connected to normal selected-profile launches or production UI
-editing**. `learn` still fails explicitly; a compiler or collector package is not
-an implemented learning workflow. Do not install/enable the privileged helper
-without the remaining deployment and integration review. Experimental snapshot
-responses include registered identity and namespace observations; the client checks
-exact returned bytes and typed revision conflicts. These checks do not pin a project
-namespace through later consumption. The stricter wire format requires matched
+The experimental CLI now supports permissive learning, private candidate review,
+and an explicit edited-intent save through the managed helper's CAS:
+
+```sh
+sydguard learn --backend native --directory /local/ext4/project \
+  --syd /path/to/static/syd --accept-experimental-risks --no-network -- COMMAND
+sydguard learn list
+sydguard learn show CANDIDATE_ID
+sydguard learn save --experimental --yes --accept-incomplete \
+  --candidate CANDIDATE_ID --project-id REGISTERED_ID \
+  --expected-revision CURRENT_REVISION < reviewed-profile.json
+```
+
+Learning observes permission checks, not successful filesystem I/O or complete
+coverage. Writes are irreversible. Incomplete, cancellation and abnormal-outcome
+evidence stays in private records. Selected-profile flags are rejected by `learn`.
+Standard development mode permits non-PIE executables through upstream Syd's
+`trace/allow_unsafe_exec_nopie:1`; `--require-pie` restores upstream rejection.
+No other unsafe-engine option is relaxed by this compatibility setting.
+
+Private candidates use a separate bounded publication lock, so a selected workload's
+review lock does not indefinitely prevent recording a learning outcome. Reviewed
+CAS outcomes remain distinct from current authorization: repeated content hashes
+(including an A→B→A change) cannot establish current learning origin. Prior learned
+reviews are historical evidence only. Unknown mutation outcomes stay unknown;
+independent current-snapshot authorization is not acknowledgment of the earlier CAS.
+
+Real disposable Linux tests passed a Go-build learn, public HTTPS observation,
+explicitly edited candidate save and authenticated helper reread. Managed UI editing
+also passed its separate installed-helper/browser fixture. **Combined saved-profile
+replay is not yet proved.** The current launcher supports only project-relative
+read-only/no-network profiles; writes, deletion and network intent are rejected.
+Its first actual privileged retry failed before supervisor readiness. Do not install
+or enable these privileged components outside the reviewed disposable test setup.
+
+Experimental snapshot responses include registered identity and namespace
+observations; the client checks exact returned bytes and typed revision conflicts.
+These policy-client checks alone do not pin a project namespace through later use. The stricter wire format requires matched
 helper/client builds. The adapter verifies explicit registered refs or consumes
 an authenticated helper catalog, then rereads exact snapshots, maps CAS conflicts
 and rejects changed or aliased bindings without reopening metadata paths. Catalog
 enumeration is implemented but is **not installed or enabled in production**; the
-factory tests use an injected transport, not a deployed helper. It is not a pinned
-launch namespace. Uncertain saves carry an explicit indeterminate outcome
+factory unit tests use an injected transport, with separately opted-in installed-helper
+fixtures. The adapter itself is not a pinned launch namespace. Uncertain saves carry an explicit indeterminate outcome
 through the API/bridge; the editor preserves drafts and blocks blind retry until
 an explicit fresh snapshot is loaded. Profile helper work shares a six-second
 cooperative budget inside a ten-second profile transport budget; existing live

@@ -68,6 +68,11 @@ func candidateStore() (*learning.Store, error) {
 }
 
 func learnAction(parent context.Context, c *cli.Command) error {
+	for _, flag := range []string{"config", "project-id", "expected-revision"} {
+		if c.IsSet(flag) {
+			return cli.Exit("learn cannot use --"+flag+"; selected profiles require strict run, not permissive discovery", 2)
+		}
+	}
 	if !c.Bool("accept-experimental-risks") {
 		return cli.Exit("learn requires --accept-experimental-risks: writes are irreversible; preexisting hardlinks bypass known-secret pathname protection; the denylist is not universally secret-safe", 2)
 	}
@@ -141,6 +146,10 @@ func learnAction(parent context.Context, c *cli.Command) error {
 		runErr := cmd.Run()
 		if err := printGuestLearnInstructions(c.ErrWriter, instance, c.String("guest-sydguard"), c.String("guest-config-home")); err != nil {
 			return fmt.Errorf("guest review instructions failed after launch outcome %v: %w", runErr, err)
+		}
+		var exit *exec.ExitError
+		if errors.As(runErr, &exit) && exit.ExitCode() >= 0 {
+			return cli.Exit("", exit.ExitCode())
 		}
 		return runErr
 	}

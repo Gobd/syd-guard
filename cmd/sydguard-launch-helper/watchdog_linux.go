@@ -38,7 +38,10 @@ func startWatchdog(slot *launchSlot, j slotJournal) (*watchdog, error) {
 	cmd := exec.Command(executable, "--watchdog")
 	// Keep the privileged watchdog out of the sudo/terminal signal group; the
 	// pidfd and cgroup, not this session boundary, provide lifecycle control.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Clone the launcher's already-private namespace before any binds. The
+	// watchdog must not retain or attempt to remove mounted targets after the
+	// launcher dies; it needs an independent, unmounted recovery view.
+	cmd.SysProcAttr = watchdogProcessAttributes()
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -69,6 +72,10 @@ func startWatchdog(slot *launchSlot, j slotJournal) (*watchdog, error) {
 		return nil, err
 	}
 	return watch, nil
+}
+
+func watchdogProcessAttributes() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setsid: true, Cloneflags: unix.CLONE_NEWNS}
 }
 
 // finish requests subtree kill/recovery, then waits for watchdog completion.

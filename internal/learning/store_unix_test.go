@@ -77,8 +77,8 @@ func TestPrivateCandidateReviewProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, reviewID, err := s.VerifyProvenance(project, "default", pending.ReviewedRevision)
-	if err != nil || reviewID != pending.ID || !got.Candidate.Incomplete || got.Candidate.Counts.FileChecks != 3 {
-		t.Fatalf("provenance: %+v %s %v", got, reviewID, err)
+	if !errors.Is(err, ErrHistoricalProvenance) || reviewID != pending.ID || !got.Candidate.Incomplete || got.Candidate.Counts.FileChecks != 3 {
+		t.Fatalf("historical provenance: %+v %s %v", got, reviewID, err)
 	}
 	if _, _, err := s.VerifyProvenance(project, "default", expected); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("wrong revision matched")
@@ -97,8 +97,8 @@ func TestPrivateCandidateReviewProvenance(t *testing.T) {
 	if _, _, err := s.VerifyProvenance(project, "default", later.ReviewedRevision); !errors.Is(err, ErrCurrentAuthorized) {
 		t.Fatalf("manual authorization misclassified: %v", err)
 	}
-	if _, _, err := s.VerifyProvenance(project, "default", pending.ReviewedRevision); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("old binding inferred after uncertain history: %v", err)
+	if _, _, err := s.VerifyProvenance(project, "default", pending.ReviewedRevision); !errors.Is(err, ErrHistoricalProvenance) {
+		t.Fatalf("old binding was not labelled historical after uncertain history: %v", err)
 	}
 }
 
@@ -271,5 +271,148 @@ func TestPrivateReviewPublicationFailurePreservesPendingOrComplete(t *testing.T)
 	s.publicationHook = nil
 	if err := s.writeNew("result-"+pending.ID+".json", map[string]string{"replace": "forbidden"}); !errors.Is(err, unix.EEXIST) {
 		t.Fatalf("replacement allowed: %v", err)
+	}
+}
+
+func TestVerifyProvenanceOrdinaryABAAndRepeatedIdenticalReviews(t *testing.T) {
+	s := testStore(t)
+	profile := config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{}}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, expected := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	var first ReviewPending
+	for i := range 2 {
+		candidate := ProfileCandidate{Profile: profile, Kind: "permission-check-candidate", Counts: Counts{FileChecks: uint64(i + 1)}}
+		id, err := s.SaveCandidate(CandidateRecord{Project: "/work", Candidate: candidate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, err := s.BeginReview(id, project, "default", expected, data, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CompleteReview(pending.ID, "bound", project, "default", pending.ReviewedRevision, data); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = pending
+			// Ordinary managed writes may change A to B and back to A without
+			// touching this store. Even one match cannot establish current origin.
+			got, reviewID, err := s.VerifyProvenance(project, "default", pending.ReviewedRevision)
+			if !errors.Is(err, ErrHistoricalProvenance) || reviewID != pending.ID || got.Candidate.Counts.FileChecks != 1 {
+				t.Fatalf("ABA claimed current provenance: %+v %s %v", got, reviewID, err)
+			}
+		}
+	}
+	got, reviewID, err := s.VerifyProvenance(project, "default", first.ReviewedRevision)
+	if !errors.Is(err, ErrHistoricalProvenance) || reviewID != "" || got.ID != "" {
+		t.Fatalf("repeated matches selected an arbitrary review: %+v %s %v", got, reviewID, err)
+	}
+	reviews, err := s.ReviewSummaries()
+	if err != nil || len(reviews) != 2 {
+		t.Fatalf("historical reviews not retained: %+v %v", reviews, err)
+	}
+	for _, summary := range reviews {
+		pending, result, err := s.Review(summary.ID)
+		if err != nil || result == nil || result.Status != "bound" {
+			t.Fatalf("review missing: %+v %v", summary, err)
+		}
+		if _, err := s.Candidate(pending.CandidateID); err != nil {
+			t.Fatalf("original candidate missing: %v", err)
+		}
+	}
+}
+
+func TestSaveCandidateIndependentOfReviewLock(t *testing.T) {
+	s := testStore(t)
+	fd, err := unix.Openat(s.dir, "review.lock", unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
+	candidate := ProfileCandidate{Profile: config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{}}, Kind: "permission-check-candidate"}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, err := s.SaveCandidateContext(ctx, CandidateRecord{Project: "/work", Candidate: candidate}); err != nil {
+		t.Fatalf("review lock blocked candidate publication: %v", err)
+	}
+}
+
+func TestSaveCandidateLockHonorsCancellation(t *testing.T) {
+	s := testStore(t)
+	fd, err := unix.Openat(s.dir, "candidate.lock", unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	candidate := ProfileCandidate{Profile: config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{}}, Kind: "permission-check-candidate"}
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	if _, err := s.SaveCandidateContext(ctx, CandidateRecord{Project: "/work", Candidate: candidate}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("candidate lock cancellation: %v", err)
+	}
+	if err := unix.Flock(fd, unix.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	values, err := s.Candidates()
+	if err != nil || len(values) != 0 {
+		t.Fatalf("canceled publication persisted: %+v %v", values, err)
+	}
+	if _, err := s.SaveCandidate(CandidateRecord{Project: "/work", Candidate: candidate}); err != nil {
+		t.Fatalf("corrected candidate retry: %v", err)
+	}
+}
+
+func TestSaveCandidateConcurrentPublication(t *testing.T) {
+	s := testStore(t)
+	candidate := ProfileCandidate{Profile: config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{}}, Kind: "permission-check-candidate"}
+	results := make(chan error, 32)
+	for range 32 {
+		go func() {
+			_, err := s.SaveCandidate(CandidateRecord{Project: "/work", Candidate: candidate})
+			results <- err
+		}()
+	}
+	var failures []error
+	for range 32 {
+		if err := <-results; err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) != 0 {
+		t.Fatalf("concurrent publication errors: %v", failures)
+	}
+	values, err := s.Candidates()
+	if err != nil || len(values) != 32 {
+		t.Fatalf("candidate publication lost entries: %d %v", len(values), err)
+	}
+}
+
+func TestSaveCandidateDefaultLockWaitIsBounded(t *testing.T) {
+	s := testStore(t)
+	fd, err := unix.Openat(s.dir, "candidate.lock", unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
+	candidate := ProfileCandidate{Profile: config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{}}, Kind: "permission-check-candidate"}
+	started := time.Now()
+	_, err = s.SaveCandidate(CandidateRecord{Project: "/work", Candidate: candidate})
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) || elapsed < 2*time.Second || elapsed > 5*time.Second {
+		t.Fatalf("candidate lock wait=%v err=%v", elapsed, err)
 	}
 }

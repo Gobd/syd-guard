@@ -95,6 +95,13 @@ func randomID() (string, error) {
 }
 
 func (s *Store) writeNew(name string, value any) error {
+	return s.writeNewContext(context.Background(), name, value)
+}
+
+func (s *Store) writeNewContext(ctx context.Context, name string, value any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(value)
 	if err != nil || len(data) > 2*1024*1024 {
 		return errors.New("invalid or oversized private record")
@@ -124,6 +131,9 @@ func (s *Store) writeNew(name string, value any) error {
 	}
 	if err == nil {
 		err = f.Close()
+	}
+	if err == nil {
+		err = ctx.Err()
 	}
 	if err == nil {
 		err = publishNoReplace(s.dir, temporary, name)
@@ -194,15 +204,23 @@ func validCandidate(record CandidateRecord) bool {
 	return err == nil
 }
 
+// SaveCandidate uses a fresh bounded context so canceled workloads can still
+// persist their outcome without waiting indefinitely for another publisher.
 func (s *Store) SaveCandidate(record CandidateRecord) (string, error) {
+	return s.SaveCandidateContext(context.Background(), record)
+}
+
+func (s *Store) SaveCandidateContext(parent context.Context, record CandidateRecord) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
 	if record.ID != "" || !validCandidate(record) {
 		return "", errors.New("invalid candidate")
 	}
 	var id string
-	err := s.WithReviewLock(func() error {
+	err := s.withLockContext(ctx, "candidate.lock", func() error {
 		names, err := s.storeNames()
 		if err != nil {
-			return err
+			return fmt.Errorf("candidate directory scan: %w", err)
 		}
 		count := 0
 		for _, name := range names {
@@ -218,7 +236,10 @@ func (s *Store) SaveCandidate(record CandidateRecord) (string, error) {
 			return err
 		}
 		record.ID = id
-		return s.writeNew("candidate-"+id+".json", record)
+		if err := s.writeNewContext(ctx, "candidate-"+id+".json", record); err != nil {
+			return fmt.Errorf("candidate publication: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return "", err
@@ -329,18 +350,36 @@ func (s *Store) WithReviewLock(fn func() error) error {
 
 // WithReviewLockContext honors cancellation before acquiring review authority.
 func (s *Store) WithReviewLockContext(ctx context.Context, fn func() error) error {
-	fd, err := unix.Openat(s.dir, "review.lock", unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return err
+	return s.withLockContext(ctx, "review.lock", fn)
+}
+
+func (s *Store) withLockContext(ctx context.Context, name string, fn func() error) error {
+	var fd int
+	var err error
+	for attempts := 0; ; attempts++ {
+		fd, err = unix.Openat(s.dir, name, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err == nil {
+			break
+		}
+		// Concurrent first creation can transiently return ENOENT on Darwin.
+		// Retry only that error, within both a small attempt cap and context.
+		if !errors.Is(err, unix.ENOENT) || attempts >= 10 {
+			return fmt.Errorf("open private lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
-	f := os.NewFile(uintptr(fd), "review.lock")
+	f := os.NewFile(uintptr(fd), name)
 	defer func() { _ = f.Close() }()
 	var st unix.Stat_t
 	if err = unix.Fstat(fd, &st); err != nil {
 		return err
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o7777 != 0o600 || int(st.Uid) != os.Geteuid() || st.Nlink != 1 {
-		return errors.New("unsafe review lock")
+		return errors.New("unsafe private lock")
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -351,7 +390,7 @@ func (s *Store) WithReviewLockContext(ctx context.Context, fn func() error) erro
 			break
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			return err
+			return fmt.Errorf("acquire private lock: %w", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -530,11 +569,13 @@ func (s *Store) AuthorizeCurrent(id, projectID, name, revision string, data []by
 	return s.writeNew("result-"+id+".json", ReviewResult{ID: id, Status: "current-authorized", ProjectID: projectID, Name: name, Revision: revision, OperationStatus: "unknown", CurrentBytes: current.Bytes()})
 }
 
-// VerifyProvenance returns a full original envelope only for a matching bound
-// helper tuple and exact profile revision. The caller must hold WithReviewLock
-// across this check and its authorization handoff, and independently authenticate
-// the helper snapshot and hash its exact bytes. ErrReviewPending is a hard deny;
-// os.ErrNotExist means unknown provenance, never complete learning coverage.
+// VerifyProvenance returns only historical evidence, never proof of current
+// snapshot origin. The caller must hold WithReviewLock across this check and its
+// authorization handoff and independently authenticate the helper snapshot.
+// ErrReviewPending is a hard deny. ErrHistoricalProvenance marks matching
+// historical reviews; a unique match returns its candidate and review ID, while
+// multiple matches require enumeration via ReviewSummaries. Neither is a claim
+// about the current mutation. os.ErrNotExist means no matching historical review.
 func (s *Store) VerifyProvenance(projectID, name, revision string) (CandidateRecord, string, error) {
 	var candidate CandidateRecord
 	if !validDigest(projectID) || !validDigest(revision) || config.ProfileName(name) != nil {
@@ -545,7 +586,8 @@ func (s *Store) VerifyProvenance(projectID, name, revision string) (CandidateRec
 		return candidate, "", err
 	}
 	var foundID, foundCandidate string
-	currentAuthorized, hasUncertainHistory := false, false
+	var matchingReviews int
+	currentAuthorized := false
 	for _, filename := range names {
 		if !strings.HasPrefix(filename, "review-") || !strings.HasSuffix(filename, ".json") {
 			continue
@@ -561,30 +603,28 @@ func (s *Store) VerifyProvenance(projectID, name, revision string) (CandidateRec
 		if result == nil {
 			return candidate, "", ErrReviewPending
 		}
-		if result.Status == "current-authorized" {
-			hasUncertainHistory = true
-			if result.Revision == revision {
-				currentAuthorized = true
-			}
+		if result.Status == "current-authorized" && result.Revision == revision {
+			currentAuthorized = true
 		}
 		if pending.ReviewedRevision == revision && result.Status == "bound" {
+			matchingReviews++
 			foundID, foundCandidate = id, pending.CandidateID
 		}
 	}
 	if currentAuthorized {
 		return candidate, "", ErrCurrentAuthorized
 	}
-	// Content hashes can return to an earlier bound revision after an
-	// independently authorized uncertain operation. Do not infer provenance
-	// from an older binding when ordering cannot be established.
-	if hasUncertainHistory {
+	if matchingReviews == 0 {
 		return candidate, "", os.ErrNotExist
 	}
-	if foundID == "" {
-		return candidate, "", os.ErrNotExist
+	if matchingReviews > 1 {
+		return candidate, "", ErrHistoricalProvenance
 	}
 	candidate, err = s.Candidate(foundCandidate)
-	return candidate, foundID, err
+	if err != nil {
+		return CandidateRecord{}, "", err
+	}
+	return candidate, foundID, ErrHistoricalProvenance
 }
 
 // ReviewSummary exposes recoverable IDs without exporting reviewed profile bytes.

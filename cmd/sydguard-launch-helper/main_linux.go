@@ -85,15 +85,27 @@ func run() (int, error) {
 		return 1, err
 	}
 	if err := checkOutputFDs(); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("validate output descriptors: %w", err)
 	}
 	request, err := managedlaunch.DecodeRequest(os.Stdin)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("decode launch request: %w", err)
+	}
+	// File descriptors retain their mount object. Obtain the registry and
+	// generation-pinned source FDs in the namespace where they will be bound;
+	// an FD opened before unshare refers to a mount in the old namespace.
+	// Mount namespaces are per-thread: keep this thread locked through all
+	// privileged opens, mounts and child forks, including failure cleanup.
+	runtime.LockOSThread()
+	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
+		return 1, fmt.Errorf("private mount namespace: %w", err)
+	}
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return 1, fmt.Errorf("private mount propagation: %w", err)
 	}
 	store, err := managedstore.Open(registry, int(uid))
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("open policy registry: %w", err)
 	}
 	if err := store.Authenticate(request.Credential); err != nil {
 		_ = store.Close()
@@ -108,7 +120,7 @@ func run() (int, error) {
 	groupsFD, err := openCgroupBase()
 	if err != nil {
 		_ = store.Close()
-		return 1, err
+		return 1, fmt.Errorf("open cgroup authority: %w", err)
 	}
 	defer func() { _ = unix.Close(groupsFD) }()
 	slot, err := acquireLaunchSlot(baseFD, uid, 0, func(slot *launchSlot) error {
@@ -116,14 +128,14 @@ func run() (int, error) {
 	})
 	if err != nil {
 		_ = store.Close()
-		return 1, err
+		return 1, fmt.Errorf("acquire launch slot: %w", err)
 	}
 	defer func() { _ = slot.Close() }()
 	snapshot, err := store.OpenPinnedSnapshot(request.Credential, request.ProjectID, request.Name, request.Revision)
 	request.Credential = ""
 	if err != nil {
 		_ = store.Close()
-		return 1, err
+		return 1, fmt.Errorf("open pinned selected snapshot: %w", err)
 	}
 	if err := store.Close(); err != nil {
 		_ = snapshot.Close()
@@ -132,7 +144,7 @@ func run() (int, error) {
 	defer func() { _ = snapshot.Close() }()
 	engine, err := openTrustedEngine(managedlaunch.FixedEnginePath)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("open immutable engine: %w", err)
 	}
 	defer func() { _ = engine.Close() }()
 	parsed, err := config.ParseManagedProfileSnapshot(request.Name, snapshot.Profile)
@@ -190,15 +202,9 @@ func validateIntent(profile config.Profile) error {
 }
 
 func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot, engine *os.File, slot *launchSlot, group *os.File, watch *watchdog, uid, gid uint32, startup *time.Timer) (int, error) {
-	// Mount namespaces are per-thread. Every mount and child fork must remain on
-	// this OS thread; never unlock it with the namespace still attached.
-	runtime.LockOSThread()
-	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
-		return 1, fmt.Errorf("private mount namespace: %w", err)
-	}
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return 1, fmt.Errorf("private mount propagation: %w", err)
-	}
+	// run has already entered the private mount namespace on its locked thread,
+	// before acquiring snapshot and engine descriptors. Do not unshare here:
+	// doing so would leave those FDs attached to the previous namespace's mounts.
 	anchor := filepath.Join(anchorBase, anchorName(slot))
 	project := filepath.Join(anchor, "project")
 	policy := filepath.Join(anchor, "policy")
@@ -218,11 +224,11 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 		return 1, err
 	}
 	if err := bindFD(snapshot.Project, project); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("bind pinned project: %w", err)
 	}
 	defer func() { _ = unix.Unmount(project, unix.MNT_DETACH) }()
 	if err := bindFD(snapshot.Policy, policy); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("bind pinned policy: %w", err)
 	}
 	defer func() { _ = unix.Unmount(policy, unix.MNT_DETACH) }()
 	enginePath := filepath.Join(anchor, "engine")
@@ -235,7 +241,7 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 		return 1, err
 	}
 	if err := bindEngineFD(engine, enginePath); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("bind immutable engine: %w", err)
 	}
 	defer func() { _ = unix.Unmount(enginePath, unix.MNT_DETACH) }()
 	publicSnapshot := filepath.Join(anchor, "selected.json")
@@ -263,7 +269,7 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 		return 1, fmt.Errorf("close-on-exec descriptor isolation: %w", err)
 	}
 	if err := dropBoundingAndSetNNP(); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("drop capabilities and set NNP: %w", err)
 	}
 	cmd := exec.Command(executable, "--supervise")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}, UseCgroupFD: true, CgroupFD: int(group.Fd())}
@@ -280,7 +286,7 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 	default:
 	}
 	if err := cmd.Start(); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("start contained unprivileged supervisor: %w", err)
 	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -320,13 +326,13 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 
 func bindFD(file *os.File, target string) error {
 	if err := unix.Mount("/proc/self/fd/"+strconv.FormatUint(uint64(file.Fd()), 10), target, "", unix.MS_BIND, ""); err != nil {
-		return err
+		return fmt.Errorf("initial FD mount: %w", err)
 	}
 	// The first supported subset never writes or executes from either mounted
 	// object. Remount the bind itself, not the underlying shared filesystem.
 	if err := unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
 		_ = unix.Unmount(target, unix.MNT_DETACH)
-		return err
+		return fmt.Errorf("restrictive directory remount: %w", err)
 	}
 	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v3"
 )
 
 func TestLearnLimaPreservesNameAndPrintsGuestAuthority(t *testing.T) {
@@ -39,5 +41,49 @@ func TestLearnLimaPreservesNameAndPrintsGuestAuthority(t *testing.T) {
 		if !strings.Contains(instructions, want) {
 			t.Errorf("missing %q in %s", want, instructions)
 		}
+	}
+}
+
+func TestLearnRejectsSelectedFlagsBeforeNativeOrLimaLaunch(t *testing.T) {
+	for _, backend := range []string{"native", "lima"} {
+		for _, flag := range []string{"config", "project-id", "expected-revision"} {
+			t.Run(backend+"/"+flag, func(t *testing.T) {
+				base := t.TempDir()
+				marker := filepath.Join(base, "launched")
+				fake := filepath.Join(base, "limactl")
+				if err := os.WriteFile(fake, []byte("#!/bin/sh\ntouch \"$SYDGUARD_LAUNCH_MARKER\"\n"), 0o700); err != nil { //nolint:gosec // disposable executable test fixture
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", base+string(os.PathListSeparator)+os.Getenv("PATH"))
+				t.Setenv("SYDGUARD_LAUNCH_MARKER", marker)
+				learn := learnCommand()
+				// Selected flags are inherited from the merged runCommand; their
+				// presence must never silently switch this invocation to bootstrap.
+				var output bytes.Buffer
+				root := &cli.Command{Name: "sydguard", Writer: &output, ErrWriter: &output, ExitErrHandler: func(context.Context, *cli.Command, error) {}, Commands: []*cli.Command{learn}}
+				err := root.Run(context.Background(), []string{"sydguard", "learn", "--backend", backend, "--directory", base, "--syd", fake, "--accept-experimental-risks", "--" + flag + "=", "--", "true"})
+				if err == nil || !strings.Contains(err.Error(), "selected profiles require strict run") {
+					t.Fatalf("selector ignored: %v", err)
+				}
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatalf("workload or Lima launched: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestLearnLimaPreservesGuestExitCode(t *testing.T) {
+	base := t.TempDir()
+	fake := filepath.Join(base, "limactl")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil { //nolint:gosec // disposable executable test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", base+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, "config"))
+	var output, stderr bytes.Buffer
+	code := run([]string{"learn", "--backend", "lima", "--directory", "/guest/project", "--syd", "/guest/syd", "--accept-experimental-risks", "--", "true"}, &output, &stderr)
+	if code != 7 {
+		t.Fatalf("guest exit became %d: %s", code, &stderr)
 	}
 }

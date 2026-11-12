@@ -42,6 +42,10 @@ var errStoreUnsupported = errors.New("private candidate store unsupported on thi
 func OpenStore(string) (*Store, error)                       { return nil, errStoreUnsupported }
 func (*Store) Close() error                                  { return nil }
 func (*Store) SaveCandidate(CandidateRecord) (string, error) { return "", errStoreUnsupported }
+func (*Store) SaveCandidateContext(context.Context, CandidateRecord) (string, error) {
+	return "", errStoreUnsupported
+}
+
 func (*Store) Candidate(string) (CandidateRecord, error) {
 	return CandidateRecord{}, errStoreUnsupported
 }
