@@ -72,8 +72,32 @@ old-epoch cancellation and locked final admission in both gateway/transparent pa
 Established admitted TCP connections may continue; future/pre-admission enforcement
 only. Unit/mock broker positive/revoke/race tests passed, no real outbound traffic.
 Not wired into selected Root network launch/controller yet; do NOT claim network
-replay or persisted-live workflow done. Safe filesystem live mutation remains blocked
-by upstream non-rollback load ordering; no unsafe dynamic recursive adds enabled.
+replay or persisted-live workflow done. Selected-network implementation worker halted
+before inventing an unsafe root netns API: legacy controller resources lack authenticated
+fixed-helper ready/FD handshake and persistent network-resource ownership. Concrete
+report selected-network-integration-and-live-feasibility.task-1.md proposes an immutable
+network-broker mode in the existing fixed helper, parent-owned socketpair/listener FDs,
+root-generated bounded resource identities and typed ready receipt; architecture review
+is active. No new broker/shim file/account/audit/root deployment occurred.
+
+Novel unchanged-upstream live-file candidate: startup-predeclared default fallback and
+bankA/bankB, one FD load moving to restrictive default, addressed inactive-bank rules,
+then final atomic bank switch. Ordinary UID502 scratch proved SAME shell A -> default
+on semantic error -> completedB real read/write (dummy.env denied) -> A deny again.
+NO PRODUCTION ENABLEMENT. Addressed editing temporarily selects the bank; with_dom
+restores default only on normal Result return, not RAII unwind. Follow-up confirmed
+IPC is a separate syd_ipc worker; panic hook fatal behavior applies only MAIN, and
+other workers recover poisoned Sandbox locks. Potential unwind/partial-bank hazard
+is source-backed but no reachable valid-rule panic/exploit was observed. Do not call
+happy/error proof unconditional live safety or assume worker panic aborts the process.
+Reports upstream-domain-live-prefix-proof.md and .5ccabcd0.md, companion ordinary
+repro artifact. All earlier in-place negative probes remain retained; none repeated.
+Safe filesystem live mutation remains blocked; no unsafe recursive adds enabled.
+
+After writable pass, actual cancellation also passed: workloadPID243758 alive in exact
+session cgroup, CLI SIGTERM terminated it and cleaned anchor/cgroup; slot0 reused.
+Evidence selected-writable-cancellation.log. This does not certify root-helper crash
+or the not-yet-created network resources/lifecycle.
 
 ## Operator clarified acceptance contract — live persisted approvals
 
