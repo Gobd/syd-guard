@@ -59,15 +59,50 @@ SIGKILL tracing was explicitly requested from operator and remains UNAPPROVED;
 automated child notifications are not approval. Do not execute privileged tracing
 or change audit settings pending an actual operator response.
 
-## User-requested active UI demo — 2026-11-12
+## Reviewed JSON editor and stable polling preview — 2026-11-12
+
+Integrated Form/JSON saved-profile modes and stable same-token background refresh.
+JSON input rejects duplicate/unknown fields, lossy numeric tokens and unpaired
+surrogates; raw-only edits participate in discard/unload protection. Save responses
+must match binding, typed intent and exact SHA256 of the submitted cloned/minified
+UTF8 profile bytes. Invalid/inconsistent/uncertain responses preserve drafts and
+block blind retry. Operator bridge now validates/clones json.RawMessage instead
+of remarshal: Go's default escaping had changed <>& and Unicode separators.
+Managed helper profile payloads are base64 []byte, preserving exact bytes.
+Added Go client_raw_test covering real client->controller->adapter byte preservation.
+
+Polling keeps last successful same-token data usable while refresh is pending,
+without making ceiling-ineligible grants available. HTTP401 latches both readiness
+domains BEFORE parsing any error body; profile get/save/reload propagate captured
+request-token auth failures. In-flight decisions remain guarded across token changes;
+unknown outcomes require explicit fresh reconciliation, and absent pending request
+is NOT proof an unknown operation failed. Run ACKs must match endpoint contracts.
+Independent reviewers accepted repaired source; combined 29 browser/unit tests,
+581 assertions passed with rebuilt production assets. Native/Linux Go vet,
+uncached full race tests/build/lint passed. These remain UI/source gates, not live
+persisted enforcement or saved-launch readiness.
+
+Updated ONLY private guest managed controller, tracked PID209772 in fixture
+personal-ui-controller.json. Updated ONLY separate host preview, now port59514;
+obtain fresh URL/token with matching private ui status. Existing default PID37288
+UI/controller was not altered. Real host Chromium JSON-mode save/read/restore via
+Lima bridge and installed immutable helper passed for literal <>&, U2028/U2029 and
+emoji. Original logical intent restored; Save stayed enabled during an actual slow
+background catalog refresh. Evidence /tmp/sydguard-json-preview-evidence.json and
+/tmp/sydguard-json-preview.png. No root helper replacement or privileged tracing.
+Root SIGKILL trace approval is still pending an actual operator yes.
+
+## User-requested UI demo (now ended) — 2026-11-12
 
 Operator requested a live session and tokenized UI link. Started ONLY a disposable
 normal transparent-run demo in guest fixture, not selected replay or permissive learn.
-Current CLI PID204083, session `9a34f701f2c1b89e5538855cf0ea87ee`, friendly label
+Demo CLI PID204083, session `9a34f701f2c1b89e5538855cf0ea87ee`, friendly label
 `ui-activity-demo`, namespace `sg-863483`, project fixture `tmp/personal-demo-project`,
 extra eligibility scope `tmp/personal-demo-inputs`. Workload `/usr/bin/timeout 600`
-shell retries benign demo-file read and `https://www.example.com` every10s. Intended
-self-stop after600s of workload time; do not infer descendant containment proof.
+shell retries benign demo-file read and `https://www.example.com` every10s. The demo
+self-stopped after its timeout; verified PID204083 and namespace sg-863483 absent.
+Its completion RPC logged deadline exceeded, although resource cleanup completed.
+Do not infer descendant containment proof.
 Identity/started time in fixture `personal-demo-session.json`; logs
 `personal-demo-session-fixed.log`. Real host Chromium verified running session,
 www.example.comTCP443 pending, and file metadata denials; screenshot

@@ -213,9 +213,21 @@ func (client *Client) Sessions(ctx context.Context, history bool) ([]session.Ses
 func (client *Client) request(ctx context.Context, method, path string, input, output any) error {
 	var body io.Reader
 	if input != nil {
-		data, err := json.Marshal(input)
-		if err != nil {
-			return err
+		var data []byte
+		if raw, ok := input.(json.RawMessage); ok {
+			// Operator bridges forward validated JSON bytes. Re-marshalling a
+			// RawMessage escapes HTML and Unicode line separators, changing the
+			// exact profile bytes whose hash binds the review and CAS response.
+			if !json.Valid(raw) {
+				return fmt.Errorf("invalid raw controller request")
+			}
+			data = bytes.Clone(raw)
+		} else {
+			var err error
+			data, err = json.Marshal(input)
+			if err != nil {
+				return err
+			}
 		}
 		body = bytes.NewReader(data)
 	}

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chromium } from "@playwright/test";
 
 const browserTest =
@@ -65,7 +66,9 @@ browserTest(
           await route.fulfill({ json: [] });
         } else if (path === "/api/files/decisions") {
           decisions++;
-          await route.fulfill({ json: { status: "applied" } });
+          await route.fulfill({
+            json: { status: "applied; retry the operation" },
+          });
         } else {
           await route.fulfill({ status: 404 });
         }
@@ -130,8 +133,8 @@ browserTest(
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     const a = "a".repeat(64),
-      b = "b".repeat(64),
-      c = "c".repeat(64);
+      b = "b".repeat(64);
+    let c = "";
     const id = "opaque:profile";
     const capabilities = { edit: true, reload: true, saved_decisions: true };
     const metadata = {
@@ -242,6 +245,14 @@ browserTest(
               },
             });
           }
+          const rawBody = req.postData()!;
+          const marker = ',"profile":';
+          const offset = rawBody.indexOf(marker);
+          if (offset < 0 || !rawBody.endsWith("}"))
+            throw new Error("Unexpected save envelope");
+          c = createHash("sha256")
+            .update(rawBody.slice(offset + marker.length, -1), "utf8")
+            .digest("hex");
           record = { ...record, revision: c, profile: body.profile };
           return route.fulfill({
             json: {

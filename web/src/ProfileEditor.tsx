@@ -10,50 +10,15 @@ import {
   type Session,
 } from "./api";
 import * as styles from "./theme.css";
+import {
+  parseProfileJSON,
+  profileDigest,
+  sameProfile,
+  validateProfile,
+  validSaveOutcome,
+} from "./profileValidation";
 
 const groups: Access[] = ["read", "write", "delete"];
-function validProfile(profile: Profile): boolean {
-  return (
-    profile.version === 1 &&
-    profile.files.every(
-      (rule) =>
-        rule.path.length > 0 &&
-        rule.path.length <= 4096 &&
-        ![...rule.path].some(
-          (ch) =>
-            ch.charCodeAt(0) < 32 ||
-            (ch.charCodeAt(0) >= 127 && ch.charCodeAt(0) <= 159) ||
-            "*?[]{}\\$;!".includes(ch),
-        ) &&
-        !rule.path.split("/").includes("..") &&
-        (!rule.path.startsWith("~") ||
-          rule.path === "~" ||
-          rule.path.startsWith("~/")) &&
-        rule.access.length > 0 &&
-        new Set(rule.access).size === rule.access.length &&
-        rule.access.every((access) => groups.includes(access)),
-    ) &&
-    profile.network.every(
-      (rule) =>
-        rule.host.length > 0 &&
-        rule.host.length <= 253 &&
-        rule.host.includes(".") &&
-        !/^\d+\.\d+\.\d+\.\d+$/.test(rule.host) &&
-        rule.host
-          .split(".")
-          .every(
-            (label) =>
-              label.length > 0 &&
-              label.length <= 63 &&
-              /^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$/.test(label),
-          ) &&
-        Number.isInteger(rule.port) &&
-        rule.port >= 1 &&
-        rule.port <= 65535 &&
-        ["tcp", "udp"].includes(rule.transport),
-    )
-  );
-}
 function outcomeText(outcome: ProfileOutcome): string {
   return `${outcome.message} Applied: ${outcome.applied ? "yes" : "no"}; retry required: ${outcome.retry_required ? "yes" : "no"}; restart required: ${outcome.restart_required ? "yes" : "no"}.`;
 }
@@ -64,6 +29,7 @@ export function ProfileEditor({
   sessions,
   sessionsReady,
   onDirtyChange,
+  onUnauthorized,
   refresh,
 }: {
   token: string;
@@ -72,11 +38,15 @@ export function ProfileEditor({
   sessions: Session[];
   sessionsReady: boolean;
   onDirtyChange: (dirty: boolean) => void;
+  onUnauthorized?: (requestToken: string) => void;
   refresh: () => Promise<void>;
 }) {
   const [record, setRecord] = useState<ProfileRecord>();
   const [draft, setDraft] = useState<Profile>();
   const [selected, setSelected] = useState("");
+  const [mode, setMode] = useState<"form" | "json">("form");
+  const [raw, setRaw] = useState("");
+  const [savedRaw, setSavedRaw] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [priorRevision, setPriorRevision] = useState("");
   const [conflict, setConflict] = useState(false);
@@ -84,16 +54,29 @@ export function ProfileEditor({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const generation = useRef(0);
+  const latestSaveContext = useRef({
+    token,
+    profilesReady,
+    current: false,
+    editable: false,
+    id: "",
+    revision: "",
+    conflict: false,
+  });
   useEffect(
     () => () => {
       generation.current++;
     },
     [],
   );
-  const dirty =
-    !!record &&
-    !!draft &&
-    JSON.stringify(record.profile) !== JSON.stringify(draft);
+  const rawResult =
+    record && mode === "json" ? parseProfileJSON(raw, record.name) : undefined;
+  const validationError =
+    draft && record ? validateProfile(draft, record.name) : undefined;
+  const intentDirty =
+    !!record && !!draft && !sameProfile(record.profile, draft);
+  const rawDirty = !!record && raw !== savedRaw;
+  const dirty = intentDirty || rawDirty || !!rawResult?.error;
   useEffect(() => {
     onDirtyChange(dirty);
     if (!dirty) return;
@@ -111,6 +94,15 @@ export function ProfileEditor({
     metadata.project === record.project &&
     metadata.path === record.path &&
     metadata.revision === record.revision;
+  latestSaveContext.current = {
+    token,
+    profilesReady,
+    current,
+    editable: !!metadata?.capabilities?.edit,
+    id: record?.id ?? "",
+    revision: record?.revision ?? "",
+    conflict,
+  };
   const eligible = sessions.filter(
     (session) =>
       session.state === "running" &&
@@ -132,6 +124,8 @@ export function ProfileEditor({
     setSelected(id);
     setRecord(undefined);
     setDraft(undefined);
+    setRaw("");
+    setSavedRaw("");
     setPriorRevision("");
     setConflict(false);
     setSessionId("");
@@ -146,7 +140,12 @@ export function ProfileEditor({
         throw new Error("Profile identity did not match the selection.");
       setRecord(next);
       setDraft(structuredClone(next.profile));
+      const text = JSON.stringify(next.profile, null, 2);
+      setRaw(text);
+      setSavedRaw(text);
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401)
+        onUnauthorized?.(token);
       if (sequence === generation.current)
         setError(err instanceof Error ? err.message : "Profile load failed");
     } finally {
@@ -161,30 +160,78 @@ export function ProfileEditor({
       !current ||
       !profilesReady ||
       !metadata?.capabilities?.edit ||
-      !validProfile(draft)
+      !intentDirty ||
+      !!validationError ||
+      !!rawResult?.error
     )
       return;
+    const parsedRaw = parseProfileJSON(raw, record.name);
+    const retainRaw =
+      !!parsedRaw.profile && sameProfile(parsedRaw.profile, draft);
+    if (
+      rawDirty &&
+      !retainRaw &&
+      !window.confirm(
+        "Discard the previous JSON text if this form draft is saved?",
+      )
+    )
+      return;
+    const submitted = structuredClone(draft);
+    const submittedJSON = JSON.stringify(submitted);
     const sequence = ++generation.current;
     setBusy(true);
     setError("");
     setMessage("");
+    let sent = false;
     try {
+      const digest = await profileDigest(submittedJSON);
+      const latest = latestSaveContext.current;
+      if (
+        sequence !== generation.current ||
+        latest.token !== token ||
+        !latest.profilesReady ||
+        !latest.current ||
+        !latest.editable ||
+        latest.conflict ||
+        latest.id !== record.id ||
+        latest.revision !== record.revision
+      ) {
+        if (sequence === generation.current)
+          setError(
+            "Profile was not submitted because the selection or authorization changed. Review and try again.",
+          );
+        return;
+      }
+      sent = true;
       const result = await profileApi.save(
         token,
         record.id,
         record.revision,
-        draft,
+        submitted,
       );
       if (sequence !== generation.current) return;
-      if (result.profile.id !== record.id)
-        throw new Error("Profile identity did not match the selection.");
+      if (!validSaveOutcome(result, record, submitted, digest))
+        throw new Error("Save response did not match the submitted profile.");
       setPriorRevision(record.revision);
       setRecord(result.profile);
       setDraft(structuredClone(result.profile.profile));
+      const text = retainRaw
+        ? raw
+        : JSON.stringify(result.profile.profile, null, 2);
+      setRaw(text);
+      setSavedRaw(text);
       setMessage(outcomeText(result));
       await refresh();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401)
+        onUnauthorized?.(token);
       if (sequence !== generation.current) return;
+      if (!sent) {
+        setError(
+          "Profile was not submitted: unable to calculate its SHA-256 digest. Your edits are preserved.",
+        );
+        return;
+      }
       const revisionConflict = err instanceof ApiError && err.status === 409;
       const definiteRejection =
         err instanceof ApiError &&
@@ -234,6 +281,8 @@ export function ProfileEditor({
       setMessage(outcomeText(result));
       await refresh();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401)
+        onUnauthorized?.(token);
       if (sequence === generation.current)
         setError(
           err instanceof ApiError && err.status === 409
@@ -310,203 +359,285 @@ export function ProfileEditor({
           >
             Load current revision
           </button>
-          <p>
-            Read means inspect; write means create or edit; delete includes
-            rename or replace. No-delete does not preserve file contents.
-          </p>
-          <h3>File rules</h3>
-          {draft.files.map((rule, index) => (
-            <fieldset
-              key={index}
-              disabled={busy || !metadata?.capabilities?.edit}
+          <h3>Saved profile editing mode</h3>
+          <div className={styles.row}>
+            <button
+              type="button"
+              className={styles.button}
+              aria-pressed={mode === "form"}
+              disabled={busy}
+              onClick={() => {
+                if (
+                  mode === "json" &&
+                  rawResult?.error &&
+                  !window.confirm(
+                    "Discard invalid JSON text and return to the last valid form draft?",
+                  )
+                )
+                  return;
+                if (rawResult?.error) setRaw(JSON.stringify(draft, null, 2));
+                setMode("form");
+              }}
             >
-              <legend>File rule {index + 1}</legend>
-              <label>
-                Path{" "}
-                <input
-                  className={styles.input}
-                  value={rule.path}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      files: draft.files.map((item, i) =>
-                        i === index
-                          ? { ...item, path: event.target.value }
-                          : item,
-                      ),
-                    })
+              Form
+            </button>
+            <button
+              type="button"
+              className={styles.button}
+              aria-pressed={mode === "json"}
+              disabled={busy}
+              onClick={() => {
+                if (mode !== "json") {
+                  const parsed = parseProfileJSON(raw, record.name);
+                  if (!parsed.profile || !sameProfile(parsed.profile, draft)) {
+                    if (
+                      rawDirty &&
+                      !window.confirm(
+                        "Discard the previous JSON text to show the changed form draft?",
+                      )
+                    )
+                      return;
+                    setRaw(JSON.stringify(draft, null, 2));
                   }
-                />
-              </label>
-              {groups.map((group) => (
-                <label key={group}>
-                  <input
-                    type="checkbox"
-                    checked={rule.access.includes(group)}
-                    onChange={(event) =>
+                }
+                setMode("json");
+              }}
+            >
+              JSON
+            </button>
+          </div>
+          <p>
+            These rules express allow intent as a union; rule order is not
+            security priority. System protected denies remain fixed. Saving
+            changes the saved profile, not running permissions.
+          </p>
+          {mode === "json" ? (
+            <>
+              <label htmlFor="profile-json">Saved profile JSON</label>
+              <textarea
+                id="profile-json"
+                className={styles.input}
+                rows={18}
+                value={raw}
+                disabled={busy || !metadata?.capabilities?.edit}
+                onChange={(event) => {
+                  const text = event.target.value;
+                  setRaw(text);
+                  const parsed = parseProfileJSON(text, record.name);
+                  if (parsed.profile) setDraft(parsed.profile);
+                }}
+              />
+              {rawResult?.error && (
+                <p role="alert" className={styles.warning}>
+                  Invalid profile JSON: {rawResult.error}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p>
+                Read means inspect; write means create or edit; delete includes
+                rename or replace. No-delete does not preserve file contents.
+              </p>
+              <h3>File rules</h3>
+              {draft.files.map((rule, index) => (
+                <fieldset
+                  key={index}
+                  disabled={busy || !metadata?.capabilities?.edit}
+                >
+                  <legend>File rule {index + 1}</legend>
+                  <label>
+                    Path{" "}
+                    <input
+                      className={styles.input}
+                      value={rule.path}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          files: draft.files.map((item, i) =>
+                            i === index
+                              ? { ...item, path: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </label>
+                  {groups.map((group) => (
+                    <label key={group}>
+                      <input
+                        type="checkbox"
+                        checked={rule.access.includes(group)}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            files: draft.files.map((item, i) =>
+                              i === index
+                                ? {
+                                    ...item,
+                                    access: event.target.checked
+                                      ? [...item.access, group]
+                                      : item.access.filter(
+                                          (value) => value !== group,
+                                        ),
+                                  }
+                                : item,
+                            ),
+                          })
+                        }
+                      />{" "}
+                      {group}{" "}
+                    </label>
+                  ))}
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={rule.recursive}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          files: draft.files.map((item, i) =>
+                            i === index
+                              ? { ...item, recursive: event.target.checked }
+                              : item,
+                          ),
+                        })
+                      }
+                    />{" "}
+                    Recursive
+                  </label>
+                  <button
+                    type="button"
+                    className={styles.button}
+                    onClick={() =>
                       setDraft({
                         ...draft,
-                        files: draft.files.map((item, i) =>
-                          i === index
-                            ? {
-                                ...item,
-                                access: event.target.checked
-                                  ? [...item.access, group]
-                                  : item.access.filter(
-                                      (value) => value !== group,
-                                    ),
-                              }
-                            : item,
-                        ),
+                        files: draft.files.filter((_, i) => i !== index),
                       })
                     }
-                  />{" "}
-                  {group}{" "}
-                </label>
+                  >
+                    Remove file rule
+                  </button>
+                </fieldset>
               ))}
-              <label>
-                <input
-                  type="checkbox"
-                  checked={rule.recursive}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      files: draft.files.map((item, i) =>
-                        i === index
-                          ? { ...item, recursive: event.target.checked }
-                          : item,
-                      ),
-                    })
-                  }
-                />{" "}
-                Recursive
-              </label>
               <button
                 type="button"
                 className={styles.button}
+                disabled={busy || !metadata?.capabilities?.edit}
                 onClick={() =>
                   setDraft({
                     ...draft,
-                    files: draft.files.filter((_, i) => i !== index),
+                    files: [
+                      ...draft.files,
+                      { path: "", access: [], recursive: false },
+                    ],
                   })
                 }
               >
-                Remove file rule
+                Add file rule
               </button>
-            </fieldset>
-          ))}
-          <button
-            type="button"
-            className={styles.button}
-            disabled={busy || !metadata?.capabilities?.edit}
-            onClick={() =>
-              setDraft({
-                ...draft,
-                files: [
-                  ...draft.files,
-                  { path: "", access: [], recursive: false },
-                ],
-              })
-            }
-          >
-            Add file rule
-          </button>
-          <h3>Exact network rules</h3>
-          {draft.network.map((rule, index) => (
-            <fieldset
-              key={index}
-              disabled={busy || !metadata?.capabilities?.edit}
-            >
-              <legend>Network rule {index + 1}</legend>
-              <label>
-                Host{" "}
-                <input
-                  className={styles.input}
-                  value={rule.host}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      network: draft.network.map((item, i) =>
-                        i === index
-                          ? { ...item, host: event.target.value }
-                          : item,
-                      ),
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Port{" "}
-                <input
-                  className={styles.input}
-                  type="number"
-                  min="1"
-                  max="65535"
-                  value={rule.port || ""}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      network: draft.network.map((item, i) =>
-                        i === index
-                          ? { ...item, port: event.target.valueAsNumber }
-                          : item,
-                      ),
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Transport{" "}
-                <select
-                  value={rule.transport}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      network: draft.network.map((item, i) =>
-                        i === index
-                          ? { ...item, transport: event.target.value }
-                          : item,
-                      ),
-                    })
-                  }
+              <h3>Exact network rules</h3>
+              {draft.network.map((rule, index) => (
+                <fieldset
+                  key={index}
+                  disabled={busy || !metadata?.capabilities?.edit}
                 >
-                  <option value="tcp">TCP</option>
-                  <option value="udp">UDP</option>
-                </select>
-              </label>
+                  <legend>Network rule {index + 1}</legend>
+                  <label>
+                    Host{" "}
+                    <input
+                      className={styles.input}
+                      value={rule.host}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          network: draft.network.map((item, i) =>
+                            i === index
+                              ? { ...item, host: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Port{" "}
+                    <input
+                      className={styles.input}
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={rule.port || ""}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          network: draft.network.map((item, i) =>
+                            i === index
+                              ? { ...item, port: event.target.valueAsNumber }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Transport{" "}
+                    <select
+                      value={rule.transport}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          network: draft.network.map((item, i) =>
+                            i === index
+                              ? { ...item, transport: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className={styles.button}
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        network: draft.network.filter((_, i) => i !== index),
+                      })
+                    }
+                  >
+                    Remove network rule
+                  </button>
+                </fieldset>
+              ))}
               <button
                 type="button"
                 className={styles.button}
+                disabled={busy || !metadata?.capabilities?.edit}
                 onClick={() =>
                   setDraft({
                     ...draft,
-                    network: draft.network.filter((_, i) => i !== index),
+                    network: [
+                      ...draft.network,
+                      { host: "", port: 0, transport: "tcp" },
+                    ],
                   })
                 }
               >
-                Remove network rule
+                Add network rule
               </button>
-            </fieldset>
-          ))}
-          <button
-            type="button"
-            className={styles.button}
-            disabled={busy || !metadata?.capabilities?.edit}
-            onClick={() =>
-              setDraft({
-                ...draft,
-                network: [
-                  ...draft.network,
-                  { host: "", port: 0, transport: "tcp" },
-                ],
-              })
-            }
-          >
-            Add network rule
-          </button>
+            </>
+          )}
           {dirty && (
             <details open>
-              <summary>Unsaved profile diff (before / after)</summary>
+              <summary>
+                {rawResult?.error
+                  ? "Saved profile / last valid draft (JSON above is invalid)"
+                  : "Unsaved profile diff (before / after)"}
+              </summary>
               <pre className={styles.diff}>
                 {JSON.stringify(record.profile, null, 2)}
               </pre>
@@ -515,11 +646,8 @@ export function ProfileEditor({
               </pre>
             </details>
           )}
-          {!validProfile(draft) && (
-            <p className={styles.warning}>
-              Invalid rule: provide a valid path and access, or an exact host,
-              port 1–65535 and TCP/UDP transport.
-            </p>
+          {mode === "form" && validationError && (
+            <p className={styles.warning}>Invalid profile: {validationError}</p>
           )}
           <div className={styles.row}>
             <button
@@ -531,8 +659,9 @@ export function ProfileEditor({
                 conflict ||
                 !current ||
                 !metadata?.capabilities?.edit ||
-                !dirty ||
-                !validProfile(draft)
+                !intentDirty ||
+                !!validationError ||
+                !!rawResult?.error
               }
               onClick={() => void save()}
             >

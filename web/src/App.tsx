@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  ApiError,
+  validDecisionOutcome,
   type FileRequest,
   type NetworkRequest,
   networkLabel,
@@ -19,6 +21,97 @@ function outcomeFlag(value: boolean | undefined): string {
   return value === undefined ? "unknown" : value ? "yes" : "no";
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasStrings(value: Record<string, unknown>, keys: string[]): boolean {
+  return keys.every(
+    (key) => typeof value[key] === "string" && value[key] !== "",
+  );
+}
+
+function validStatus(active: unknown, net: unknown, fs: unknown): boolean {
+  return (
+    Array.isArray(active) &&
+    active.every(
+      (item) =>
+        isObject(item) &&
+        hasStrings(item, ["id", "name", "state", "project"]) &&
+        (item.profile === undefined ||
+          item.profile === null ||
+          (isObject(item.profile) &&
+            hasStrings(item.profile, ["id", "name", "revision"]))) &&
+        (item.command === undefined ||
+          item.command === null ||
+          (Array.isArray(item.command) &&
+            item.command.every((part: unknown) => typeof part === "string"))) &&
+        (item.pid === undefined ||
+          item.pid === null ||
+          typeof item.pid === "number"),
+    ) &&
+    Array.isArray(net) &&
+    net.every(
+      (item) =>
+        isObject(item) &&
+        hasStrings(item, ["id", "session_id", "session_name"]) &&
+        typeof item.attempts === "number" &&
+        isObject(item.target) &&
+        hasStrings(item.target, ["host", "transport"]) &&
+        typeof item.target.port === "number",
+    ) &&
+    Array.isArray(fs) &&
+    fs.every(
+      (item) =>
+        isObject(item) &&
+        hasStrings(item, [
+          "id",
+          "session_id",
+          "session_name",
+          "capability",
+          "path",
+        ]) &&
+        typeof item.attempts === "number" &&
+        (item.restart_required === undefined ||
+          typeof item.restart_required === "boolean") &&
+        (item.is_directory === undefined ||
+          typeof item.is_directory === "boolean"),
+    )
+  );
+}
+
+function validCapabilities(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (isObject(value) &&
+      ["edit", "reload", "saved_decisions"].every(
+        (key) => value[key] === undefined || typeof value[key] === "boolean",
+      ))
+  );
+}
+
+function validCatalog(list: unknown): list is ProfileMetadata[] {
+  return (
+    Array.isArray(list) &&
+    list.every(
+      (item) =>
+        isObject(item) &&
+        hasStrings(item, ["id", "name", "project", "path", "revision"]) &&
+        validCapabilities(item.capabilities),
+    )
+  );
+}
+
+type DecisionGuard = {
+  kind: "files" | "network";
+  id: string;
+  action: "allow" | "deny";
+  tokenGeneration: number;
+  outcome: "pending" | "applied" | "rejected" | "unknown";
+  detail: string;
+};
+
 export function App() {
   const [token, setToken] = useState(
     () => new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "",
@@ -32,12 +125,55 @@ export function App() {
   const [sessionsReady, setSessionsReady] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [decisionGuard, setDecisionGuard] = useState<DecisionGuard>();
+  const busy = !!decisionGuard;
+  const decision = useRef<DecisionGuard | undefined>(undefined);
+  const reconciling = useRef(false);
+  const mounted = useRef(false);
+  const tokenGeneration = useRef(0);
+  const tokenRef = useRef(token);
+  const invalidAuth = useRef(false);
+  const lifetime = useRef(0);
   const refreshSequence = useRef(0);
+  // Overlapping polls must not hide a timeout, or let an older result replace
+  // a newer settled snapshot.
+  const settledRefresh = useRef(0);
   const profileSequence = useRef(0);
   const profileFlight = useRef<
     { token: string; promise: Promise<void> } | undefined
   >(undefined);
+  useEffect(() => {
+    mounted.current = true;
+    const generation = tokenGeneration;
+    return () => {
+      mounted.current = false;
+      generation.current++;
+    };
+  }, []);
+  // ProfileEditor reports direct profile API 401s through this same token epoch.
+  const authGeneration = tokenGeneration.current;
+  const onUnauthorized = useCallback(
+    (requestToken: string, generation: number) => {
+      if (
+        !mounted.current ||
+        generation !== tokenGeneration.current ||
+        requestToken !== tokenRef.current
+      )
+        return;
+      invalidAuth.current = true;
+      setProfiles([]);
+      setProfilesReady(false);
+      setSessionsReady(false);
+      setError(
+        "UI token unauthorized (401). Displayed data may be stale; enter a new UI token.",
+      );
+    },
+    [],
+  );
+  const profileEditorAuth = {
+    onUnauthorized: (requestToken: string) =>
+      onUnauthorized(requestToken, authGeneration),
+  };
   useEffect(() => {
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
@@ -47,67 +183,114 @@ export function App() {
     if (profileFlight.current?.token === token)
       return profileFlight.current.promise;
     const sequence = ++profileSequence.current;
-    setProfilesReady(false);
+    const generation = lifetime.current;
+    const authGeneration = tokenGeneration.current;
     const promise = profileApi
       .list(token)
       .then((list) => {
-        if (sequence === profileSequence.current) {
+        if (!validCatalog(list))
+          throw new Error("Invalid profile catalog response");
+        if (
+          generation === lifetime.current &&
+          sequence === profileSequence.current &&
+          !invalidAuth.current
+        ) {
           setProfiles(list);
           setProfilesReady(true);
         }
       })
-      .catch(() => {
-        if (sequence === profileSequence.current) {
+      .catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 401)
+          onUnauthorized(token, authGeneration);
+        if (
+          generation === lifetime.current &&
+          sequence === profileSequence.current
+        ) {
           setProfiles([]);
           setProfilesReady(false);
         }
       })
       .finally(() => {
-        if (sequence === profileSequence.current)
+        if (
+          generation === lifetime.current &&
+          sequence === profileSequence.current
+        )
           profileFlight.current = undefined;
       });
     profileFlight.current = { token, promise };
     await promise;
-  }, [token]);
+  }, [token, onUnauthorized]);
+  const readStatus = useCallback(
+    async (authGeneration: number) => {
+      const observe = <T,>(request: Promise<T>): Promise<T> =>
+        request.catch((error: unknown) => {
+          if (error instanceof ApiError && error.status === 401)
+            onUnauthorized(token, authGeneration);
+          throw error;
+        });
+      const [active, net, fs] = await Promise.all([
+        observe(api<Session[]>(token, "/api/sessions")),
+        observe(api<NetworkRequest[]>(token, "/api/network/pending")),
+        observe(api<FileRequest[]>(token, "/api/files/pending")),
+      ]);
+      if (!validStatus(active, net, fs))
+        throw new Error("Invalid status response");
+      return { active, net, fs };
+    },
+    [token, onUnauthorized],
+  );
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequence.current;
-    setSessionsReady(false);
+    const generation = lifetime.current;
     if (!token) {
+      setSessionsReady(false);
       setProfilesReady(false);
       setError("Enter a UI token from sydguard ui status.");
       return;
     }
+    if (invalidAuth.current) return;
     const profileRefresh = refreshProfiles();
     try {
-      const [active, net, fs] = await Promise.all([
-        api<Session[]>(token, "/api/sessions"),
-        api<NetworkRequest[]>(token, "/api/network/pending"),
-        api<FileRequest[]>(token, "/api/files/pending"),
-      ]);
-      if (sequence !== refreshSequence.current) return;
+      const { active, net, fs } = await readStatus(tokenGeneration.current);
+      if (
+        generation !== lifetime.current ||
+        invalidAuth.current ||
+        sequence <= settledRefresh.current
+      )
+        return;
+      settledRefresh.current = sequence;
       setSessions(active);
       setNetwork(net);
       setFiles(fs);
       setSessionsReady(true);
       setError("");
     } catch (error) {
-      if (sequence !== refreshSequence.current) return;
+      if (
+        generation !== lifetime.current ||
+        invalidAuth.current ||
+        sequence <= settledRefresh.current
+      )
+        return;
+      settledRefresh.current = sequence;
+      setSessionsReady(false);
       setError(
-        error instanceof Error ? error.message : "Controller unavailable",
+        `Status unavailable; displayed data may be stale. ${error instanceof Error ? error.message : "Controller unavailable"}`,
       );
     }
     await profileRefresh;
-  }, [token, refreshProfiles]);
+  }, [token, refreshProfiles, readStatus]);
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
     }, 2000);
+    const activeLifetime = lifetime;
     const sequence = refreshSequence;
     const catalogSequence = profileSequence;
     const catalogFlight = profileFlight;
     return () => {
       clearInterval(timer);
+      activeLifetime.current++;
       sequence.current++;
       catalogSequence.current++;
       catalogFlight.current = undefined;
@@ -125,26 +308,137 @@ export function App() {
       recursive?: boolean;
     },
   ) {
-    setBusy(true);
+    if (decision.current || invalidAuth.current) return;
+    const operation: DecisionGuard = {
+      kind,
+      id,
+      action,
+      tokenGeneration: tokenGeneration.current,
+      outcome: "pending",
+      detail:
+        "Decision response is still pending; do not send a conflicting decision.",
+    };
+    decision.current = operation;
+    setDecisionGuard(operation);
     setMessage("");
     try {
-      const result = await api<{
-        status?: string;
-        message?: string;
-        applied?: boolean;
-        retry_required?: boolean;
-        restart_required?: boolean;
-      }>(token, `/api/${kind}/decisions`, { id, action, scope, ...saved });
-      setMessage(
+      const result = await api<unknown>(token, `/api/${kind}/decisions`, {
+        id,
+        action,
+        scope,
+        ...saved,
+      });
+      if (!mounted.current || decision.current !== operation) return;
+      if (!validDecisionOutcome(result, kind, scope))
+        throw new Error("Unrecognized decision response");
+      const detail =
         scope === "saved"
           ? `${result.message ?? result.status ?? "Decision response received."} Applied: ${outcomeFlag(result.applied)}; retry required: ${outcomeFlag(result.retry_required)}; restart required: ${outcomeFlag(result.restart_required)}.`
-          : `${action === "allow" ? "Approved" : "Denied"}. The workload must retry; no paused syscall was resumed.`,
-      );
-      await refresh();
+          : `${action === "allow" ? "Approved" : "Denied"}. The workload must retry; no paused syscall was resumed.`;
+      if (
+        operation.tokenGeneration === tokenGeneration.current &&
+        !invalidAuth.current
+      ) {
+        setMessage(detail);
+        await refresh();
+        if (!mounted.current || decision.current !== operation) return;
+        if (
+          operation.tokenGeneration === tokenGeneration.current &&
+          !invalidAuth.current
+        ) {
+          decision.current = undefined;
+          setDecisionGuard(undefined);
+          return;
+        }
+      }
+      const settled: DecisionGuard = {
+        ...operation,
+        outcome: "applied",
+        detail,
+      };
+      decision.current = settled;
+      setDecisionGuard(settled);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Decision failed");
+      if (error instanceof ApiError && error.status === 401)
+        onUnauthorized(token, operation.tokenGeneration);
+      if (!mounted.current || decision.current !== operation) return;
+      const rejected = error instanceof ApiError && error.status === 401;
+      const settled: DecisionGuard = {
+        ...operation,
+        outcome: rejected ? "rejected" : "unknown",
+        detail: rejected
+          ? "The decision was rejected as unauthorized."
+          : "The decision outcome is unknown and may have applied; do not retry blindly.",
+      };
+      decision.current = settled;
+      setDecisionGuard(settled);
+    }
+  }
+
+  async function reconcileDecision() {
+    const operation = decision.current;
+    if (
+      !operation ||
+      operation.outcome === "pending" ||
+      reconciling.current ||
+      invalidAuth.current ||
+      !token
+    )
+      return;
+    reconciling.current = true;
+    const generation = lifetime.current;
+    const authGeneration = tokenGeneration.current;
+    const sequence = ++refreshSequence.current;
+    try {
+      const { active, net, fs } = await readStatus(authGeneration);
+      if (
+        !mounted.current ||
+        generation !== lifetime.current ||
+        invalidAuth.current ||
+        decision.current !== operation
+      )
+        return;
+      if (sequence <= settledRefresh.current) {
+        setMessage(
+          "Reconciliation was superseded by a newer status read. Fetch a fresh snapshot again.",
+        );
+        return;
+      }
+      settledRefresh.current = sequence;
+      setSessions(active);
+      setNetwork(net);
+      setFiles(fs);
+      setSessionsReady(true);
+      setError("");
+      const stillPending = (operation.kind === "files" ? fs : net).some(
+        (request) => request.id === operation.id,
+      );
+      if (stillPending && operation.outcome !== "rejected") {
+        setMessage(
+          "The original request is still pending. Its prior decision may have applied; conflicting decisions remain blocked. Do not retry blindly.",
+        );
+        return;
+      }
+      decision.current = undefined;
+      setDecisionGuard(undefined);
+      setMessage(
+        operation.outcome === "unknown"
+          ? "The original request is absent from the fresh pending snapshot. Its decision outcome remains unknown; absence does not prove failure. Do not retry blindly."
+          : `${operation.detail} Fresh pending requests were fetched.`,
+      );
+    } catch (error) {
+      if (
+        mounted.current &&
+        generation === lifetime.current &&
+        !invalidAuth.current
+      ) {
+        setSessionsReady(false);
+        setError(
+          `Reconciliation failed; displayed data may be stale. ${error instanceof Error ? error.message : "Controller unavailable"}`,
+        );
+      }
     } finally {
-      setBusy(false);
+      reconciling.current = false;
     }
   }
   return (
@@ -172,6 +466,12 @@ export function App() {
             )
               return;
             setProfileDirty(false);
+            lifetime.current++;
+            tokenGeneration.current++;
+            tokenRef.current = event.target.value;
+            invalidAuth.current = false;
+            setMessage("");
+            setError("");
             refreshSequence.current++;
             profileSequence.current++;
             profileFlight.current = undefined;
@@ -195,6 +495,27 @@ export function App() {
         {error}
       </p>
       <p role="status">{message}</p>
+      {decisionGuard && (
+        <section className={styles.panel}>
+          <p className={styles.warning}>
+            {decisionGuard.action} · {decisionGuard.kind} request{" "}
+            {decisionGuard.id}: {decisionGuard.detail} All request decisions are
+            blocked until the outcome is reconciled.
+          </p>
+          <button
+            type="button"
+            className={styles.button}
+            disabled={
+              decisionGuard.outcome === "pending" ||
+              !token ||
+              invalidAuth.current
+            }
+            onClick={() => void reconcileDecision()}
+          >
+            Fetch fresh pending requests to reconcile
+          </button>
+        </section>
+      )}
       <section className={styles.panel}>
         <h2>Active sessions</h2>
         {sessions.length === 0 ? (
@@ -223,6 +544,7 @@ export function App() {
       </section>
       <ProfileEditor
         key={token}
+        {...profileEditorAuth}
         token={token}
         profiles={profiles}
         profilesReady={profilesReady}
