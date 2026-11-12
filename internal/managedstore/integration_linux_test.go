@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Requires a disposable Linux guest and separately installed, root-owned helper.
@@ -103,6 +105,19 @@ func TestInstalledHelperIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if created.Project != id || created.Name != "test" || created.Namespace == nil || created.Namespace.Path != project {
+		t.Fatalf("snapshot binding: %+v", created)
+	}
+	var projectStat, policyStat unix.Stat_t
+	if err := unix.Stat(project, &projectStat); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Stat(filepath.Join(project, ".sydguard"), &policyStat); err != nil {
+		t.Fatal(err)
+	}
+	if created.Namespace.ProjectDev != projectStat.Dev || created.Namespace.ProjectIno != projectStat.Ino || created.Namespace.PolicyDev != policyStat.Dev || created.Namespace.PolicyIno != policyStat.Ino {
+		t.Fatalf("snapshot namespace mismatch: %+v", created.Namespace)
+	}
 	file := filepath.Join(project, ".sydguard", "test.json")
 	if err := os.WriteFile(file, []byte("attacker"), 0o600); err == nil {
 		t.Fatal("normal UID wrote root policy")
@@ -121,7 +136,7 @@ func TestInstalledHelperIntegration(t *testing.T) {
 	bad := json.RawMessage(`{"version":1,"name":"test","files":[],"network":[],"unexpected":1}`)
 	_, err = client.Replace(ctx, id, "test", "stale", bad)
 	var apiErr *ClientError
-	if !errors.As(err, &apiErr) || apiErr.Code != "409" {
+	if !errors.As(err, &apiErr) || apiErr.Code != "409" || !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale revision: %v", err)
 	}
 	for _, invalid := range []string{
@@ -136,7 +151,7 @@ func TestInstalledHelperIntegration(t *testing.T) {
 		}
 	}
 	read, err := client.Read(ctx, id, "test")
-	if err != nil || read.Revision != changed.Revision || !bytes.Equal(read.Profile, next) {
+	if err != nil || read.Revision != changed.Revision || !bytes.Equal(read.Profile, next) || read.Project != id || read.Name != "test" || read.Namespace == nil || *read.Namespace != *created.Namespace {
 		t.Fatalf("read after conflict: %v", err)
 	}
 	other := filepath.Join(private, "other")

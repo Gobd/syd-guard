@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -20,12 +23,39 @@ type Request struct {
 	Credential string `json:"credential"`
 }
 
+// Snapshot identity is registry-derived, not discovered from the project path.
+// It detects changes but does not pin the namespace after the helper returns.
 type Response struct {
-	Revision string `json:"revision,omitempty"`
-	Profile  []byte `json:"profile,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Code     string `json:"code,omitempty"`
-	Project  string `json:"project,omitempty"`
+	Revision  string            `json:"revision,omitempty"`
+	Profile   []byte            `json:"profile,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Code      string            `json:"code,omitempty"`
+	Project   string            `json:"project,omitempty"` // opaque registration ID
+	Name      string            `json:"name,omitempty"`
+	Namespace *ProjectNamespace `json:"namespace,omitempty"`
+}
+
+type ProjectNamespace struct {
+	Path       string `json:"path"`
+	ProjectDev uint64 `json:"project_dev"`
+	ProjectIno uint64 `json:"project_ino"`
+	PolicyDev  uint64 `json:"policy_dev"`
+	PolicyIno  uint64 `json:"policy_ino"`
+}
+
+var ErrConflict = errors.New("profile revision conflict; review current contents")
+
+// ErrIndeterminate means a mutation may have committed; authenticate a read and
+// compare its SHA-256 revision before retrying. Registration needs admin inspection.
+var ErrIndeterminate = errors.New("operation outcome indeterminate")
+
+// ValidateProjectPath is the common helper/client metadata syntax boundary.
+// It neither resolves the path nor establishes ownership or namespace authority.
+func ValidateProjectPath(path string) error {
+	if len(path) > 4096 || !utf8.ValidString(path) || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexFunc(path, unicode.IsControl) >= 0 {
+		return errors.New("absolute clean literal project path required")
+	}
+	return nil
 }
 
 // strictObject rejects JSON's duplicate-key and case-insensitive field aliases.
@@ -116,7 +146,7 @@ func decodeRequest(data []byte) (Request, error) {
 
 func decodeResponse(data []byte, operation string) (Response, error) {
 	var r Response
-	fields, err := strictObject(data, "revision", "profile", "error", "code", "project")
+	fields, err := strictObject(data, "revision", "profile", "error", "code", "project", "name", "namespace")
 	if err != nil {
 		return r, err
 	}
@@ -132,10 +162,16 @@ func decodeResponse(data []byte, operation string) (Response, error) {
 		if err := requireFields(fields, "project"); err != nil || r.Project == "" {
 			return r, errors.New("invalid registration response")
 		}
-	default:
-		if err := requireFields(fields, "revision", "profile"); err != nil || r.Revision == "" || len(r.Profile) == 0 {
+	case operation == "read" || operation == "create" || operation == "replace":
+		if err := requireFields(fields, "revision", "profile", "project", "name", "namespace"); err != nil || r.Revision == "" || len(r.Profile) == 0 || r.Project == "" || r.Name == "" || r.Namespace == nil {
 			return r, errors.New("invalid snapshot response")
 		}
+		namespace, err := strictObject(fields["namespace"], "path", "project_dev", "project_ino", "policy_dev", "policy_ino")
+		if err != nil || requireFields(namespace, "path", "project_dev", "project_ino", "policy_dev", "policy_ino") != nil || r.Namespace.Path == "" || r.Namespace.ProjectIno == 0 || r.Namespace.PolicyIno == 0 {
+			return r, errors.New("invalid snapshot namespace")
+		}
+	default:
+		return r, errors.New("unsupported response operation")
 	}
 	return r, nil
 }

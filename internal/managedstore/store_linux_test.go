@@ -33,6 +33,41 @@ func TestDecodeRequest(t *testing.T) {
 	}
 }
 
+func TestSnapshotResponseUsesRegisteredNamespace(t *testing.T) {
+	reg := registration{Project: "/registered", ProjectDev: 10, ProjectIno: 11, PolicyDev: 10, PolicyIno: 12}
+	r := Request{Project: strings.Repeat("a", 64), Name: "test"}
+	data := []byte(`{"version":1,"name":"test","files":[],"network":[]}`)
+	response, err := response(r, reg, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Project != r.Project || response.Name != r.Name || response.Namespace == nil || *response.Namespace != (ProjectNamespace{Path: reg.Project, ProjectDev: reg.ProjectDev, ProjectIno: reg.ProjectIno, PolicyDev: reg.PolicyDev, PolicyIno: reg.PolicyIno}) || !bytes.Equal(response.Profile, data) {
+		t.Fatalf("incorrect registered snapshot: %+v", response)
+	}
+}
+
+func TestRegistrationRejectsIncompatiblePathBeforePublication(t *testing.T) {
+	for _, suffix := range []string{"tab\tproject", "control\u0085project"} {
+		project := filepath.Join(t.TempDir(), suffix)
+		if err := os.Mkdir(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// No registry descriptor: a correct preflight rejection cannot reach any
+		// staging/publication operation. The directory is wholly test-owned.
+		store := &Store{uid: os.Getuid()}
+		if _, err := store.register(Request{Operation: "register", Project: project}); err == nil {
+			t.Fatal("registered a path incompatible with snapshot validation")
+		}
+		if _, err := os.Lstat(filepath.Join(project, config.ProfileFolder)); !os.IsNotExist(err) {
+			t.Fatalf("registration touched incompatible project: %v", err)
+		}
+		if fd, err := openDirectory(project); err == nil {
+			_ = unix.Close(fd)
+			t.Fatal("opened an incompatible directory")
+		}
+	}
+}
+
 func TestRegistrationUIDKeyBinding(t *testing.T) {
 	a := (&Store{uid: 1001}).key(strings.Repeat("a", 64))
 	b := (&Store{uid: 1002}).key(strings.Repeat("a", 64))

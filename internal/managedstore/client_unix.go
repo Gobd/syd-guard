@@ -29,14 +29,10 @@ const helperPath = "/usr/local/libexec/sydguard-policy-helper"
 // The credential directory must be outside all projects and inaccessible to workloads.
 type Client struct{ credentialFile string }
 
-// ErrIndeterminate means a mutation may have committed; authenticate a read and
-// compare its SHA-256 revision before retrying. Registration needs admin inspection.
-var ErrIndeterminate = errors.New("operation outcome indeterminate")
-
 type ClientError struct{ Code, Message string }
 
 func (e *ClientError) Is(target error) bool {
-	return target == ErrIndeterminate && e.Code == "indeterminate"
+	return target == ErrIndeterminate && e.Code == "indeterminate" || target == ErrConflict && e.Code == "409"
 }
 
 func (e *ClientError) Error() string { return e.Message }
@@ -182,6 +178,10 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 	var out boundedBuffer
 	cmd.Stdout = &out
 	runErr := cmd.Run()
+	return processHelperResponse(request, out, runErr, ctx.Err() != nil)
+}
+
+func processHelperResponse(request Request, out boundedBuffer, runErr error, deadline bool) (Response, error) {
 	mutation := request.Operation != "read"
 	transportError := func(message string) (Response, error) {
 		if mutation {
@@ -189,30 +189,59 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 		}
 		return Response{}, errors.New(message)
 	}
-	if ctx.Err() != nil {
+	if deadline {
 		return transportError("helper deadline exceeded")
 	}
 	if out.overflow {
 		return transportError("helper response too large")
 	}
-	response, err = decodeResponse(out.data, request.Operation)
+	response, err := decodeResponse(out.data, request.Operation)
 	if err != nil {
 		return transportError("helper unavailable or invalid response")
 	}
 	if response.Error != "" {
+		if response.Code == "409" && request.Operation != "replace" {
+			return transportError("invalid helper conflict response")
+		}
 		return Response{}, &ClientError{Code: response.Code, Message: response.Error}
 	}
 	if runErr != nil {
 		return transportError("helper failed")
 	}
-	if request.Operation != "register" {
-		snapshot, err := config.ParseManagedProfileSnapshot(request.Name, response.Profile)
-		if err != nil || snapshot.Revision() != response.Revision {
-			return transportError("invalid helper snapshot")
-		}
-		// Return only the exact validated bytes, not a pathname to reopen.
-		response.Profile = snapshot.Bytes()
+	response, err = validateResponse(request, response)
+	if err != nil {
+		return transportError("invalid helper response binding or snapshot")
 	}
+	return response, nil
+}
+
+func validProjectID(id string) bool {
+	if len(id) != 64 || strings.ToLower(id) != id {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}
+
+func validateResponse(request Request, response Response) (Response, error) {
+	if !validProjectID(response.Project) {
+		return Response{}, errors.New("invalid registration ID")
+	}
+	if request.Operation == "register" {
+		return response, nil
+	}
+	if response.Project != request.Project || response.Name != request.Name || response.Namespace == nil {
+		return Response{}, errors.New("snapshot identity mismatch")
+	}
+	if err := ValidateProjectPath(response.Namespace.Path); err != nil {
+		return Response{}, err
+	}
+	snapshot, err := config.ParseManagedProfileSnapshot(request.Name, response.Profile)
+	if err != nil || snapshot.Revision() != response.Revision || request.Operation == "replace" && !bytes.Equal(request.Profile, response.Profile) {
+		return Response{}, errors.New("invalid helper snapshot")
+	}
+	// Retain exact validated helper bytes; never reopen Namespace.Path as authority.
+	response.Profile = snapshot.Bytes()
 	return response, nil
 }
 
@@ -231,6 +260,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (c *Client) Register(ctx context.Context, canonicalProject string) (string, error) {
+	// JSON marshaling repairs invalid UTF-8; reject the original bytes first so
+	// registration can never silently target a different directory.
+	if err := ValidateProjectPath(canonicalProject); err != nil {
+		return "", err
+	}
 	r, err := c.call(ctx, Request{Operation: "register", Project: canonicalProject})
 	return r.Project, err
 }

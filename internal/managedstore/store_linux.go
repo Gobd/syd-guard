@@ -194,7 +194,7 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 		if err := createAt(policy, filename, data, 0o644); err != nil {
 			return Response{}, err
 		}
-		return response(r.Name, data)
+		return response(r, reg, data)
 	case "read", "replace":
 		data, err := readAt(policy, filename, Limit, 0o644)
 		if err != nil {
@@ -208,7 +208,7 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 			if len(r.Profile) != 0 || r.Expected != "" {
 				return Response{}, fmt.Errorf("read accepts no write fields")
 			}
-			return Response{Revision: old.Revision(), Profile: old.Bytes()}, nil
+			return snapshotResponse(r, reg, old.Revision(), old.Bytes()), nil
 		}
 		if r.Expected == "" || r.Expected != old.Revision() {
 			return Response{}, ErrConflict
@@ -220,13 +220,11 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 		if err := replaceAt(policy, filename, next.Bytes()); err != nil {
 			return Response{}, err
 		}
-		return Response{Revision: next.Revision(), Profile: next.Bytes()}, nil
+		return snapshotResponse(r, reg, next.Revision(), next.Bytes()), nil
 	default:
 		return Response{}, fmt.Errorf("unsupported managed-policy operation")
 	}
 }
-
-var ErrConflict = errors.New("profile revision conflict; review current contents")
 
 var ErrUnsupportedFilesystem = errors.New("project and registry require the same verified local ext4/tmpfs filesystem")
 
@@ -246,13 +244,20 @@ func (s *Store) lookup(project string) (registration, error) {
 	if err := decodeStrict(data, &result); err != nil {
 		return result, err
 	}
-	if !filepath.IsAbs(result.Project) || filepath.Clean(result.Project) != result.Project {
-		return result, fmt.Errorf("invalid stored project path")
+	// Reject older registrations incompatible with the client before any create
+	// or replace can publish an unreconcilable snapshot.
+	if err := ValidateProjectPath(result.Project); err != nil {
+		return result, err
 	}
 	return result, nil
 }
 
 func (s *Store) register(r Request) (result Response, resultErr error) {
+	// Validate before opening, staging or publishing anything. Registration and
+	// subsequent snapshot validation must use the same path syntax boundary.
+	if err := ValidateProjectPath(r.Project); err != nil {
+		return Response{}, err
+	}
 	if r.Expected != "" || len(r.Profile) != 0 || r.Name != "" {
 		return Response{}, fmt.Errorf("registration does not import/overwrite profiles")
 	}
@@ -372,12 +377,19 @@ func (s *Store) register(r Request) (result Response, resultErr error) {
 	return Response{Project: projectID}, nil
 }
 
-func response(name string, data []byte) (Response, error) {
-	snap, err := config.ParseManagedProfileSnapshot(name, data)
+func response(r Request, reg registration, data []byte) (Response, error) {
+	snap, err := config.ParseManagedProfileSnapshot(r.Name, data)
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Revision: snap.Revision(), Profile: snap.Bytes()}, nil
+	return snapshotResponse(r, reg, snap.Revision(), snap.Bytes()), nil
+}
+
+func snapshotResponse(r Request, reg registration, revision string, data []byte) Response {
+	return Response{
+		Revision: revision, Profile: data, Project: r.Project, Name: r.Name,
+		Namespace: &ProjectNamespace{Path: reg.Project, ProjectDev: reg.ProjectDev, ProjectIno: reg.ProjectIno, PolicyDev: reg.PolicyDev, PolicyIno: reg.PolicyIno},
+	}
 }
 
 func decodeStrict(data []byte, out any) error {
@@ -533,8 +545,8 @@ func checkRegistrationIdentity(reg registration) error {
 
 // openDirectory traverses through pinned FDs with no symlinks at any component.
 func openDirectory(path string) (int, error) {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, "\x00\r\n") {
-		return -1, fmt.Errorf("absolute clean literal directory required")
+	if err := ValidateProjectPath(path); err != nil {
+		return -1, err
 	}
 	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {

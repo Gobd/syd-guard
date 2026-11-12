@@ -2,8 +2,22 @@ package managedstore
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestProjectPathBoundary(t *testing.T) {
+	for _, path := range []string{"/project", "/project with spaces", "/project/é"} {
+		if err := ValidateProjectPath(path); err != nil {
+			t.Fatalf("valid path %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{"", "relative", "/project/../other", "/project/", "/project\tname", "/project\x00name", "/project\nname", "/project\u0085name", "/project\x7fname", "/project" + string([]byte{0xff}), "/" + strings.Repeat("a", 4096)} {
+		if err := ValidateProjectPath(path); err == nil {
+			t.Fatalf("accepted incompatible metadata path %q", path)
+		}
+	}
+}
 
 func TestStrictRequest(t *testing.T) {
 	valid := `{"operation":"read","project":"id","name":"test","credential":"token"}`
@@ -60,7 +74,22 @@ func TestStrictResponse(t *testing.T) {
 			t.Errorf("accepted %q", value)
 		}
 	}
-	if _, err := decodeResponse([]byte(`{"revision":"x","profile":"e30="}`), "read"); err != nil {
+	valid := `{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/project","project_dev":0,"project_ino":1,"policy_dev":0,"policy_ino":2}}`
+	if _, err := decodeResponse([]byte(valid), "read"); err != nil {
 		t.Fatal(err)
+	}
+	for _, value := range []string{
+		`{"revision":"x","profile":"e30="}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":null}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/p","path":"/q","project_dev":1,"project_ino":1,"policy_dev":1,"policy_ino":2}}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"Path":"/p","project_dev":1,"project_ino":1,"policy_dev":1,"policy_ino":2}}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/p","project_dev":null,"project_ino":1,"policy_dev":1,"policy_ino":2}}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/p","project_ino":1,"policy_dev":1,"policy_ino":2}}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/p","project_dev":1,"project_ino":0,"policy_dev":1,"policy_ino":2}}`,
+		`{"revision":"x","profile":"e30=","project":"id","name":"test","namespace":{"path":"/p","project_dev":1,"project_ino":1,"policy_dev":1,"policy_ino":2,"extra":3}}`,
+	} {
+		if _, err := decodeResponse([]byte(value), "read"); err == nil {
+			t.Errorf("accepted invalid snapshot namespace: %s", value)
+		}
 	}
 }
