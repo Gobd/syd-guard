@@ -160,7 +160,7 @@ func run() (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	journal, group, err := prepareSlot(baseFD, groupsFD, slot, identity, 0, killCgroup)
+	journal, group, err := prepareSlot(baseFD, groupsFD, slot, identity, 0, probeCgroupCleanup)
 	if err != nil {
 		return 1, fmt.Errorf("slot setup failed; slot quarantined: %w", err)
 	}

@@ -1,5 +1,42 @@
 # Temporary handoff — resumed integration checkpoint
 
+## Backend continuation after operator checkpoint — 2026-11-12
+
+Operator explicitly requested all three backend gates and commit/push BEFORE work.
+Verified clean f1141b2 already pushed to existing OPEN draft PR1. Operator's `ok`
+in reply to the tracing question authorized the one bounded metadata-only VM trace.
+No credentials/stdin/env/workload data captured; no audit changes. Existing root-owned
+strace traced process/credential/prctl/exit metadata, with exec arguments raw pointers.
+Verified helper/engine/policy hashes/dev/inodes and root stage identity first. Trace
+original is root-controlled and identity recorded in installation.json; ordinary
+copy fixture selected-metadata-only.trace. Child210544 killed immediately after
+clone3 INTO_CGROUP and before any observed child syscall/UID change/exec; watchdog
+cleanup after death. Trace did NOT identify signal sender or kernel cause.
+
+Upstream6.8 source clears CGRP_KILL before kill write returns; persistent-poison
+hypothesis not established. Retained writer resume failed because its empty managed
+worktree had been auto-removed; stopped/reported, verified checkpoint clean, then
+single retry in a fresh isolated worktree produced bounded diagnostic variant.
+Fresh-group preflight now checks fixed cgroup interface metadata, exact domain and
+populated0, opening cgroup.kill write-only WITHOUT an availability kill write.
+Cleanup/watchdog/recovery still kill on shutdown and quarantine errors. Probe does
+NOT prove future write availability. Independent review accepted source for narrow
+diagnostic testing only. Linux full vet/race/lint/build passed after equivalent
+De Morgan lint fix. NO enforcement engine/capability/mount/placement weakening.
+
+Installed ONLY matching immutable disposable launch-helper candidate, after identity
+checks. Old helper preserved root-controlled as launch_preflight_backup manifest entry.
+Actual selected read-only/no-network launch PASSED exit0 PINNED_VISIBLE with exact
+reviewed profile and dropped-capability checks; selected-nondestructive-preflight.log.
+This is successful behavioral differential, NOT a proved kernel-level cause.
+Slot reuse passed at /run/sydguard-launch/uid-502-slot-0.anchor/project.
+First closed-stdio detached probe was inconclusive (/dev/full deny could prevent sleep).
+Corrected fixture kept stdio and verified detached PID212448 ALIVE stateS in exact
+session cgroup before foreground exit, then no longer running after exit0; evidence
+selected-detached-alive-proof.log. No remaining anchor/cgroup children; intended slot0
+file remains. Crash/cancel/mount flags/namespace replacement/stale CAS still need gates.
+Saved writable/network replay and safe persisted live apply are NOT implemented.
+
 ## Operator clarified acceptance contract — live persisted approvals
 
 Every UI approval must persist corresponding public intent through authenticated
