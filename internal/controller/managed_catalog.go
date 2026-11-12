@@ -66,14 +66,12 @@ func NewCatalogProfileProvider(ctx context.Context, client ManagedProfileCatalog
 	if len(refs) == 0 {
 		return &ManagedProfileProvider{client: client, bindings: map[string]managedProfileBinding{}, order: []string{}}, nil
 	}
-	provider, err := NewManagedProfileProvider(ctx, client, refs, edit)
+	provider, err := newManagedProfileProvider(ctx, client, refs, edit, namespaces)
 	if err != nil {
 		return nil, err
 	}
-	for _, binding := range provider.bindings {
-		if binding.namespace != namespaces[binding.ref] {
-			return nil, fmt.Errorf("managed namespace changed between catalog and snapshot")
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	// A concurrent operator edit can change a profile's revision after catalog
 	// enumeration. The freshly authenticated snapshot is current intent, not an

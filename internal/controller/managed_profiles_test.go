@@ -166,8 +166,13 @@ func TestManagedAdapterRejectsInvalidRegistration(t *testing.T) {
 		})
 	}
 	client, ref := newManagedFixture(t)
-	if _, err := NewManagedProfileProvider(ctx, client, []ManagedProfileRef{ref, ref}, true); err == nil {
-		t.Fatal("duplicate reference accepted")
+	if _, err := NewManagedProfileProvider(ctx, client, []ManagedProfileRef{ref, ref}, true); err == nil || client.reads != 0 {
+		t.Fatal("duplicate reference accepted or reached helper")
+	}
+	invalid := ref
+	invalid.Name = "../invalid"
+	if _, err := NewManagedProfileProvider(ctx, client, []ManagedProfileRef{ref, invalid}, true); err == nil || client.reads != 0 {
+		t.Fatal("invalid reference reached helper before complete validation")
 	}
 	if _, err := NewManagedProfileProvider(ctx, client, nil, true); err == nil {
 		t.Fatal("empty catalog accepted")

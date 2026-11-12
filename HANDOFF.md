@@ -38,7 +38,26 @@ lint and default tests passed (3 ordinary tests, 6 browser tests skipped). The
 old TUN/explicit-proxy-only message is not the current App.tsx wording; veth and
 synthetic DNS have an actual HTTPS learn proof, not full saved/live network replay. Guest
 preview PID/identity recorded in fixture `personal-ui-controller.json` and log.
-Preview needs repair, not readiness advertising or deleting profiles to hide it.
+Pre-start provider repair now passes independent review and real private UI:
+constructor validates catalog namespaces inside each of at most four concurrent
+snapshot workers, cancels/joins on the first mismatch/error, preserves input order
+and the original six-second total budget. Actual two authenticated helper reads:
+serial4.03984s vsparallel2.04316s; fixture `parallel-helper-read-timing.json`.
+Matching ordinary candidate CLI rebuilt; new private managed controller PID202461
+is tracked in `personal-ui-controller.json`, no root helper replacement needed.
+Host `/api/profiles` returned200/two profiles in4.121s, no active agents.
+Real host Chromium then added an explicit read file rule and example.com TCP443,
+saved/reread through installed helper CAS, removed both and saved/reread to restore
+original logical intent. Evidence `/tmp/sydguard-prestart-ui-evidence.json` and
+`/tmp/sydguard-prestart-preview.png`. Two initial browser script attempts sent NO
+save: first omitted explicit read selection; second asserted Save immediately
+while catalog refreshing. Final probe selected read and waited for readiness.
+Catalog refresh still temporarily disables editing while each slow refresh runs;
+record this usability limitation rather than claiming a nonblocking editor.
+This is PRE-START SAVE/REMOVE proof, not live enforcement/replay. Root metadata-only
+SIGKILL tracing was explicitly requested from operator and remains UNAPPROVED;
+automated child notifications are not approval. Do not execute privileged tracing
+or change audit settings pending an actual operator response.
 
 ## Current WIP checkpoint — 2026-11-12 continuation
 
