@@ -1,5 +1,78 @@
 # Temporary handoff — resumed integration checkpoint
 
+## Operator-authorized remaining design calls — 2026-11-12
+
+Operator explicitly said `do anything you want and anything that seems right` while
+requesting all three remaining gates. Parent chose VM-local implementation/testing,
+not host/account/audit changes or weakening confinement. Network requirement now uses
+ROOT-ENFORCED FAIL-STOP if hostile tracee stops/kills its same-UID broker/supervisor;
+ABI4 cannot claim blanket signal denial of those peers. Unconfined operator remains
+trusted. Architecture reviewer6abcf accepted bounded immutable-helper/unprivileged-
+broker source work under that explicit availability decision; no installed broker yet.
+Source integration task active in fb76f4c5/task1; still no selected network activation.
+
+Parent also authorized TEST CANDIDATE of unchanged upstream Syd3.59 source built
+STATIC with panic=abort (build-option change, NOT the previously tested official static
+binary and NOT an enforcement-source fork). Goal eliminate IPC worker unwind after
+partial addressed-bank mutation by terminating entire engine. Separate ordinary VM
+build/proof lane fb76f4c5/task2; no root engine replacement until review/identity and
+fail-stop validation. Existing installed trusted engine/manifest remains unchanged.
+Named-domain ordinary happy/error proof is retained, not enabled as full live safety.
+
+Continuation status: network source has prebound constructors, journal/watchdog
+resource phases, pidfd identity and finite ready/heartbeat frame primitives in retained
+worktree a1a31df3; no real adapter/broker/ready release yet. Workflow242e091f reviews
+that snapshot then continues real Linux adapter implementation. Main CLI remains
+no-network and saved network intent rejected; do not deploy the partial source.
+
+Abort build lane07413cb7 now has a linked STATIC NON-PIE aarch64 candidate using
+unchanged Syd source, private Zig C23/native toolchain, musl and signed upstream
+libseccomp2.6.1. This enables normal upstream libseccomp_v2_6 precomputation cfg and
+is NOT binary-equivalent to earlier tested official stock engine. Root installation
+remains untouched. Parent corrected overstrong no-unwind-symbol criterion: musl/std
+backtrace support can retain _Unwind_* symbols; proof must establish actual Rust
+panic entry routes to panic_abort/whole-process abort, not symbol absence.
+Candidate now built/exercised but NOT QUALIFIED for root install: SHA523122c5dcc5f3b65b68b58fd642086d80aaa76c5c2e9825efc47b1750c69d01,
+~/syd-abort-proof.lSrBGBxZ/bin/syd-3.59.0-abort, dev64769/inode1110172/mode0700.
+New samePID258990 bank proof PASSED; process_vm_writev denial smoke PASSED after
+honestly failed setup attempts. External process-directed SIGABRT was ignored,
+consistent with upstream SigIgn/source; it is NOT an actual Rust worker-panic test.
+Static actual panic path reaches musl abort; IPC default KillProcess filter should
+kill process on abort's disallowed tkill. Independent reviewer in workflow8872d7ee
+assesses this specific partial-bank hazard, held-writeguard/hook-stall implications,
+static EXEC compatibility and dependency cfg. No Root replacement/enabling yet.
+Network writer4d8e5d1 fixed stale durable journal and cross-netns ifindex findings,
+but again did NOT complete real adapter: added FD/listener/netlink primitives only.
+Fresh sole writer66165c64 in8872d7ee FAILED to implement adapter, no source edits.
+Parent reported/stopped identical delegation and now owns retained a1a31df3 worktree
+implementation. Anonymous netns FD leasing approved (no bind-marker namespace path);
+watchdog verified lease ACK after durable record and before activation is mandatory.
+Parent added actual nft GETTABLE handle parsing and atomic DELTABLE-by-handle code,
+not deletion by name (Linux6.8 source explicitly prioritizes HANDLE); unit wire tests
+and ALL helper tests executed ordinary UID502 Linux PASS. Still no full adapter or
+selected launch activation. New dependency versions pinned in isolated worktree.
+
+Reviewer59da22d8 accepted SPECIFIC partial-bank unwind gate conditionally: actual
+panic-abort path plus IPC KillProcess filter; hook stall retains writeguard and blocks
+new shared-policy readers, availability only. Explicit lock:ipc, reserved banks with
+no automatic moves, prefix-safe compiler, single authenticated writer, unknown ACK
+handling and exact abort-engine identity remain mandatory. Not installation/fullflow
+approval. Parent independently rehashed candidate and ran existing ordinary-user
+TestEngineStaticSydMetadataIntegration against it: PASS with UNCHANGED validator.
+No runtime mutation/enabling or Root engine replacement occurred.
+
+Unintended guest global rustup nightly install occurred during an intended read-only
+`target list --toolchain nightly` probe. Worker stopped/reported, stable default is
+unchanged. Retain identity for parent-reviewed cleanup: guest ~/.rustup/toolchains/
+nightly-aarch64-unknown-linux-gnu, dev64769/inode1075650, owner briankemper, mode775,
+rustc1.102.0-nightly3ef0c22cd, manifest2026-11-12. All subsequent toolchain work uses
+private RUSTUP_HOME/CARGO_HOME under ~/syd-abort-proof.lSrBGBxZ (dev64769/inode1075506).
+No automatic deletion or global toolchain/default/config change authorized for workers.
+A GPG inspection also unexpectedly created guest ~/.gnupg dev64769/inode1110402,
+mode0700, only pubring.kbx/random_seed, no imported keys; all later GPG uses private
+GNUPGHOME. Parent informed operator and retains identities for reviewed cleanup.
+Neither side effect is a successful isolation claim.
+
 ## Backend continuation after operator checkpoint — 2026-11-12
 
 Operator explicitly requested all three backend gates and commit/push BEFORE work.
