@@ -26,11 +26,13 @@ import (
 )
 
 type registration struct {
-	Project    string `json:"project"`
-	ProjectDev uint64 `json:"project_dev"`
-	ProjectIno uint64 `json:"project_ino"`
-	PolicyDev  uint64 `json:"policy_dev"`
-	PolicyIno  uint64 `json:"policy_ino"`
+	Project       string           `json:"project"`
+	ProjectDev    uint64           `json:"project_dev"`
+	ProjectIno    uint64           `json:"project_ino"`
+	PolicyDev     uint64           `json:"policy_dev"`
+	PolicyIno     uint64           `json:"policy_ino"`
+	ProjectHandle *directoryHandle `json:"project_handle,omitempty"`
+	PolicyHandle  *directoryHandle `json:"policy_handle,omitempty"`
 }
 
 // Store must be opened by the dedicated installed helper, never by an agent.
@@ -125,29 +127,27 @@ func validCredential(v string) bool {
 	return err == nil
 }
 
-func (s *Store) Apply(r Request) (result Response, resultErr error) {
-	if !validCredential(r.Credential) {
-		return Response{}, fmt.Errorf("operator credential required")
+// transaction authenticates and locks all managed-store operations.
+func (s *Store) transaction(credential string, createLock bool) (*os.File, error) {
+	if !validCredential(credential) {
+		return nil, fmt.Errorf("operator credential required")
 	}
 	enrolled, err := s.read(strconv.Itoa(s.uid)+".credential", 128, 0o600)
 	if err != nil {
-		return Response{}, fmt.Errorf("operator is not enrolled")
+		return nil, fmt.Errorf("operator is not enrolled")
 	}
-	digest := sha256.Sum256([]byte(r.Credential))
+	digest := sha256.Sum256([]byte(credential))
 	if subtle.ConstantTimeCompare(enrolled, []byte(hex.EncodeToString(digest[:]))) != 1 {
-		return Response{}, fmt.Errorf("operator credential rejected")
+		return nil, fmt.Errorf("operator credential rejected")
 	}
-	if r.Operation != "register" && r.Operation != "catalog" && config.ProfileName(r.Name) != nil {
-		return Response{}, fmt.Errorf("invalid profile name")
-	}
-	fd, err := openTransactionLock(int(s.root.Fd()), r.Operation != "catalog")
+	fd, err := openTransactionLock(int(s.root.Fd()), createLock)
 	if err != nil {
-		return Response{}, err
+		return nil, err
 	}
 	lock := os.NewFile(uintptr(fd), "transactions.lock")
-	defer func() { _ = lock.Close() }()
 	if err := checkRootFile(lock, 0o600); err != nil {
-		return Response{}, err
+		_ = lock.Close()
+		return nil, err
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -156,11 +156,34 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 			break
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) || time.Now().After(deadline) {
-			return Response{}, fmt.Errorf("lock unavailable: %w", err)
+			_ = lock.Close()
+			return nil, fmt.Errorf("lock unavailable: %w", err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
+	return lock, nil
+}
+
+// Authenticate confirms the enrolled operator credential without mutating the
+// registry. Privileged consumers may use it before allocating bounded resources;
+// they must authenticate again when opening the selected snapshot transaction.
+func (s *Store) Authenticate(credential string) error {
+	lock, err := s.transaction(credential, false)
+	if err != nil {
+		return err
+	}
+	return lock.Close()
+}
+
+func (s *Store) Apply(r Request) (result Response, resultErr error) {
+	if r.Operation != "register" && r.Operation != "catalog" && config.ProfileName(r.Name) != nil {
+		return Response{}, fmt.Errorf("invalid profile name")
+	}
+	lock, err := s.transaction(r.Credential, r.Operation != "catalog")
+	if err != nil {
+		return Response{}, err
+	}
+	defer func() { _ = lock.Close() }()
 	if r.Operation == "register" {
 		return s.register(r)
 	}
@@ -262,8 +285,31 @@ func (s *Store) lookup(project string) (registration, error) {
 	if err != nil {
 		return result, fmt.Errorf("project is not registered")
 	}
-	fields, err := strictObject(data, "project", "project_dev", "project_ino", "policy_dev", "policy_ino")
-	if err != nil || requireFields(fields, "project", "project_dev", "project_ino", "policy_dev", "policy_ino") != nil {
+	return parseRegistration(data)
+}
+
+func parseRegistration(data []byte) (registration, error) {
+	var result registration
+	fields, err := strictObject(data, "project", "project_dev", "project_ino", "policy_dev", "policy_ino", "project_handle", "policy_handle")
+	if err != nil {
+		return result, errors.New("invalid registration")
+	}
+	required := []string{"project", "project_dev", "project_ino", "policy_dev", "policy_ino"}
+	_, hasProjectHandle := fields["project_handle"]
+	_, hasPolicyHandle := fields["policy_handle"]
+	if hasProjectHandle != hasPolicyHandle {
+		return result, errors.New("incomplete registration handles")
+	}
+	if hasProjectHandle {
+		required = append(required, "project_handle", "policy_handle")
+		for _, name := range []string{"project_handle", "policy_handle"} {
+			handleFields, err := strictObject(fields[name], "type", "data")
+			if err != nil || requireFields(handleFields, "type", "data") != nil {
+				return result, errors.New("invalid registration handle")
+			}
+		}
+	}
+	if requireFields(fields, required...) != nil {
 		return result, errors.New("invalid registration")
 	}
 	if err := decodeStrict(data, &result); err != nil {
@@ -273,6 +319,14 @@ func (s *Store) lookup(project string) (registration, error) {
 	// or replace can publish an unreconcilable snapshot.
 	if result.ProjectIno == 0 || result.PolicyIno == 0 {
 		return result, errors.New("invalid registration identity")
+	}
+	if hasProjectHandle {
+		if _, err := result.ProjectHandle.fileHandle(); err != nil {
+			return result, err
+		}
+		if _, err := result.PolicyHandle.fileHandle(); err != nil {
+			return result, err
+		}
 	}
 	if err := ValidateProjectPath(result.Project); err != nil {
 		return result, err
@@ -311,6 +365,10 @@ func (s *Store) register(r Request) (result Response, resultErr error) {
 	}
 	if st.Dev != registryStat.Dev {
 		return Response{}, ErrUnsupportedFilesystem
+	}
+	reg.ProjectHandle, err = captureDirectoryHandle(int(s.root.Fd()), project)
+	if err != nil {
+		return Response{}, err
 	}
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -353,6 +411,10 @@ func (s *Store) register(r Request) (result Response, resultErr error) {
 		return Response{}, fmt.Errorf("new policy directory failed root ownership check")
 	}
 	reg.PolicyDev, reg.PolicyIno = st.Dev, st.Ino
+	reg.PolicyHandle, err = captureDirectoryHandle(root, policy)
+	if err != nil {
+		return Response{}, err
+	}
 	if err := unix.Fsync(policy); err != nil {
 		return Response{}, err
 	}

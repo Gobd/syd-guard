@@ -71,8 +71,7 @@ func NewManagedProfileProvider(ctx context.Context, client ManagedProfileClient,
 			return nil, err
 		}
 		// Stable across provider restart, but changes for a new registration.
-		digest := sha256.Sum256([]byte(ref.ProjectID + "\x00" + ref.Name))
-		id := hex.EncodeToString(digest[:])
+		id := ManagedProfileID(ref.ProjectID, ref.Name)
 		if _, exists := provider.bindings[id]; exists {
 			return nil, fmt.Errorf("duplicate managed profile reference")
 		}
@@ -96,6 +95,12 @@ func NewManagedProfileProvider(ctx context.Context, client ManagedProfileClient,
 		provider.order = append(provider.order, id)
 	}
 	return provider, nil
+}
+
+// ManagedProfileID identifies a registered project/name tuple, not authorization.
+func ManagedProfileID(projectID, name string) string {
+	digest := sha256.Sum256([]byte(projectID + "\x00" + name))
+	return hex.EncodeToString(digest[:])
 }
 
 func validateManagedProfileRef(ref ManagedProfileRef) error {

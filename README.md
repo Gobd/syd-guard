@@ -240,9 +240,13 @@ security auditing. Helper deadlines are not kernel-hang bounds or invocation quo
 Crash leftovers and indeterminate registration require administrator inspection,
 not blind retry or pathname-based cleanup.
 
-The opt-in installed-helper fixtures require separately authorized disposable setup
-and have **not** validated the current integration. The guest's fixed helper/admin
-paths and registry were observed absent at resume; no real installation was replaced.
+The operator authorized disposable VM-local setup after the fixed helper/admin
+paths and registry were verified absent. Ordinary UID-502 installed-helper tests
+passed catalog/CAS/namespace rejection, stalled input/cancellation and the controlled
+Syd authority/FD fixture. Two-project actual helper → controller → web API and real
+Chromium managed-intent add/remove/save tests also passed. These are narrow fixtures,
+not RPC-only sudo-policy, cross-UID, pinned replay or universal secret-isolation proof;
+no real installation was replaced.
 After fixture execution, an administrator must inspect and remove only the verified
 test-owned installation, registry and printed test directory. No production provider
 or Mac-backed project protection may be inferred from these prerequisites.
@@ -267,7 +271,8 @@ Implemented discovery/review commands:
 
 Nearest `.sydguard` discovery walks upward. Missing named profiles start empty.
 Review hashes live outside agent-writable projects; changed/unreviewed files lose
-trust. **`run --config NAME`, launch replay and UI-save wiring are pending**.
+trust. **`run --config NAME` and launch replay are pending; experimental managed intent
+editing/saving has real-helper/API/browser fixture proof**.
 
 ### Protection decision: readable intent, protected authority
 

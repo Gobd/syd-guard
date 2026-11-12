@@ -112,6 +112,33 @@ func managedCommand() *cli.Command {
 			}
 			return managedSnapshot(c, response, false)
 		}},
+		{Name: "review", Usage: "record explicit review of an authenticated exact revision", Flags: withConfirm(append(refFlags(), &cli.StringFlag{Name: "expected-revision", Required: true})), Action: func(ctx context.Context, c *cli.Command) error {
+			client, err := managedClientFor(c, true)
+			if err != nil {
+				return err
+			}
+			response, err := client.Read(ctx, c.String("project-id"), c.String("name"))
+			if err != nil {
+				return err
+			}
+			if response.Project != c.String("project-id") || response.Name != c.String("name") || response.Namespace == nil {
+				return fmt.Errorf("authenticated review selection mismatch")
+			}
+			if response.Revision != c.String("expected-revision") {
+				return managedstore.ErrConflict
+			}
+			if _, err := reviewRecord(response); err != nil {
+				return err
+			}
+			if err := managedSnapshot(c, response, false); err != nil {
+				return err
+			}
+			state, err := controller.StateDirectory()
+			if err != nil {
+				return err
+			}
+			return saveManagedReview(state, response)
+		}},
 		{Name: "save", Usage: "CAS replace intent from stdin; does not change running permissions", Flags: withConfirm(append(refFlags(), &cli.StringFlag{Name: "expected-revision", Required: true})), Action: func(ctx context.Context, c *cli.Command) error {
 			client, err := managedClientFor(c, true)
 			if err != nil {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Gobd/syd-guard/internal/config"
+	"github.com/Gobd/syd-guard/internal/managedlaunch"
 
 	"golang.org/x/sys/unix"
 )
@@ -162,12 +163,12 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 	var response Response
 	token, err := c.credential()
 	if err != nil {
-		return response, err
+		return response, fmt.Errorf("%w: credential: %w", ErrNotSubmitted, err)
 	}
 	request.Credential = token
 	data, err := json.Marshal(request)
 	if err != nil || len(data) > 2*Limit+8192 {
-		return response, errors.New("invalid or oversized helper request")
+		return response, fmt.Errorf("%w: invalid or oversized helper request", ErrNotSubmitted)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -177,7 +178,10 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 	cmd.WaitDelay = 2 * time.Second
 	var out boundedBuffer
 	cmd.Stdout = &out
-	runErr := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return response, fmt.Errorf("%w: helper start: %w", ErrNotSubmitted, err)
+	}
+	runErr := cmd.Wait()
 	return processHelperResponse(request, out, runErr, ctx.Err() != nil)
 }
 
@@ -300,6 +304,35 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.data = append(b.data, p...)
 	return len(p), nil
 }
+
+// Launch invokes only the fixed installed launcher. Credential and selection
+// travel on stdin; output is relayed through fresh pipes, never arbitrary root FDs.
+func (c *Client) Launch(ctx context.Context, request managedlaunch.Request, stdout, stderr io.Writer) error {
+	if runtime.GOOS != "linux" {
+		return errors.New("managed launch requires Linux")
+	}
+	token, err := c.credential()
+	if err != nil {
+		return err
+	}
+	request.Credential = token
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(request)
+	if err != nil || len(data) > managedlaunch.Limit {
+		return errors.New("invalid launch request")
+	}
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/local/libexec/sydguard-launch-helper")
+	cmd.Stdin = bytes.NewReader(data)
+	cmd.Stdout, cmd.Stderr = outputRelay{stdout}, outputRelay{stderr}
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Cancel = func() error { return cmd.Process.Signal(unix.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.Run()
+}
+
+type outputRelay struct{ io.Writer }
 
 func (c *Client) Register(ctx context.Context, canonicalProject string) (string, error) {
 	// JSON marshaling repairs invalid UTF-8; reject the original bytes first so

@@ -3,6 +3,7 @@ package controller
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Gobd/syd-guard/internal/files"
 	"github.com/Gobd/syd-guard/internal/network"
@@ -54,7 +57,7 @@ func (server *Server) SetProfileProvider(provider ProfileProvider) { server.prof
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		reply(w, http.StatusOK, map[string]any{"service": "sydguard", "protocol": 3, "mutable_ready": false})
+		reply(w, http.StatusOK, map[string]any{"service": "sydguard", "protocol": 3, "mutable_ready": false, "learning": true})
 	})
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		server.reap()
@@ -71,6 +74,7 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/events", server.fileEvent)
 	mux.HandleFunc("POST /api/sessions/{id}/network-ready", server.networkReady)
 	mux.HandleFunc("POST /api/sessions/{id}/network-event", server.networkEvent)
+	mux.HandleFunc("POST /api/sessions/{id}/learning-dials", server.learningDials)
 	mux.HandleFunc("GET /api/files/pending", func(w http.ResponseWriter, _ *http.Request) { reply(w, http.StatusOK, server.files.Pending()) })
 	mux.HandleFunc("POST /api/files/decisions", func(w http.ResponseWriter, r *http.Request) {
 		var decision files.Decision
@@ -115,7 +119,16 @@ func (server *Server) register(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if input.NetworkProxy && input.Transparent || len(input.Services) > 0 && !input.Transparent {
+	if input.SelectedProfile != nil {
+		selection := input.SelectedProfile
+		revision, err := hex.DecodeString(selection.Revision)
+		invalidProvenance := selection.Provenance == "manual/unknown" && selection.ProvenanceDetail != "" || selection.Provenance == "learned-reviewed" && selection.ProvenanceDetail == "" || selection.Provenance != "manual/unknown" && selection.Provenance != "learned-reviewed" || len(selection.ProvenanceDetail) > 1024 || !utf8.ValidString(selection.ProvenanceDetail) || strings.IndexFunc(selection.ProvenanceDetail, unicode.IsControl) >= 0
+		if input.NetworkProxy || input.Transparent || input.Learning || selection.Applied || invalidProvenance || validateManagedProfileRef(ManagedProfileRef{ProjectID: selection.ProjectID, Name: selection.Name}) != nil || len(revision) != 32 || err != nil || hex.EncodeToString(revision) != selection.Revision || selection.ProfileID != ManagedProfileID(selection.ProjectID, selection.Name) {
+			reply(w, 400, map[string]string{"error": "invalid managed selection"})
+			return
+		}
+	}
+	if input.NetworkProxy && input.Transparent || len(input.Services) > 0 && !input.Transparent || input.Learning && (!input.Transparent || len(input.Services) != 0) {
 		reply(w, 400, map[string]string{"error": "transparent and proxy modes are exclusive; services require transparent mode"})
 		return
 	}
@@ -140,6 +153,14 @@ func (server *Server) register(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if input.SelectedProfile != nil {
+		registered, err = server.registry.SetSelectedProfile(registered.ID, *input.SelectedProfile)
+		if err != nil {
+			_ = server.registry.Finish(registered.ID, registered.StartIdentity)
+			reply(w, 500, map[string]string{"error": "managed session binding failed"})
+			return
+		}
+	}
 	if input.NetworkProxy {
 		gate, err := network.Start(server.network, registered.ID, registered.Name)
 		if err != nil {
@@ -155,7 +176,7 @@ func (server *Server) register(w http.ResponseWriter, r *http.Request) {
 		if port != 0 {
 			host = input.Services[0].Name + ".sydguard.internal"
 		}
-		t, topology, err := server.startTransparent(r.Context(), registered, host, port)
+		t, topology, err := server.startTransparent(r.Context(), registered, host, port, input.Learning)
 		if err != nil {
 			_ = server.registry.Finish(registered.ID, registered.StartIdentity)
 			server.network.End(registered.ID)

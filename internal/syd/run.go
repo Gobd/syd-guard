@@ -56,6 +56,9 @@ type RunOptions struct {
 	Scopes     []string
 	ReadInputs []string
 	ExecInputs []string
+	// RequirePIE opts back into upstream non-PIE rejection. Normal development
+	// mode permits standard non-PIE toolchains without weakening path/net rules.
+	RequirePIE bool
 	// ResolvedProfile is caller-authorized, not proof of review or authorization.
 	// Callers must synchronize ownership and not mutate it during Run's entry
 	// copy. The strict capability callback, when invoked, signals the copy has
@@ -65,17 +68,40 @@ type RunOptions struct {
 	// Strict additions are separately authorized, and never inferred from the
 	// legacy input or scope fields. The parent must display the effective policy
 	// (profile + trusted runtime + per-run user approvals), not profile alone.
-	StrictInputs                TrustedRuntimeInputs
+	StrictInputs TrustedRuntimeInputs
+	// WorkTemporaryRoot is separately provisioned private strict scratch, not a project grant.
+	WorkTemporaryRoot           string
 	StrictIPC                   *HumanIPCApprovals
 	OnStrictRuntimeCapabilities func(StrictRuntimeCapabilities) error
 	OnReady                     func(string, []string, []string) error
 	OnNetworkReady              func(string) error
 	OnEvent                     func([]byte) error
+	// Bootstrap is an explicit, permissive discovery launch. Its broad rules
+	// are runtime-only and must never be saved as profile intent.
+	Bootstrap bool
+	// OnBootstrapStart receives the private temporary and protected paths before
+	// execution, allowing the caller to configure exclusions for the log stream.
+	OnBootstrapStart func(temporary string, protected []string) error
+	// OnTrustedLog must drain the dedicated Syd descriptor to EOF. It must not
+	// expose the descriptor to the workload or treat permission checks as I/O.
+	OnTrustedLog func(io.Reader) error
+	// OnExit reports the foreground Syd process signal, if any, after Wait.
+	OnExit func(int, os.Signal)
 }
 
 // Run is an initial immutable/no-network foreground launcher. It is not the
 // future mutable controller, session registry or model-ready network workflow.
 func Run(ctx context.Context, options RunOptions) (int, error) {
+	if options.Bootstrap {
+		if options.ResolvedProfile != nil || len(options.Scopes) != 0 || options.OnEvent != nil || options.OnBootstrapStart == nil || options.OnTrustedLog == nil || options.Gateway != "" || options.TransitDNS != "" && options.OnNetworkReady == nil {
+			return 2, fmt.Errorf("bootstrap requires a trusted log consumer, a network-ready callback for transparent networking, and no strict profile, scopes, event callback or proxy")
+		}
+		if err := strictReplayLandlockGate(); err != nil {
+			return 2, err
+		}
+	} else if options.OnBootstrapStart != nil || options.OnTrustedLog != nil {
+		return 2, fmt.Errorf("bootstrap callbacks require bootstrap mode")
+	}
 	// Copy before version execution or any asynchronous use. A caller writing
 	// concurrently with this copy is still a data race and violates the API.
 	if options.ResolvedProfile != nil {
@@ -117,7 +143,7 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		if err := strictReplayLandlockGate(); err != nil {
 			return 2, err
 		}
-	} else if len(options.StrictInputs.Read)+len(options.StrictInputs.Exec) > 0 || options.StrictIPC != nil || options.OnStrictRuntimeCapabilities != nil {
+	} else if len(options.StrictInputs.Read)+len(options.StrictInputs.Exec) > 0 || options.WorkTemporaryRoot != "" || options.StrictIPC != nil || options.OnStrictRuntimeCapabilities != nil {
 		return 2, fmt.Errorf("strict runtime options require a resolved profile")
 	}
 	if runtime.GOOS != "linux" {
@@ -163,6 +189,12 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 	}
 	defer func() { _ = os.RemoveAll(authority) }()
 	workTemp := filepath.Join(home, ".cache", "sydguard-workloads")
+	if options.WorkTemporaryRoot != "" {
+		if !filepath.IsAbs(options.WorkTemporaryRoot) || filepath.Clean(options.WorkTemporaryRoot) != options.WorkTemporaryRoot {
+			return 1, fmt.Errorf("strict temporary root must be absolute and clean")
+		}
+		workTemp = options.WorkTemporaryRoot
+	}
 	if err := privateDirectory(workTemp); err != nil {
 		return 1, err
 	}
@@ -185,6 +217,20 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		return 1, err
 	}
 	protected = append(protected, executable)
+	if options.Bootstrap {
+		// Discovery must not grant access to the fixed privileged helper or
+		// its registry, even when those paths do not yet exist on this host.
+		for _, path := range []string{"/usr/local/libexec/sydguard-policy-helper", "/usr/local/libexec/sydguard-policy-admin", "/var/lib/sydguard-policy", "/usr/bin/sudo"} {
+			protected = append(protected, path)
+			canonical, err := config.RevalidateResolvedFilePath(path)
+			if err != nil {
+				return 1, fmt.Errorf("cannot validate bootstrap authority exclusion: %w", err)
+			}
+			if canonical != path {
+				protected = append(protected, canonical)
+			}
+		}
+	}
 	var profile string
 	if options.ResolvedProfile == nil {
 		profile, err = Profile(options.Directory, temporary, protected)
@@ -219,7 +265,21 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		}
 		profile += "allow/read,stat+" + resolver + "\nallow/lock/read+" + resolver + "\n"
 	}
-	if len(options.Scopes) > 0 {
+	switch {
+	case options.Bootstrap:
+		profile += bootstrapRules()
+		if options.TransitDNS != "" {
+			if err := literalPath(socket); err != nil {
+				return 2, err
+			}
+			// Only synthetic destinations are admitted; the namespace firewall and
+			// gateway still vet the actual public dial before any data is copied.
+			profile += "allow/net/connect+tcp!198.18.0.0/15!*\nipc:" + socket + "\nlock:ipc\n"
+		}
+		if err := options.OnBootstrapStart(temporary, append([]string(nil), protected...)); err != nil {
+			return 1, fmt.Errorf("bootstrap collector setup failed: %w", err)
+		}
+	case len(options.Scopes) > 0:
 		rules, scopes, err := LearningRules(options.Scopes, socket)
 		if err != nil {
 			return 2, err
@@ -239,7 +299,7 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 			return 1, err
 		}
 		profile += rules
-	} else if options.TransitDNS != "" {
+	case options.TransitDNS != "":
 		return 2, fmt.Errorf("transparent networking requires trusted IPC and logging")
 	}
 	if options.TransitDNS != "" && options.OnNetworkReady == nil {
@@ -252,6 +312,13 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		return 2, err
 	}
 	profile += preset
+	if options.RequirePIE {
+		profile += "trace/allow_unsafe_exec_nopie:0\n"
+	}
+	if options.Bootstrap {
+		paths := append(append([]string(nil), protected...), filepath.Join(options.Directory, ".sydguard"))
+		profile += bootstrapAncestorRules(paths)
+	}
 	profilePath := filepath.Join(authority, "foreground.syd-3")
 	if err := os.WriteFile(profilePath, []byte(profile), 0o600); err != nil {
 		return 1, err
@@ -268,13 +335,19 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 	command := exec.CommandContext(ctx, engine, argv...) //nolint:gosec // validated generated profile and operator argv; direct exec, no shell interpolation
 	command.Dir = options.Directory
 	command.Env = append(os.Environ(), "TMPDIR="+temporary)
+	if options.WorkTemporaryRoot != "" {
+		command.Env = append(command.Env, "SYDGUARD_TMPDIR="+temporary)
+	}
+	if options.Bootstrap {
+		command.Env = append(command.Env, "SYD_LOG=warn")
+	}
 	if options.Gateway != "" {
 		proxy := "http://" + options.Gateway
 		command.Env = append(command.Env, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "ALL_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, "all_proxy="+proxy, "NO_PROXY=", "no_proxy=")
 	}
 	command.Stdin, command.Stdout, command.Stderr = options.Stdin, options.Stdout, options.Stderr
 	var logs, logWriter *os.File
-	if options.OnEvent != nil {
+	if options.OnEvent != nil || options.OnTrustedLog != nil {
 		logs, logWriter, err = os.Pipe()
 		if err != nil {
 			return 1, err
@@ -324,6 +397,13 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 					return
 				}
 			}
+			if options.OnTrustedLog != nil {
+				if err := options.OnTrustedLog(logs); err != nil {
+					logErr = fmt.Errorf("trusted log delivery failed: %w", err)
+					_ = command.Process.Kill()
+				}
+				return
+			}
 			scanner := bufio.NewScanner(logs)
 			scanner.Buffer(make([]byte, 4096), 64*1024)
 			for scanner.Scan() {
@@ -340,6 +420,13 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		}()
 	}
 	waitErr := command.Wait()
+	if options.OnExit != nil && command.ProcessState != nil {
+		code := command.ProcessState.ExitCode()
+		if code < 0 {
+			code = 1
+		}
+		options.OnExit(code, processSignal(command.ProcessState))
+	}
 	if logged != nil {
 		<-logged
 		_ = logs.Close()

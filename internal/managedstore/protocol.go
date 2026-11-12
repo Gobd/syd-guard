@@ -56,6 +56,10 @@ type ProjectNamespace struct {
 
 var ErrConflict = errors.New("profile revision conflict; review current contents")
 
+// ErrNotSubmitted means no helper process was started for this operation.
+// It must never be inferred from an arbitrary transport or helper error.
+var ErrNotSubmitted = errors.New("helper operation not submitted")
+
 // ErrIndeterminate means a mutation may have committed; authenticate a read and
 // compare its SHA-256 revision before retrying. Registration needs admin inspection.
 var ErrIndeterminate = errors.New("operation outcome indeterminate")

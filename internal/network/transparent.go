@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-var connectionDestination = originalDestination
+var (
+	connectionDestination = originalDestination
+	dialVettedPublic      = dialPublic
+)
 
 // Transparent accepts only the session veth's source address. SO_ORIGINAL_DST
 // provides the actual synthetic endpoint/port; hostname is looked up in the
@@ -29,6 +32,14 @@ type Transparent struct {
 	closed        bool
 	servicePort   uint16
 	serviceHost   string
+	learning      bool
+	dials         []Target
+	dropped       bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	closeOnce     sync.Once
+	closeDone     chan struct{}
 }
 
 func StartTransparent(synthetic *Synthetic, policy *Policy, session, name string, agent netip.Addr) (*Transparent, error) {
@@ -37,24 +48,51 @@ func StartTransparent(synthetic *Synthetic, policy *Policy, session, name string
 
 // StartTransparentWithService allows the single explicitly trusted service to be dialed by the gateway.
 func StartTransparentWithService(synthetic *Synthetic, policy *Policy, session, name string, agent netip.Addr, serviceHost string, servicePort uint16) (*Transparent, error) {
+	return StartTransparentLearning(synthetic, policy, session, name, agent, serviceHost, servicePort, false)
+}
+
+// StartTransparentLearning enables session-local public dial recording only.
+func StartTransparentLearning(synthetic *Synthetic, policy *Policy, session, name string, agent netip.Addr, serviceHost string, servicePort uint16, learning bool) (*Transparent, error) {
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4zero})
 	if err != nil {
 		return nil, err
 	}
-	gate := &Transparent{Address: listener.Addr().String(), listener: listener, synthetic: synthetic, policy: policy, session: session, name: name, agent: agent, connections: map[net.Conn]bool{}, slots: make(chan struct{}, 16), servicePort: servicePort, serviceHost: serviceHost}
+	ctx := context.Background()
+	cancel := func() {}
+	if learning {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	gate := &Transparent{Address: listener.Addr().String(), listener: listener, synthetic: synthetic, policy: policy, session: session, name: name, agent: agent, connections: map[net.Conn]bool{}, slots: make(chan struct{}, 16), servicePort: servicePort, serviceHost: serviceHost, learning: learning, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 	go gate.accept()
 	return gate, nil
 }
 
 func (g *Transparent) Close() {
-	_ = g.listener.Close()
+	g.closeOnce.Do(func() {
+		g.mu.Lock()
+		g.closed = true
+		g.cancel()
+		_ = g.listener.Close()
+		for conn := range g.connections {
+			_ = conn.Close()
+		}
+		g.mu.Unlock()
+		if g.learning {
+			g.wg.Wait()
+		}
+		g.policy.End(g.session)
+		close(g.closeDone)
+	})
+	<-g.closeDone
+}
+
+// CloseAndLearningDials stops new connections and waits for all in-flight
+// public dial callbacks before returning a detached bounded observation list.
+func (g *Transparent) CloseAndLearningDials() ([]Target, bool) {
+	g.Close()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.closed = true
-	for conn := range g.connections {
-		_ = conn.Close()
-	}
-	g.policy.End(g.session)
+	return append([]Target(nil), g.dials...), g.dropped
 }
 
 func (g *Transparent) accept() {
@@ -63,10 +101,32 @@ func (g *Transparent) accept() {
 		if err != nil {
 			return
 		}
+		g.mu.Lock()
+		if g.closed {
+			g.mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
 		select {
 		case g.slots <- struct{}{}:
-			go func() { defer func() { _ = conn.Close(); <-g.slots }(); g.forward(conn) }()
+			if g.learning {
+				g.connections[conn] = true
+			}
+			g.wg.Add(1)
+			g.mu.Unlock()
+			go func() {
+				defer func() {
+					g.mu.Lock()
+					delete(g.connections, conn)
+					g.mu.Unlock()
+					_ = conn.Close()
+					<-g.slots
+					g.wg.Done()
+				}()
+				g.forward(conn)
+			}()
 		default:
+			g.mu.Unlock()
 			_ = conn.Close()
 		}
 	}
@@ -89,16 +149,16 @@ func (g *Transparent) forward(conn *net.TCPConn) {
 	if ReservedServiceHost(host) && (g.servicePort == 0 || host != g.serviceHost || destination.Port() != g.servicePort) {
 		return
 	}
-	if err != nil || !g.policy.Check(g.session, g.name, target) {
+	if err != nil || !g.learning && !g.policy.Check(g.session, g.name, target) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
 	defer cancel()
 	var upstream net.Conn
 	if target.Host == g.serviceHost && target.Port == g.servicePort && g.servicePort != 0 {
 		upstream, err = (&net.Dialer{}).DialContext(ctx, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(g.servicePort))))
 	} else {
-		upstream, err = dialPublic(ctx, target)
+		upstream, err = dialVettedPublic(ctx, target)
 	}
 	if err != nil {
 		return
@@ -108,6 +168,14 @@ func (g *Transparent) forward(conn *net.TCPConn) {
 	if g.closed {
 		g.mu.Unlock()
 		return
+	}
+	if g.learning && (target.Host != g.serviceHost || target.Port != g.servicePort || g.servicePort == 0) {
+		if len(g.dials) >= 4096 {
+			g.dropped = true
+			g.mu.Unlock()
+			return
+		}
+		g.dials = append(g.dials, target)
 	}
 	g.connections[conn] = true
 	g.connections[upstream] = true

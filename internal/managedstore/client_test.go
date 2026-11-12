@@ -82,7 +82,21 @@ func TestCreateCredentialRejectsUnprivateDirectory(t *testing.T) {
 	}
 }
 
-func TestMutationCancellationIsIndeterminate(t *testing.T) {
+func TestCredentialFailureIsNotSubmitted(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // private test directory requires owner search
+		t.Fatal(err)
+	}
+	c := &Client{credentialFile: filepath.Join(dir, "missing")}
+	if _, err := c.Replace(context.Background(), strings.Repeat("a", 64), "test", strings.Repeat("b", 64), []byte(`{}`)); !errors.Is(err, ErrNotSubmitted) || errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("credential preflight error: %v", err)
+	}
+}
+
+func TestMutationCancellationBeforeStartIsNotSubmitted(t *testing.T) {
 	if os.Getuid() == 0 || os.Geteuid() == 0 {
 		t.Skip("client requires an unprivileged user")
 	}
@@ -100,7 +114,7 @@ func TestMutationCancellationIsIndeterminate(t *testing.T) {
 	c := &Client{credentialFile: path}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.Create(ctx, "registration", "test"); !errors.Is(err, ErrIndeterminate) {
+	if _, err := c.Create(ctx, "registration", "test"); !errors.Is(err, ErrNotSubmitted) || errors.Is(err, ErrIndeterminate) {
 		t.Fatalf("mutation error = %v", err)
 	}
 	if _, err := c.Read(ctx, "registration", "test"); errors.Is(err, ErrIndeterminate) || err == nil {

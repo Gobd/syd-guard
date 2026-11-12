@@ -47,7 +47,7 @@ func Profile(workdir, temporary string, protected []string) (string, error) {
 var runtimeExecutablePaths = []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"}
 
 func runtimeRules() ([]string, error) {
-	lines := []string{"# Generated immutable Syd Guard baseline; no network grants.", "include_profile fs", "trace/force_umask:7077", "allow/create+!pipe", "allow/stat+/proc/self/fd/pipe:*", "allow/ioctl+TCGETS", "allow/ioctl+TCSETS", "allow/ioctl+TCSETSW", "allow/ioctl+TCSETSF", "allow/ioctl+TIOCGWINSZ"}
+	lines := []string{"# Generated immutable Syd Guard baseline; no network grants.", "include_profile fs", "trace/force_umask:7077", "trace/allow_unsafe_exec_nopie:1", "allow/create+!pipe", "allow/create+!eventpoll", "allow/create+!eventfd", "allow/stat+/proc/self/fd/pipe:*", "allow/ioctl+TCGETS", "allow/ioctl+TCSETS", "allow/ioctl+TCSETSW", "allow/ioctl+TCSETSF", "allow/ioctl+TIOCGWINSZ"}
 	for _, path := range runtimeExecutablePaths {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			continue

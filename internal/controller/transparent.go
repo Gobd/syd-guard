@@ -26,13 +26,15 @@ type Service struct {
 
 // Registration is the authenticated launcher/controller contract.
 type Registration struct {
-	Project      string    `json:"project"`
-	Name         string    `json:"name"`
-	Command      []string  `json:"command"`
-	PID          int       `json:"pid"`
-	NetworkProxy bool      `json:"network_proxy"`
-	Transparent  bool      `json:"transparent"`
-	Services     []Service `json:"services,omitempty"`
+	Project         string                   `json:"project"`
+	Name            string                   `json:"name"`
+	Command         []string                 `json:"command"`
+	PID             int                      `json:"pid"`
+	NetworkProxy    bool                     `json:"network_proxy"`
+	Transparent     bool                     `json:"transparent"`
+	Learning        bool                     `json:"learning,omitempty"`
+	Services        []Service                `json:"services,omitempty"`
+	SelectedProfile *session.SelectedProfile `json:"selected_profile,omitempty"`
 }
 
 // NetworkEvent is either a trusted separate-FD Syd record or a parsed synthetic endpoint.
@@ -50,6 +52,7 @@ type transparentSession struct {
 	servicePort uint16
 	serviceHost string
 	ending      bool
+	learning    bool
 }
 
 func servicePort(services []Service) (uint16, error) {
@@ -87,17 +90,17 @@ func listenerPort(address string) (uint16, error) {
 }
 
 // Caller holds gatesMu; this serializes publication with teardown and decisions.
-func (server *Server) startTransparent(ctx context.Context, value session.Session, host string, port uint16) (*transparentSession, netns.Topology, error) {
+func (server *Server) startTransparent(ctx context.Context, value session.Session, host string, port uint16, learning bool) (*transparentSession, netns.Topology, error) {
 	topology, err := netns.New()
 	if err != nil {
 		return nil, topology, err
 	}
-	t := &transparentSession{synthetic: network.NewSyntheticWithAllocator(server.allocator), servicePort: port, serviceHost: host}
+	t := &transparentSession{synthetic: network.NewSyntheticWithAllocator(server.allocator), servicePort: port, serviceHost: host, learning: learning}
 	t.dns, err = network.StartDNS(t.synthetic, topology.Agent)
 	if err != nil {
 		return nil, topology, err
 	}
-	t.gate, err = network.StartTransparentWithService(t.synthetic, server.network, value.ID, value.Name, topology.Agent, host, port)
+	t.gate, err = network.StartTransparentLearning(t.synthetic, server.network, value.ID, value.Name, topology.Agent, host, port, learning)
 	if err != nil {
 		t.dns.Close()
 		return nil, topology, err
@@ -322,4 +325,24 @@ func (server *Server) grantSynthetic(ctx context.Context, t *transparentSession,
 		return fmt.Errorf("syd socket changed or unavailable")
 	}
 	return (syd.IPC{Socket: t.socket}).GrantSyntheticTCP(ctx, endpoint)
+}
+
+// learningDials seals the trusted gateway and returns only completed public
+// dials. Repeated reads are safe after the gateway has quiesced.
+func (server *Server) learningDials(w http.ResponseWriter, r *http.Request) {
+	server.gatesMu.Lock()
+	defer server.gatesMu.Unlock()
+	t := server.transparent[r.PathValue("id")]
+	value, ok := server.registry.Get(r.PathValue("id"))
+	if t == nil || !t.learning || t.ending || !ok || value.State != session.Running || t.gate == nil {
+		reply(w, 409, map[string]string{"error": "no active learning gateway"})
+		return
+	}
+	dials, dropped := t.gate.CloseAndLearningDials()
+	reply(w, 200, LearningDials{Targets: dials, Dropped: dropped})
+}
+
+type LearningDials struct {
+	Targets []network.Target `json:"targets"`
+	Dropped bool             `json:"dropped"`
 }

@@ -22,7 +22,7 @@ func TestUnvalidatedLaunchesFailClosed(t *testing.T) {
 	}
 	out.Reset()
 	err.Reset()
-	if code := run([]string{"learn", "--", "anything"}, &out, &err); code == 0 || !strings.Contains(err.String(), "discovery recording is not yet available") {
+	if code := run([]string{"learn", "--", "anything"}, &out, &err); code == 0 || !strings.Contains(err.String(), "--accept-experimental-risks") {
 		t.Fatalf("learn: code=%d error=%s", code, &err)
 	}
 }

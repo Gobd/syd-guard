@@ -20,20 +20,32 @@ const (
 	Exited  State = "exited"
 )
 
+// SelectedProfile is launcher-reported intent, not proof that setup completed.
+type SelectedProfile struct {
+	ProjectID        string `json:"project_id"`
+	ProfileID        string `json:"profile_id"`
+	Name             string `json:"name"`
+	Revision         string `json:"revision"`
+	Provenance       string `json:"provenance"`
+	ProvenanceDetail string `json:"provenance_detail,omitempty"`
+	Applied          bool   `json:"applied"`
+}
+
 type Session struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Project       string     `json:"project"`
-	Command       []string   `json:"command"`
-	ArgumentCount int        `json:"argument_count"`
-	Gateway       string     `json:"gateway,omitempty"`
-	Namespace     string     `json:"namespace,omitempty"`
-	TransitDNS    string     `json:"transit_dns,omitempty"`
-	PID           int        `json:"pid"`
-	StartIdentity string     `json:"start_identity"`
-	State         State      `json:"state"`
-	StartedAt     time.Time  `json:"started_at"`
-	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Project         string           `json:"project"`
+	Command         []string         `json:"command"`
+	ArgumentCount   int              `json:"argument_count"`
+	Gateway         string           `json:"gateway,omitempty"`
+	Namespace       string           `json:"namespace,omitempty"`
+	TransitDNS      string           `json:"transit_dns,omitempty"`
+	SelectedProfile *SelectedProfile `json:"selected_profile,omitempty"`
+	PID             int              `json:"pid"`
+	StartIdentity   string           `json:"start_identity"`
+	State           State            `json:"state"`
+	StartedAt       time.Time        `json:"started_at"`
+	EndedAt         *time.Time       `json:"ended_at,omitempty"`
 }
 
 type Registry struct {
@@ -74,6 +86,20 @@ func (registry *Registry) Register(project, preferred string, command []string, 
 	registry.sessions[session.ID] = session
 	registry.activeNames[name] = session.ID
 	return clone(session), nil
+}
+
+// SetSelectedProfile records a trusted launch request, not an applied grant.
+func (registry *Registry) SetSelectedProfile(id string, selection SelectedProfile) (Session, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	value, ok := registry.sessions[id]
+	if !ok || value.State != Running {
+		return Session{}, fmt.Errorf("unknown active session")
+	}
+	selection.Applied = false
+	value.SelectedProfile = &selection
+	registry.sessions[id] = value
+	return clone(value), nil
 }
 
 // SetNetwork publishes controller-owned connection metadata for an active session.
@@ -148,6 +174,10 @@ func (registry *Registry) trimHistory() {
 
 func clone(session Session) Session {
 	session.Command = append([]string(nil), session.Command...)
+	if session.SelectedProfile != nil {
+		selected := *session.SelectedProfile
+		session.SelectedProfile = &selected
+	}
 	if session.EndedAt != nil {
 		value := *session.EndedAt
 		session.EndedAt = &value

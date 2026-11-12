@@ -449,6 +449,22 @@ type Outcome struct {
 	DeliveryError error
 }
 
+// NetworkNotObserved marks intentionally disabled network coverage. No candidate
+// with this gap may be presented as a complete observation.
+func (c *Collector) NetworkNotObserved() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reasons["network-not-observed"] = true
+}
+
+// CleanupNotConfirmed records that namespace cleanup happens in the parent
+// after this immutable candidate is persisted.
+func (c *Collector) CleanupNotConfirmed() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reasons["namespace-cleanup-not-confirmed"] = true
+}
+
 // FinishOutcome reports all known launcher and delivery failures. It does not
 // wait for Drain or dial callbacks; the caller must quiesce both first.
 func (c *Collector) FinishOutcome(outcome Outcome) {

@@ -19,8 +19,14 @@ func TestProfileIsImmutableAndNoNetwork(t *testing.T) {
 			t.Fatalf("missing %q", required)
 		}
 	}
+	// The operator-approved standard-toolchain exception is exact, not a
+	// blanket allowance for other unsafe execution/enforcement overrides.
+	if !strings.Contains(profile, "trace/allow_unsafe_exec_nopie:1\n") {
+		t.Fatal("missing explicit non-PIE compatibility setting")
+	}
+	withoutCompatibility := strings.ReplaceAll(profile, "trace/allow_unsafe_exec_nopie:1\n", "")
 	for _, forbidden := range []string{"lock:off", "allow/net", "allow/cnet", "include_profile user", "allow_unsafe"} {
-		if strings.Contains(profile, forbidden) {
+		if strings.Contains(withoutCompatibility, forbidden) {
 			t.Fatalf("unexpected unsafe/broad option %q", forbidden)
 		}
 	}

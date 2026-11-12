@@ -1,5 +1,96 @@
 # Temporary handoff — resumed integration checkpoint
 
+## Current WIP checkpoint — 2026-11-12 continuation
+
+Operator requested a committed backup while work continues. **Not ready/green end-to-end.**
+
+- Functional experimental `learn` source is integrated (risk consent required):
+  no-network Go build succeeded after the operator explicitly approved upstream
+  `trace/allow_unsafe_exec_nopie:1` for standard development toolchains. Added
+  normal anonymous eventpoll/eventfd create grants; explicit `--require-pie`
+  restores upstream non-PIE rejection and has real static-engine fixture proof.
+  Compatibility does not disable file/network confinement or immutable-engine checks.
+- Actual transparent learn curl HTTPS completed exit0, recorded exact
+  `example.com/TCP/443`, and its veth/netns cleaned up (no test namespace left).
+  Candidates are permission-check attempts, not filesystem-I/O success or complete
+  coverage. Example records retained incomplete reasons, including cleanup timing.
+- Learn private candidate/review/CAS/reconcile source and repairs are integrated:
+  immutable envelope/counts/reasons, explicit incomplete consent, pending before CAS,
+  known-not-submitted typing, atomic no-replace publication, output/SIGPIPE handling,
+  guest-authority instructions and learning capability negotiation. Reviewer still
+  found selected flags, publication-lock and historical hash-origin issues; repair
+  child `da2ad303-55e7-44f5-8f91-45d894de2124` completed and is NOT merged yet.
+- Saved replay source supports ONLY the first project-relative READ, no-network
+  subset and explicitly rejects write/delete/network/external paths. Fresh ext4
+  generation handles, exact expected revision/manual review, root-controlled private
+  mount view, fixed immutable static engine, journaled UID slots, cgroup-v2/watchdog
+  containment and safe nonrecursive recovery source are integrated. Learned lookup
+  is wired under private review lock (initially held for whole workload, limitation).
+- Fresh immutable matching policy helper/admin, launch helper and upstream static Syd
+  were installed ONLY into the previously absent/verified disposable test-owned paths.
+  Fixed runtime `/run/sydguard-launch` and dedicated cgroup-v2 root
+  `/sys/fs/cgroup/sydguard-launch` were precreated and added to installation manifest.
+  Fresh test-owned registry/enrollment replaced only the earlier test-owned registry.
+- First ACTUAL pinned launch reached the dedicated helper but failed `invalid argument`
+  (exit1). No successful privileged mount/watchdog/replay proof yet. Investigate
+  `/home/briankemper.guest/sydguard-helper-e2e.kFnn2q/pinned-launch.log` and recorded
+  `pinned-fixture.json`; inspect retained slot journals/resources before retry/cleanup.
+- Standard native full vet/race/build/lint and Linux full Go checks passed before
+  this runtime failure. Two retained hardlink gates remain failing, unchanged.
+- PIE toolchain investigation left a private ~971MiB copy under fixture/toolchains;
+  not needed for default compatibility. A mistaken standalone env-filtered install
+  created guest `go/bin/pieproof`; exact recorded test inode was removed, but default
+  Go cache/telemetry may have been touched. No unidentified cache entries were pruned.
+- Current actual installed binary/hash/inode state is in fixture `installation.json`;
+  private native candidate UI/controllers were stopped or verified stopped before
+  binary swap. Do not touch unrelated installed controllers or real projects.
+
+## Live authorized disposable fixture — cleanup required
+
+The operator explicitly authorized VM-local helper E2E and asked to finish learn/replay.
+Only disposable `ai-sandbox` resources were installed; no real project migration,
+old controller restart, account/sudoers/audit change or host helper action occurred.
+
+- Guest ordinary UID: 502. Private source/build/test root:
+  `/home/briankemper.guest/sydguard-helper-e2e.kFnn2q`.
+- Dedicated immutable helper/admin were installed at fixed `/usr/local/libexec`
+  paths only after verifying absent targets, root-owned nonwritable ancestors,
+  copied hashes, UID0/mode0755/single-link. Fixed root registry is test-owned.
+- `installation.json` under the private fixture root records current registry,
+  binary and staging-directory device/inode/hash identities. CHECK these before
+  privileged cleanup; do not delete/reuse a changed or real installation.
+- Current candidate config: `/home/briankemper.guest/.sg-helper-test-kFnn2q`.
+  Its managed credential is under `state/.sydguard-private/managed-credential`;
+  never print/copy credential bytes into handoff, argv, UI or environment.
+- Passing actual UID502 fixtures: installed helper catalog/CAS/namespace rejection,
+  stalled input (20s)/cancellation, controlled static-Syd authority/FD test,
+  two-project helper→controller→web API with real CAS conflicting writer, and
+  root-owned canonical/preexisting-alias write/chmod denial. Unrestricted guest
+  sudo is NOT RPC-only policy or cross-UID evidence; no configured sudo I/O
+  logging/plugin override found in the checked config (auditing was not changed).
+- Actual private managed CLI credential/enrollment/register/create/save/catalog
+  and stale-CAS tests passed. Real Chromium via detached native UI and managed
+  CLI controller/installed helper passed add/remove file/network intent and save
+  reread; this does not apply permissions or prove replay. The temporary UI and
+  tracked managed controller were explicitly stopped after this proof.
+- Managed CLI/source committed as `dc69d21`; source has globally reserved private
+  authority name and alternate-XDG real-Syd regression, plus post-commit reporting
+  errors and SIGPIPE subprocess test. Deep fixture TMPDIR made an existing UI
+  Unix socket test fail; ordinary default-temp rerun passed, no test disabled.
+- Learning/replay initial children returned prerequisites only, NOT completion;
+  parent rejected completion and resumed them for actual functional commands:
+  learning `98259620-474f-4d4b-b6fd-dbe640ccbb82`, replay
+  `b2386d63-66e4-464f-81e0-3dc8df9c462e`. Do not describe learn or --config as ready.
+- Replay contract approved for CODE/REVIEW/disposable tests: fresh enrollment only,
+  generation-bearing ext4 handles from held project/policy FDs, exact reviewed
+  snapshot + private mount view/root-controlled sibling selected-intent anchor,
+  post-drop bounded argv/FD handoff. Old/unpinned registrations/unsupported intent
+  must fail closed. No real enrollment migration or broader deployment allowed.
+- Learn must preserve full private candidate envelope/counts/incomplete/reasons and
+  explicit reviewed edited intent, bind exact helper projectID/name/revision on CAS
+  ack, persist pending before mutation and retain unknown on indeterminate result.
+  No broad bootstrap grants persisted or fabricated successful-I/O/coverage claim.
+
 ## Resume progress (2026-11-12)
 
 - Resumed on `feature/syd-guard-bootstrap` from clean checkpoint `44d14bb`.

@@ -21,6 +21,9 @@ import (
 type supervisorSpec struct {
 	Engine, Directory, State, SessionID, TransitDNS, Gateway string
 	Args, Scopes, Environment, ReadInputs, ExecInputs        []string
+	Learning                                                 bool
+	RequirePIE                                               bool
+	CandidateName                                            string
 }
 
 func supervisorCommand() *cli.Command {
@@ -75,7 +78,23 @@ func supervisorCommand() *cli.Command {
 				}
 			}
 		}
-		options := syd.RunOptions{Engine: spec.Engine, Directory: spec.Directory, Args: spec.Args, Scopes: spec.Scopes, ReadInputs: spec.ReadInputs, ExecInputs: spec.ExecInputs, TransitDNS: spec.TransitDNS, Gateway: spec.Gateway, Stdin: os.Stdin, Stdout: c.Writer, Stderr: c.ErrWriter}
+		options := syd.RunOptions{Engine: spec.Engine, Directory: spec.Directory, Args: spec.Args, Scopes: spec.Scopes, ReadInputs: spec.ReadInputs, ExecInputs: spec.ExecInputs, TransitDNS: spec.TransitDNS, Gateway: spec.Gateway, Stdin: os.Stdin, Stdout: c.Writer, Stderr: c.ErrWriter, RequirePIE: spec.RequirePIE}
+		if spec.Learning {
+			if spec.TransitDNS == "" || spec.Gateway != "" || len(spec.Scopes)+len(spec.ReadInputs)+len(spec.ExecInputs) != 0 {
+				return fmt.Errorf("invalid learning supervisor specification")
+			}
+			options.Bootstrap = true
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			options.OnNetworkReady = func(socket string) error { return client.NetworkReady(ctx, spec.SessionID, socket) }
+			return recordLearning(ctx, options, spec.CandidateName, c.ErrWriter, func() (controller.LearningDials, error) {
+				dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				return client.LearningDials(dialCtx, spec.SessionID)
+			}, func(id string) error {
+				return os.WriteFile(filepath.Join(dir, "candidate-saved"), []byte(id), 0o600)
+			})
+		}
 		options.OnReady = func(socket string, scopes, protected []string) error {
 			return client.FileReady(ctx, spec.SessionID, files.Context{Socket: socket, Scopes: scopes, Protected: protected})
 		}

@@ -21,6 +21,8 @@ import (
 
 var ErrProtocolMismatch = errors.New("incompatible controller protocol; stop the existing daemon explicitly before upgrading")
 
+var ErrLearningUnsupported = errors.New("existing controller lacks learning support; use a separate private config or explicitly stop it only after active sessions end")
+
 // OperatorError preserves bounded controller errors across operator transports.
 type OperatorError struct {
 	Status int             `json:"status"`
@@ -125,6 +127,13 @@ func (client *Client) Register(ctx context.Context, project, name string, argv [
 func (client *Client) RegisterProxy(ctx context.Context, project, name string, argv []string, proxy bool) (session.Session, error) {
 	var registered session.Session
 	err := client.request(ctx, "POST", "/api/sessions", map[string]any{"project": project, "name": name, "command": argv, "pid": os.Getpid(), "network_proxy": proxy}, &registered)
+	return registered, err
+}
+
+// RegisterManaged records a selected reviewed tuple as requested, not yet applied.
+func (client *Client) RegisterManaged(ctx context.Context, project, name string, argv []string, selection session.SelectedProfile) (session.Session, error) {
+	var registered session.Session
+	err := client.request(ctx, "POST", "/api/sessions", Registration{Project: project, Name: name, Command: argv, PID: os.Getpid(), SelectedProfile: &selection}, &registered)
 	return registered, err
 }
 
@@ -233,4 +242,30 @@ func (client *Client) request(ctx context.Context, method, path string, input, o
 	}
 	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	return err
+}
+
+func (client *Client) RegisterTransparentLearning(ctx context.Context, project, name string, argv []string) (session.Session, error) {
+	var health struct {
+		Service  string `json:"service"`
+		Protocol int    `json:"protocol"`
+		Learning bool   `json:"learning"`
+	}
+	if err := client.request(ctx, "GET", "/api/health", nil, &health); err != nil {
+		return session.Session{}, err
+	}
+	if health.Service != "sydguard" || health.Protocol != 3 {
+		return session.Session{}, ErrProtocolMismatch
+	}
+	if !health.Learning {
+		return session.Session{}, ErrLearningUnsupported
+	}
+	var value session.Session
+	err := client.request(ctx, "POST", "/api/sessions", Registration{Project: project, Name: name, Command: argv, PID: os.Getpid(), Transparent: true, Learning: true}, &value)
+	return value, err
+}
+
+func (client *Client) LearningDials(ctx context.Context, id string) (LearningDials, error) {
+	var value LearningDials
+	err := client.request(ctx, "POST", "/api/sessions/"+id+"/learning-dials", nil, &value)
+	return value, err
 }

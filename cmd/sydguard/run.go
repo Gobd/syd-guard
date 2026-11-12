@@ -34,7 +34,11 @@ func runCommand() *cli.Command {
 		&cli.StringFlag{Name: "syd", Usage: "explicit tested Linux Syd 3.59.0 executable"},
 		&cli.StringFlag{Name: "directory", Usage: "explicit existing Linux working directory"},
 		&cli.StringFlag{Name: "name", Usage: "friendly session label; duplicates receive numeric suffixes"},
+		&cli.StringFlag{Name: "config", Usage: "reviewed managed profile name (experimental)"},
+		&cli.StringFlag{Name: "project-id", Usage: "registered managed project ID for selected profile"},
+		&cli.StringFlag{Name: "expected-revision", Usage: "explicit reviewed managed profile revision"},
 		&cli.BoolFlag{Name: "no-network", Usage: "immutable no-network mode"},
+		&cli.BoolFlag{Name: "require-pie", Usage: "reject non-PIE workload executables; default permits standard development toolchains"},
 		&cli.StringSliceFlag{Name: "service", Hidden: true, Usage: "advanced trusted exact service: NAME=127.0.0.1:PORT"},
 		&cli.StringSliceFlag{Name: "read-input", Hidden: true, Usage: "trusted exact regular file readable by the workload; repeatable"},
 		&cli.StringSliceFlag{Name: "exec-input", Hidden: true, Usage: "trusted exact regular file readable and executable by the workload; repeatable"},
@@ -44,7 +48,7 @@ func runCommand() *cli.Command {
 
 var namespaceName = regexp.MustCompile(`^sg-[0-9a-f]{6}$`)
 
-func runTransparent(ctx context.Context, c *cli.Command, executable, state, directory string, registered session.Session) error {
+func runTransparent(ctx context.Context, c *cli.Command, executable, state, directory string, registered session.Session, savedCandidate *bool) error {
 	if !namespaceName.MatchString(registered.Namespace) || os.Getuid() <= 0 || os.Getgid() <= 0 {
 		return fmt.Errorf("invalid namespace or non-root user identity")
 	}
@@ -61,13 +65,20 @@ func runTransparent(ctx context.Context, c *cli.Command, executable, state, dire
 		return err
 	}
 	defer func() { _ = os.RemoveAll(authority) }()
-	goScopes, err := goEligibility(ctx, directory, state)
-	if err != nil {
-		return err
+	var scopes []string
+	learning := c.Name == "learn"
+	if !learning {
+		goScopes, err := goEligibility(ctx, directory, state)
+		if err != nil {
+			return err
+		}
+		scopes = append([]string{directory}, goScopes...)
+		scopes = append(scopes, c.StringSlice("scope")...)
 	}
-	scopes := append([]string{directory}, goScopes...)
-	scopes = append(scopes, c.StringSlice("scope")...)
-	spec := supervisorSpec{Engine: c.String("syd"), Directory: directory, State: state, SessionID: registered.ID, TransitDNS: registered.TransitDNS, Args: c.Args().Slice(), Scopes: scopes, ReadInputs: c.StringSlice("read-input"), ExecInputs: c.StringSlice("exec-input"), Environment: os.Environ()}
+	spec := supervisorSpec{Engine: c.String("syd"), Directory: directory, State: state, SessionID: registered.ID, TransitDNS: registered.TransitDNS, Args: c.Args().Slice(), Scopes: scopes, ReadInputs: c.StringSlice("read-input"), ExecInputs: c.StringSlice("exec-input"), Environment: os.Environ(), Learning: learning, RequirePIE: c.Bool("require-pie")}
+	if learning {
+		spec.CandidateName = c.String("candidate-name")
+	}
 	data, err := json.Marshal(spec)
 	if err != nil {
 		return err
@@ -76,12 +87,27 @@ func runTransparent(ctx context.Context, c *cli.Command, executable, state, dire
 	if err = os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(c.ErrWriter, "Session %s (%s): transparent network; approvals apply on retry.\n", registered.Name, registered.ID)
+	if learning {
+		_, _ = fmt.Fprintf(c.ErrWriter, "Session %s (%s): experimental public network discovery.\n", registered.Name, registered.ID)
+	} else {
+		_, _ = fmt.Fprintf(c.ErrWriter, "Session %s (%s): transparent network; approvals apply on retry.\n", registered.Name, registered.ID)
+	}
 	command := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "--", "/usr/sbin/ip", "netns", "exec", registered.Namespace, "/usr/bin/setpriv", "--reuid", fmt.Sprint(os.Getuid()), "--regid", fmt.Sprint(os.Getgid()), "--clear-groups", "--no-new-privs", "--bounding-set=-all", "--", executable, "supervise", path) //nolint:gosec // fixed privileged argv; generated namespace and numeric identities validated above
 	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
 	command.WaitDelay = 5 * time.Second
+	if learning {
+		command.WaitDelay = 25 * time.Second
+	}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, c.Writer, c.ErrWriter
-	if err = command.Run(); err != nil {
+	err = command.Run()
+	if learning && savedCandidate != nil {
+		marker, markerErr := os.Lstat(filepath.Join(authority, "candidate-saved"))
+		*savedCandidate = markerErr == nil && marker.Mode().IsRegular() && marker.Mode().Perm() == 0o600
+		if !*savedCandidate && err == nil {
+			err = fmt.Errorf("learning supervisor did not confirm candidate persistence")
+		}
+	}
+	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() >= 0 {
 			return cli.Exit("", exit.ExitCode())
@@ -97,6 +123,16 @@ func runAction(parent context.Context, c *cli.Command) error {
 	}
 	if len(c.StringSlice("service")) > 0 && c.Bool("no-network") {
 		return cli.Exit("--no-network and --service cannot be combined", 2)
+	}
+	if c.IsSet("config") {
+		if c.String("config") == "" || c.String("project-id") == "" || c.String("expected-revision") == "" || !c.Bool("no-network") {
+			return cli.Exit("selected profiles require --config NAME --project-id ID --expected-revision REV --no-network", 2)
+		}
+		if len(c.StringSlice("service"))+len(c.StringSlice("scope"))+len(c.StringSlice("read-input"))+len(c.StringSlice("exec-input")) != 0 {
+			return cli.Exit("selected profiles do not support transient inputs, services or live approvals", 2)
+		}
+	} else if c.IsSet("project-id") || c.IsSet("expected-revision") {
+		return cli.Exit("--project-id and --expected-revision require --config", 2)
 	}
 	// Explicit engine selection until promotion/install capability is implemented.
 	if c.String("syd") == "" {
@@ -145,8 +181,14 @@ func runAction(parent context.Context, c *cli.Command) error {
 		if c.String("name") != "" {
 			guest = append(guest, "--name", c.String("name"))
 		}
+		if c.IsSet("config") {
+			guest = append(guest, "--config", c.String("config"), "--project-id", c.String("project-id"), "--expected-revision", c.String("expected-revision"))
+		}
 		if c.Bool("no-network") {
 			guest = append(guest, "--no-network")
+		}
+		if c.Bool("require-pie") {
+			guest = append(guest, "--require-pie")
 		}
 		for _, service := range c.StringSlice("service") {
 			guest = append(guest, "--service", service)
@@ -185,6 +227,9 @@ func runAction(parent context.Context, c *cli.Command) error {
 	directory, err = filepath.EvalSymlinks(directory)
 	if err != nil {
 		return err
+	}
+	if c.IsSet("config") {
+		return runSelected(ctx, c, directory)
 	}
 	state, err := controller.StateDirectory()
 	if err != nil {
@@ -228,10 +273,10 @@ func runAction(parent context.Context, c *cli.Command) error {
 		}
 	}()
 	if transparent {
-		return runTransparent(ctx, c, executable, state, directory, registered)
+		return runTransparent(ctx, c, executable, state, directory, registered, nil)
 	}
 	_, _ = fmt.Fprintf(c.ErrWriter, "Session %s (%s): confined foreground; file learning ceilings=%d; direct network remains denied.\n", registered.Name, registered.ID, len(c.StringSlice("scope")))
-	options := syd.RunOptions{Engine: c.String("syd"), Directory: directory, Args: c.Args().Slice(), Stdin: os.Stdin, Stdout: c.Writer, Stderr: c.ErrWriter, Gateway: registered.Gateway, Scopes: c.StringSlice("scope"), ReadInputs: c.StringSlice("read-input"), ExecInputs: c.StringSlice("exec-input")}
+	options := syd.RunOptions{Engine: c.String("syd"), Directory: directory, Args: c.Args().Slice(), Stdin: os.Stdin, Stdout: c.Writer, Stderr: c.ErrWriter, Gateway: registered.Gateway, Scopes: c.StringSlice("scope"), ReadInputs: c.StringSlice("read-input"), ExecInputs: c.StringSlice("exec-input"), RequirePIE: c.Bool("require-pie")}
 	if len(options.Scopes) > 0 {
 		options.OnReady = func(socket string, scopes, protected []string) error {
 			return client.FileReady(ctx, registered.ID, files.Context{Socket: socket, Scopes: scopes, Protected: protected})
