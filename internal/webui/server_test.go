@@ -5,7 +5,28 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Gobd/syd-guard/internal/controller"
 )
+
+func TestProfileBridgeForwardsTypedConflict(t *testing.T) {
+	const host = "127.0.0.1:9876"
+	token := strings.Repeat("a", 64)
+	handler := Handler(host, token, func(_ context.Context, method, path string, body []byte) ([]byte, error) {
+		if method != "PUT" || path != "/api/profiles/opaque-id" || string(body) != `{}` {
+			t.Fatalf("unexpected operation: %s %s %s", method, path, body)
+		}
+		return nil, &controller.OperatorError{Status: 409, Body: []byte(`{"error":"conflict","code":"revision_conflict","current_revision":"new"}`)}
+	})
+	r := httptest.NewRequest("PUT", "http://"+host+"/api/profiles/opaque-id", strings.NewReader(`{}`))
+	r.Host = host
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"current_revision":"new"`) {
+		t.Fatalf("typed conflict: %d %s", w.Code, w.Body)
+	}
+}
 
 func TestBridgeRejectsCrossOriginRebindingAndAgentRoutes(t *testing.T) {
 	const host = "127.0.0.1:9876"

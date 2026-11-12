@@ -101,6 +101,13 @@ This checklist captures remaining work; don't infer full readiness from partial 
 - [x] Named repo profile create/discover/show/trust commands and hash-review tests:
       nearest ancestor .sydguard/default.json or NAME.json; new profiles start empty,
       discovered/changed permission files aren't automatically trusted.
+- [x] Authenticated profile API reads bounded untrusted default candidates from
+      running project discovery; a test-only managed snapshot/CAS provider exercises
+      save and revision conflicts. Production has no managed provider and exposes
+      no edit, reload or saved-decision capability; candidates are not session bindings.
+- [ ] Integrate a reviewed protected helper as a managed provider; prove atomic CAS,
+      helper-authoritative registration/snapshots, real browser/guest transport, and
+      strict compiler/runtime replay before enabling production capabilities.
 - [ ] Wire run/learn --config NAME, saved file/network decisions and fresh launch
       replay into selected repo profiles; no stale DNS-derived IPs persisted.
 - [ ] Prove agent-readable project configs deny write/delete/rename/replacement,

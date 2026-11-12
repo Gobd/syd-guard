@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Gobd/syd-guard/internal/controller"
 )
 
 //go:embed assets/*
@@ -37,18 +39,27 @@ func HandlerWithAuth(host string, authorize func(string) bool, operate Operator)
 			http.Error(w, "UI operator authorization required", http.StatusUnauthorized)
 			return
 		}
-		allowed := r.Method == "GET" && (r.URL.Path == "/api/sessions" || r.URL.Path == "/api/network/pending" || r.URL.Path == "/api/network/rules" || r.URL.Path == "/api/files/pending") || r.Method == "POST" && (r.URL.Path == "/api/network/decisions" || r.URL.Path == "/api/files/decisions")
-		if !allowed || r.URL.RawQuery != "" {
+		allowed := controller.OperatorRoute(r.Method, r.URL.Path) && r.URL.Path != "/api/health"
+		if !allowed || r.URL.RawQuery != "" || r.URL.RawPath != "" {
 			http.Error(w, "unsupported UI route", http.StatusNotFound)
 			return
 		}
-		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024+4096))
 		if err != nil {
 			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		output, err := operate(r.Context(), r.Method, r.URL.Path, data)
 		if err != nil {
+			if detail, ok := err.(interface {
+				StatusCode() int
+				ResponseBody() []byte
+			}); ok && detail.StatusCode() >= 400 && detail.StatusCode() <= 599 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(detail.StatusCode())
+				_, _ = w.Write(detail.ResponseBody())
+				return
+			}
 			http.Error(w, "controller operation failed; refresh or inspect operator terminal", http.StatusBadGateway)
 			return
 		}
@@ -57,6 +68,7 @@ func HandlerWithAuth(host string, authorize func(string) bool, operate Operator)
 	}
 	mux.HandleFunc("GET /api/", apiHandler)
 	mux.HandleFunc("POST /api/", apiHandler)
+	mux.HandleFunc("PUT /api/", apiHandler)
 	public, _ := fs.Sub(assets, "assets")
 	mux.Handle("GET /", http.FileServer(http.FS(public)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

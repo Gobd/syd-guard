@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,23 +33,28 @@ func apiCommand() *cli.Command {
 		}
 		defer client.Close()
 		var input any
-		if c.String("method") == "POST" {
-			data, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024+1))
+		if c.String("method") == "POST" || c.String("method") == "PUT" {
+			data, err := io.ReadAll(io.LimitReader(os.Stdin, 1024*1024+4097))
 			if err != nil {
 				return err
 			}
-			if len(data) > 64*1024 || !json.Valid(data) {
+			if len(data) > 1024*1024+4096 || !json.Valid(data) {
 				return fmt.Errorf("invalid bounded operator JSON")
 			}
 			input = json.RawMessage(data)
 		}
 		data, err := client.Operate(ctx, c.String("method"), c.String("path"), input)
-		if err != nil {
+		var detail *controller.OperatorError
+		if err != nil && !errors.As(err, &detail) {
 			return err
 		}
-		_, err = c.Writer.Write(append(data, '\n'))
-		return err
+		return json.NewEncoder(c.Writer).Encode(operatorResponse{Data: data, Error: detail})
 	}}
+}
+
+type operatorResponse struct {
+	Data  json.RawMessage           `json:"data,omitempty"`
+	Error *controller.OperatorError `json:"error,omitempty"`
 }
 
 func uiCommand() *cli.Command {
@@ -135,7 +141,21 @@ func runUIBridge(parent context.Context, manager *uiManager, kind backend.Kind, 
 				}
 				command := exec.CommandContext(ctx, "limactl", argv...) //nolint:gosec // validated instance and direct argv
 				command.Stdin, command.Stderr = bytes.NewReader(data), stderr
-				return command.Output()
+				output, err := command.Output()
+				if err != nil {
+					return nil, err
+				}
+				var response operatorResponse
+				if err := json.Unmarshal(output, &response); err != nil {
+					return nil, fmt.Errorf("invalid guest operator response")
+				}
+				if response.Error != nil {
+					return nil, response.Error
+				}
+				if !json.Valid(response.Data) {
+					return nil, fmt.Errorf("invalid guest operator data")
+				}
+				return response.Data, nil
 			}, func() {}, nil
 		}
 		state, err := controller.StateDirectory()
@@ -157,7 +177,7 @@ func runUIBridge(parent context.Context, manager *uiManager, kind backend.Kind, 
 		}
 		return func(ctx context.Context, method, path string, data []byte) ([]byte, error) {
 			var input any
-			if method == "POST" {
+			if method == "POST" || method == "PUT" {
 				if !json.Valid(data) {
 					return nil, fmt.Errorf("invalid JSON")
 				}

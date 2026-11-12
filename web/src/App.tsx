@@ -6,9 +6,18 @@ import {
   networkLabel,
   requestSession,
   type Session,
+  type Access,
+  type ProfileMetadata,
+  profileApi,
 } from "./api";
+import { ProfileEditor } from "./ProfileEditor";
+import { SavedDecision } from "./SavedDecision";
 import * as styles from "./theme.css";
 import * as approvals from "./approvals.css";
+
+function outcomeFlag(value: boolean | undefined): string {
+  return value === undefined ? "unknown" : value ? "yes" : "no";
+}
 
 export function App() {
   const [token, setToken] = useState(
@@ -17,6 +26,10 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [network, setNetwork] = useState<NetworkRequest[]>([]);
   const [files, setFiles] = useState<FileRequest[]>([]);
+  const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
+  const [profilesReady, setProfilesReady] = useState(false);
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [sessionsReady, setSessionsReady] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -26,10 +39,26 @@ export function App() {
   }, []);
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequence.current;
+    setProfilesReady(false);
+    setSessionsReady(false);
     if (!token) {
       setError("Enter a UI token from sydguard ui status.");
       return;
     }
+    const profileRefresh = profileApi
+      .list(token)
+      .then((list) => {
+        if (sequence === refreshSequence.current) {
+          setProfiles(list);
+          setProfilesReady(true);
+        }
+      })
+      .catch(() => {
+        if (sequence === refreshSequence.current) {
+          setProfiles([]);
+          setProfilesReady(false);
+        }
+      });
     try {
       const [active, net, fs] = await Promise.all([
         api<Session[]>(token, "/api/sessions"),
@@ -40,6 +69,7 @@ export function App() {
       setSessions(active);
       setNetwork(net);
       setFiles(fs);
+      setSessionsReady(true);
       setError("");
     } catch (error) {
       if (sequence !== refreshSequence.current) return;
@@ -47,6 +77,7 @@ export function App() {
         error instanceof Error ? error.message : "Controller unavailable",
       );
     }
+    await profileRefresh;
   }, [token]);
   useEffect(() => {
     void refresh();
@@ -64,13 +95,27 @@ export function App() {
     id: string,
     action: "allow" | "deny",
     scope: "run" | "saved",
+    saved?: {
+      profile_id: string;
+      expected_revision: string;
+      access?: Access[];
+      recursive?: boolean;
+    },
   ) {
     setBusy(true);
     setMessage("");
     try {
-      await api(token, `/api/${kind}/decisions`, { id, action, scope });
+      const result = await api<{
+        status?: string;
+        message?: string;
+        applied?: boolean;
+        retry_required?: boolean;
+        restart_required?: boolean;
+      }>(token, `/api/${kind}/decisions`, { id, action, scope, ...saved });
       setMessage(
-        `${action === "allow" ? "Approved" : "Denied"}. The workload must retry; no paused syscall was resumed.`,
+        scope === "saved"
+          ? `${result.message ?? result.status ?? "Decision response received."} Applied: ${outcomeFlag(result.applied)}; retry required: ${outcomeFlag(result.retry_required)}; restart required: ${outcomeFlag(result.restart_required)}.`
+          : `${action === "allow" ? "Approved" : "Denied"}. The workload must retry; no paused syscall was resumed.`,
       );
       await refresh();
     } catch (error) {
@@ -95,7 +140,24 @@ export function App() {
           className={styles.input}
           type="password"
           value={token}
-          onChange={(event) => setToken(event.target.value)}
+          onChange={(event) => {
+            if (
+              profileDirty &&
+              !window.confirm(
+                "Discard unsaved profile edits and change the UI token?",
+              )
+            )
+              return;
+            setProfileDirty(false);
+            refreshSequence.current++;
+            setSessionsReady(false);
+            setProfilesReady(false);
+            setSessions([]);
+            setNetwork([]);
+            setFiles([]);
+            setProfiles([]);
+            setToken(event.target.value);
+          }}
           autoComplete="off"
         />
         <p className={styles.muted}>
@@ -124,11 +186,26 @@ export function App() {
                 Command: {session.command?.[0] ?? "Unavailable"} · PID:{" "}
                 {session.pid ?? "Unavailable"}
               </p>
-              <p>Profile: not supplied by launcher</p>
+              <p>
+                Profile:{" "}
+                {session.profile
+                  ? `${session.profile.name} · ID: ${session.profile.id} · Revision: ${session.profile.revision}`
+                  : "not supplied by launcher"}
+              </p>
             </div>
           ))
         )}
       </section>
+      <ProfileEditor
+        key={token}
+        token={token}
+        profiles={profiles}
+        profilesReady={profilesReady}
+        sessions={sessions}
+        sessionsReady={sessionsReady}
+        onDirtyChange={setProfileDirty}
+        refresh={refresh}
+      />
       <h2>File requests ({files.length})</h2>
       <p className={styles.muted}>
         Exact-path, per-run grants within declared immutable ceilings.
@@ -154,7 +231,11 @@ export function App() {
             {requestSession(sessions, request)?.project ??
               "Unavailable; refresh before deciding"}
           </p>
-          <p>Profile: not yet selected by launcher</p>
+          <p>
+            Profile:{" "}
+            {requestSession(sessions, request)?.profile?.name ??
+              "not yet selected by launcher"}
+          </p>
           <div className={approvals.target}>{request.path}</div>
           {request.restart_required && (
             <p className={styles.warning}>
@@ -168,6 +249,7 @@ export function App() {
               className={styles.button}
               disabled={
                 busy ||
+                !sessionsReady ||
                 !!error ||
                 !!request.restart_required ||
                 !requestSession(sessions, request)
@@ -179,12 +261,29 @@ export function App() {
             <button
               type="button"
               className={styles.button}
-              disabled={busy || !!error || !requestSession(sessions, request)}
+              disabled={
+                busy ||
+                !sessionsReady ||
+                !!error ||
+                !requestSession(sessions, request)
+              }
               onClick={() => void decide("files", request.id, "deny", "run")}
             >
               Deny for run
             </button>
           </div>
+          <SavedDecision
+            kind="files"
+            key={`${request.id}:${request.session_id}:${request.session_name}:${request.capability}:${request.is_directory}`}
+            request={request}
+            sessions={sessions}
+            profiles={profiles}
+            ready={profilesReady && sessionsReady && !error}
+            busy={busy}
+            decide={(saved) =>
+              void decide("files", request.id, "allow", "saved", saved)
+            }
+          />
         </section>
       ))}
       <h2>Network requests ({network.length})</h2>
@@ -208,13 +307,22 @@ export function App() {
             {requestSession(sessions, request)?.project ??
               "Unavailable; refresh before deciding"}
           </p>
-          <p>Profile: not yet selected by launcher</p>
+          <p>
+            Profile:{" "}
+            {requestSession(sessions, request)?.profile?.name ??
+              "not yet selected by launcher"}
+          </p>
           <div className={approvals.target}>{networkLabel(request)}</div>
           <div className={styles.row}>
             <button
               type="button"
               className={styles.button}
-              disabled={busy || !!error || !requestSession(sessions, request)}
+              disabled={
+                busy ||
+                !sessionsReady ||
+                !!error ||
+                !requestSession(sessions, request)
+              }
               onClick={() => void decide("network", request.id, "allow", "run")}
             >
               Allow for run
@@ -222,20 +330,28 @@ export function App() {
             <button
               type="button"
               className={styles.button}
-              disabled
-              title="Saving to a selected project profile is not implemented"
-            >
-              Save to profile (unavailable)
-            </button>
-            <button
-              type="button"
-              className={styles.button}
-              disabled={busy || !!error || !requestSession(sessions, request)}
+              disabled={
+                busy ||
+                !sessionsReady ||
+                !!error ||
+                !requestSession(sessions, request)
+              }
               onClick={() => void decide("network", request.id, "deny", "run")}
             >
               Deny for run
             </button>
           </div>
+          <SavedDecision
+            kind="network"
+            request={request}
+            sessions={sessions}
+            profiles={profiles}
+            ready={profilesReady && sessionsReady && !error}
+            busy={busy}
+            decide={(saved) =>
+              void decide("network", request.id, "allow", "saved", saved)
+            }
+          />
         </section>
       ))}
     </main>

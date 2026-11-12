@@ -113,8 +113,14 @@ The UI prints an operator-only localhost URL with a short-lived page token. On M
 it serves embedded assets locally and reaches the guest through Lima. It never
 passes the controller master token to the browser. Pending cards show the session
 ID and project; decisions are disabled if the matching active session is absent.
-Profile selection and saving are not implemented. `ui --detach`, `ui status`,
-`ui restart` and `ui stop` manage only the bridge, not agent sessions or controller.
+The profile view can inspect the nearest existing `default.json` for a known
+running project as an **untrusted candidate**, not a selected or applied profile.
+It is read-only: production profile editing, saved decisions, session binding,
+replay and reload remain unavailable. The authenticated API has an injectable
+managed snapshot/CAS interface for a future protected helper, but no production
+provider is installed. Saving never changes running permissions. `ui --detach`,
+`ui status`, `ui restart` and `ui stop` manage only the bridge, not agent sessions
+or controller. A Lima UI bridge and guest CLI must use matching builds.
 
 `run` uses experimental transparent networking by default; it requires passwordless
 sudo for bounded per-session namespace setup, and drops privileges before starting

@@ -37,7 +37,7 @@ func TestManagedUISubprocessLifecycle(t *testing.T) {
 		}
 	}
 	fake := filepath.Join(bin, "limactl")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '[{\"id\":\"live-session\",\"name\":\"agent\",\"state\":\"running\",\"project\":\"/work\"}]'\n"), 0o700); err != nil { //nolint:gosec // executable test fixture in a private temporary directory
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '{\"data\":[{\"id\":\"live-session\",\"name\":\"agent\",\"state\":\"running\",\"project\":\"/work\"}]}'\n"), 0o700); err != nil { //nolint:gosec // executable test fixture in a private temporary directory
 		t.Fatal(err)
 	}
 	exe := filepath.Join(bin, "sydguard")

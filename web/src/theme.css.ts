@@ -59,3 +59,9 @@ export const warning = style({
   color: vars.color.danger,
   overflowWrap: "anywhere",
 });
+export const diff = style({
+  whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere",
+  background: vars.color.bg,
+  padding: vars.space.sm,
+});

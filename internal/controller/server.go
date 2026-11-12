@@ -21,17 +21,20 @@ import (
 // Server's operator token is never supplied to a workload. Unix socket privacy,
 // Syd control-path denial and later browser auth are separate necessary layers.
 type Server struct {
-	token       string
-	registry    *session.Registry
-	identity    func(int) (string, error)
-	network     *network.Policy
-	allocator   *network.SyntheticAllocator
-	files       *files.Manager
-	gatesMu     sync.Mutex
-	gates       map[string]*network.Gateway
-	transparent map[string]*transparentSession
-	state       string
-	closed      bool
+	token        string
+	registry     *session.Registry
+	identity     func(int) (string, error)
+	network      *network.Policy
+	allocator    *network.SyntheticAllocator
+	files        *files.Manager
+	gatesMu      sync.Mutex
+	gates        map[string]*network.Gateway
+	transparent  map[string]*transparentSession
+	state        string
+	closed       bool
+	profiles     ProfileProvider
+	profilesMu   sync.Mutex
+	candidateIDs map[string]string
 }
 
 func New(token string) (*Server, error) {
@@ -45,6 +48,9 @@ func New(token string) (*Server, error) {
 	return &Server{token: token, registry: session.NewRegistry(), identity: session.ProcessIdentity, network: policy, allocator: network.NewSyntheticAllocator(), files: files.New(), gates: map[string]*network.Gateway{}, transparent: map[string]*transparentSession{}}, nil
 }
 
+// SetProfileProvider installs a trusted provider before the server starts serving.
+func (server *Server) SetProfileProvider(provider ProfileProvider) { server.profiles = provider }
+
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -54,6 +60,10 @@ func (server *Server) Handler() http.Handler {
 		server.reap()
 		reply(w, http.StatusOK, server.registry.List(r.URL.Query().Get("history") == "true"))
 	})
+	mux.HandleFunc("GET /api/profiles", server.profileList)
+	mux.HandleFunc("GET /api/profiles/{id}", server.profileGet)
+	mux.HandleFunc("PUT /api/profiles/{id}", server.profileSave)
+	mux.HandleFunc("POST /api/profiles/{id}/reload", server.profileReload)
 	mux.HandleFunc("POST /api/sessions", server.register)
 	mux.HandleFunc("POST /api/sessions/{id}/finish", server.finish)
 	mux.HandleFunc("POST /api/sessions/{id}/complete", server.complete)

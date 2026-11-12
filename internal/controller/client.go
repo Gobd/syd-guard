@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Gobd/syd-guard/internal/files"
@@ -19,6 +20,18 @@ import (
 )
 
 var ErrProtocolMismatch = errors.New("incompatible controller protocol; stop the existing daemon explicitly before upgrading")
+
+// OperatorError preserves bounded controller errors across operator transports.
+type OperatorError struct {
+	Status int             `json:"status"`
+	Body   json.RawMessage `json:"body"`
+}
+
+func (e *OperatorError) Error() string {
+	return fmt.Sprintf("controller operation failed: HTTP %d", e.Status)
+}
+func (e *OperatorError) StatusCode() int      { return e.Status }
+func (e *OperatorError) ResponseBody() []byte { return e.Body }
 
 type Client struct {
 	directory, token string
@@ -130,10 +143,21 @@ func (client *Client) NetworkEvent(ctx context.Context, id string, event Network
 	return client.request(ctx, "POST", "/api/sessions/"+id+"/network-event", event, nil)
 }
 
+// OperatorRoute permits only approvals and bounded profile operations.
+func OperatorRoute(method, path string) bool {
+	if method == "GET" && (path == "/api/health" || path == "/api/sessions" || path == "/api/network/pending" || path == "/api/network/rules" || path == "/api/files/pending" || path == "/api/profiles") || method == "POST" && (path == "/api/network/decisions" || path == "/api/files/decisions") {
+		return true
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) == 4 && parts[0] == "" && parts[1] == "api" && parts[2] == "profiles" && validProfileID(parts[3]) {
+		return method == "GET" || method == "PUT"
+	}
+	return len(parts) == 5 && parts[0] == "" && parts[1] == "api" && parts[2] == "profiles" && validProfileID(parts[3]) && parts[4] == "reload" && method == "POST"
+}
+
 // Operate exposes only approval/read routes, not raw Syd commands or launch APIs.
 func (client *Client) Operate(ctx context.Context, method, path string, input any) (json.RawMessage, error) {
-	allowed := method == "GET" && (path == "/api/health" || path == "/api/sessions" || path == "/api/network/pending" || path == "/api/network/rules" || path == "/api/files/pending") || method == "POST" && (path == "/api/network/decisions" || path == "/api/files/decisions")
-	if !allowed {
+	if !OperatorRoute(method, path) {
 		return nil, fmt.Errorf("unsupported operator route")
 	}
 	var output json.RawMessage
@@ -184,14 +208,14 @@ func (client *Client) request(ctx context.Context, method, path string, input, o
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var detail struct {
-			Error string `json:"error"`
+		data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		if !json.Valid(data) {
+			data = []byte(`{"error":"controller operation failed","code":"unavailable"}`)
 		}
-		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&detail)
-		return fmt.Errorf("controller rejected %s %s: HTTP %d: %.512s", method, path, response.StatusCode, detail.Error)
+		return &OperatorError{Status: response.StatusCode, Body: data}
 	}
 	if output != nil {
-		return json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(output)
+		return json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024)).Decode(output)
 	}
 	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	return err
