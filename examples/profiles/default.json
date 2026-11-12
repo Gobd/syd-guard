@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "name": "default",
+  "files": [
+    {
+      "path": ".",
+      "capabilities": [
+        "read",
+        "stat",
+        "readdir",
+        "readlink",
+        "chdir",
+        "write",
+        "create",
+        "truncate",
+        "mkdir",
+        "rename",
+        "delete",
+        "rmdir"
+      ],
+      "recursive": true
+    },
+    {
+      "path": "~/.cache/go-build",
+      "capabilities": ["read", "stat", "readdir", "write", "create", "truncate", "mkdir"],
+      "recursive": true
+    },
+    {
+      "path": "~/go/pkg/mod",
+      "capabilities": ["read", "stat", "readdir", "write", "create", "mkdir"],
+      "recursive": true
+    },
+    {
+      "path": "~/.npm",
+      "capabilities": ["read", "stat", "readdir", "write", "create", "mkdir"],
+      "recursive": true
+    }
+  ],
+  "network": [
+    {"host": "proxy.golang.org", "port": 443, "transport": "tcp"},
+    {"host": "sum.golang.org", "port": 443, "transport": "tcp"},
+    {"host": "registry.npmjs.org", "port": 443, "transport": "tcp"}
+  ]
+}

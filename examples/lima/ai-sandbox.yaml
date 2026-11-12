@@ -1,0 +1,106 @@
+# Example Linux development VM for Syd Guard.
+# Fresh-VM provisioning remains to be tested; see README.md for current status.
+# macOS: brew install lima
+# Review mounts/resources, then create a NEW instance (not the existing test VM):
+#   limactl start --name=sydguard-example ./examples/lima/ai-sandbox.yaml
+# Enter: limactl shell --workdir /workspace/syd-guard sydguard-example
+# Never apply this recipe by deleting/recreating an instance with live sessions.
+
+vmType: vz
+mountType: virtiofs
+images:
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+    arch: x86_64
+
+cpus: 6
+memory: 24GiB
+disk: 80GiB
+
+# Prefer a narrower project mount if Developer contains unrelated/private data.
+# Do NOT mount the entire home, SSH/cloud credentials, or host shell history.
+# A writable mount is not an agent permission grant or an inode protection proof.
+# Guest-root ownership on virtiofs did NOT protect our profile alias tests;
+# host-backed managed policy protection remains a separate acceptance blocker.
+mounts:
+  - location: ~/Developer
+    mountPoint: /workspace
+    writable: true
+
+# Convenient VM development ports.
+# Bind ONLY Mac IPv4 loopback, never 0.0.0.0/LAN. Loopback is not authentication:
+# other Mac processes can still reach forwarded VM services, including databases.
+# This is VM-to-host presentation, NOT permission for sandbox outbound traffic.
+# Publishing a dev server from a Syd network namespace needs separate deliberate
+# session publishing support; this range alone does not expose that namespace.
+# The operator UI is served by the CLI and is independent of this dev-port range.
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 10000]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 10000]
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        ca-certificates curl git gh jq zsh iproute2 nftables util-linux \
+        build-essential pkg-config make autoconf automake libtool \
+        unzip zip xz-utils tmux rsync ripgrep shellcheck
+
+      # Resolve a stable Go 1.27 patch, verify the archive, install in the NEW VM.
+      case "$(uname -m)" in
+        aarch64) arch=arm64 ;;
+        x86_64) arch=amd64 ;;
+        *) echo 'Unsupported architecture' >&2; exit 1 ;;
+      esac
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      curl -fsSL 'https://go.dev/dl/?mode=json&include=all' -o "$tmp/releases.json"
+      file="$(jq -er --arg arch "$arch" \
+        '[.[] | select(.stable and (.version | startswith("go1.27."))) | .files[] | select(.os == "linux" and .arch == $arch and .kind == "archive")][0].filename' \
+        "$tmp/releases.json")"
+      sha="$(jq -er --arg file "$file" \
+        '.[] | .files[] | select(.filename == $file) | .sha256' "$tmp/releases.json")"
+      curl -fsSL "https://go.dev/dl/$file" -o "$tmp/go.tar.gz"
+      printf '%s  %s\n' "$sha" "$tmp/go.tar.gz" | sha256sum -c -
+      # Fresh-VM recipe only; do not run this provisioning block on a live VM.
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf "$tmp/go.tar.gz"
+      ln -sf /usr/local/go/bin/go /usr/local/bin/go
+      ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+  - mode: user
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      mkdir -p "$HOME/.local/bin" "$HOME/.config/ai-sandbox"
+      cat > "$HOME/.config/ai-sandbox/env.sh" <<'ENV'
+      export PATH="$HOME/.local/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+      ENV
+      for rc in "$HOME/.profile" "$HOME/.zshrc"; do
+        touch "$rc"
+        line='. "$HOME/.config/ai-sandbox/env.sh"'
+        grep -Fqx "$line" "$rc" || printf '\n%s\n' "$line" >> "$rc"
+      done
+      . "$HOME/.config/ai-sandbox/env.sh"
+
+      # Build the wrapper only from an already reviewed mounted source checkout.
+      # Embedded web assets ship in source; frontend rebuilds need supported Bun.
+      if [ -f /workspace/syd-guard/go.mod ]; then
+        cd /workspace/syd-guard
+        go build -o "$HOME/.local/bin/sydguard" ./cmd/sydguard
+      else
+        printf 'Mount the syd-guard checkout and build the Linux wrapper manually.\n'
+      fi
+
+      # Install and test the upstream Syd candidate following README.md and
+      # scripts/install-upstream-syd.sh from the trusted operator environment.
+      printf '\nVM development tools are ready.\n'
+      printf 'Review README.md for tested engine installation and acceptance status.\n'
+      printf 'Do not reuse macOS node_modules in Linux; install Linux dependencies.\n'

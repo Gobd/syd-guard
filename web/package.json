@@ -1,0 +1,25 @@
+{
+  "name": "sydguard-approvals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "check": "bun check --no-script",
+    "lint": "bun lint --no-script",
+    "fmt": "bun fmt --no-script",
+    "fmt:check": "bun fmt --no-script --check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@vanilla-extract/css": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/bun": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vanilla-extract/integration": "latest"
+  }
+}
