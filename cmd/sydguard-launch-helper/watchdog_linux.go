@@ -219,24 +219,51 @@ func watchdogMain() error {
 	}
 	// pidfd detects parent death even if a fork-in-progress briefly inherited
 	// the guard FD before its close-on-exec transition.
+	event, err := waitWatchdogEvent(parentFD, 3)
+	if err != nil {
+		return err
+	}
+	cleanupStart := time.Now()
+	var killStart, killEnd time.Time
+	var killErr error
+	cleanupErr := cleanupSlot(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
+		killStart = time.Now()
+		killErr = killCgroup(fd, timeout)
+		killEnd = time.Now()
+		return killErr
+	})
+	cleanupEnd := time.Now()
+	ackOK := false
+	if cleanupErr == nil {
+		// If the parent crashed this write may fail; cleanup has already completed.
+		_, err := guard.Write([]byte{'C'})
+		ackOK = err == nil
+	}
+	// Never emit diagnostics until the kill, cleanup and acknowledgement have
+	// been attempted; a blocked output pipe cannot delay the safety operation.
+	diagnostic(fmt.Sprintf("watchdog event_time=%s poll_count=%d pidfd_revents=%#x socket_revents=%#x cleanup_start=%s cleanup_end=%s cleanup_ok=%t kill_called=%t kill_start=%s kill_end=%s kill_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), event.count, uint16(event.pidfdRevents), uint16(event.socketRevents), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, !killStart.IsZero(), killStart.Format(time.RFC3339Nano), killEnd.Format(time.RFC3339Nano), !killStart.IsZero() && killErr == nil, ackOK))
+	return cleanupErr
+}
+
+type watchdogEvent struct {
+	at                          time.Time
+	count                       int
+	pidfdRevents, socketRevents int16
+}
+
+func waitWatchdogEvent(parentFD, socketFD int) (watchdogEvent, error) {
 	//nolint:gosec // Linux file descriptors are nonnegative signed 32-bit values
-	fds := []unix.PollFd{{Fd: int32(parentFD), Events: unix.POLLIN}, {Fd: 3, Events: unix.POLLIN | unix.POLLHUP}}
+	fds := []unix.PollFd{{Fd: int32(parentFD), Events: unix.POLLIN}, {Fd: int32(socketFD), Events: unix.POLLIN | unix.POLLHUP}}
 	for {
-		_, err := unix.Poll(fds, -1)
+		n, err := unix.Poll(fds, -1)
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
 		if err != nil {
-			return err
+			return watchdogEvent{}, err
 		}
 		if fds[0].Revents != 0 || fds[1].Revents != 0 {
-			break
+			return watchdogEvent{at: time.Now(), count: n, pidfdRevents: fds[0].Revents, socketRevents: fds[1].Revents}, nil
 		}
 	}
-	if err := cleanupSlot(baseFD, groupFD, slot, j, 0, killCgroup); err != nil {
-		return err
-	}
-	// If the parent crashed this write may fail; cleanup has already completed.
-	_, _ = guard.Write([]byte{'C'})
-	return nil
 }

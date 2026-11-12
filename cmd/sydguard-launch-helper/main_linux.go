@@ -176,17 +176,45 @@ func run() (int, error) {
 	}
 	code, launchErr := launch(request, snapshot, engine, slot, group, watch, uid, gid, startup)
 	cleanupErr := watch.finish()
-	if cleanupErr != nil {
+	diagnostic(fmt.Sprintf("parent watchdog_finish_ok=%t reaped=%t", cleanupErr == nil, watch.crashed))
+	var recoveryErr error
+	if cleanupErr != nil && watch.crashed {
 		// Reconcile only after the watchdog is reaped; otherwise it still owns
 		// the shared flock and remains responsible for bounded cleanup.
-		if watch.crashed {
-			if err := recoverSlot(baseFD, groupsFD, slot, 0, killCgroup); err != nil {
-				return 1, fmt.Errorf("watchdog and recovery failed; slot quarantined: %w", err)
-			}
+		if err := recoverSlot(baseFD, groupsFD, slot, 0, killCgroup); err != nil {
+			recoveryErr = fmt.Errorf("watchdog and recovery failed; slot quarantined: %w", err)
 		}
-		return 1, cleanupErr
+		diagnostic(fmt.Sprintf("parent recovery_ok=%t", recoveryErr == nil))
+	}
+	return combineLaunchErrors(code, launchErr, cleanupErr, recoveryErr)
+}
+
+func combineLaunchErrors(code int, launchErr, cleanupErr, recoveryErr error) (int, error) {
+	if cleanupErr != nil || recoveryErr != nil {
+		return 1, errors.Join(launchErr, cleanupErr, recoveryErr)
 	}
 	return code, launchErr
+}
+
+// A blocked or broken diagnostic pipe must not indefinitely delay cleanup.
+// Messages are fixed-format, bounded metadata and never include handoff data.
+func diagnostic(message string) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A duplicate above fd 2 avoids Go's special SIGPIPE handling for stderr.
+		fd, err := unix.FcntlInt(os.Stderr.Fd(), unix.F_DUPFD_CLOEXEC, 3)
+		if err != nil {
+			return
+		}
+		file := os.NewFile(uintptr(fd), "diagnostic")
+		defer func() { _ = file.Close() }()
+		_, _ = fmt.Fprintln(file, "sydguard launch diagnostic:", message)
+	}()
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func validateIntent(profile config.Profile) error {
@@ -285,9 +313,11 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 		return 1, fmt.Errorf("watchdog exited before supervisor startup: %v", watchErr)
 	default:
 	}
+	started := time.Now()
 	if err := cmd.Start(); err != nil {
 		return 1, fmt.Errorf("start contained unprivileged supervisor: %w", err)
 	}
+	diagnostic(fmt.Sprintf("parent supervisor_started pid=%d start_attempt_time=%s slot_uid=%d slot_index=%d setup_timer_stopped=true", cmd.Process.Pid, started.Format(time.RFC3339Nano), slot.UID, slot.Index))
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
@@ -303,25 +333,54 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 	}()
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
-	select {
-	case err = <-wait:
-	case watchErr := <-watch.done:
+	branch, waitErr, watchErr := waitForSupervisor(wait, watch.done, func() {
 		watch.crashed = true
 		_ = killCgroup(int(group.Fd()), 5*time.Second)
 		_ = cmd.Process.Kill()
-		waitErr := <-wait
-		err = errors.Join(fmt.Errorf("watchdog exited during launch: %v", watchErr), waitErr)
-	}
+	})
 	close(done)
 	signal.Stop(signals)
-	if err != nil {
+	diagnostic(supervisorWaitDiagnostic(cmd.Process.Pid, branch, cmd.ProcessState, time.Since(started)))
+	return supervisorResult(branch, waitErr, watchErr)
+}
+
+func supervisorResult(branch string, waitErr, watchErr error) (int, error) {
+	if branch == "watchdog" {
+		watchFailure := errors.New("watchdog exited during launch")
+		if watchErr != nil {
+			watchFailure = fmt.Errorf("watchdog exited during launch: %w", watchErr)
+		}
+		return 1, errors.Join(watchFailure, waitErr)
+	}
+	if waitErr != nil {
 		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() >= 0 {
+		if errors.As(waitErr, &exit) && exit.ExitCode() >= 0 {
 			return exit.ExitCode(), nil
 		}
-		return 1, err
+		return 1, fmt.Errorf("supervisor wait: %w", waitErr)
 	}
 	return 0, nil
+}
+
+func waitForSupervisor(wait <-chan error, watchDone <-chan error, stop func()) (branch string, waitErr, watchErr error) {
+	select {
+	case waitErr = <-wait:
+		return "wait", waitErr, nil
+	case watchErr = <-watchDone:
+		stop()
+		return "watchdog", <-wait, watchErr
+	}
+}
+
+func supervisorWaitDiagnostic(pid int, branch string, state *os.ProcessState, elapsed time.Duration) string {
+	if state == nil {
+		return fmt.Sprintf("parent supervisor_wait pid=%d branch=%s elapsed=%s status=unavailable", pid, branch, elapsed)
+	}
+	status, ok := state.Sys().(syscall.WaitStatus)
+	if !ok {
+		return fmt.Sprintf("parent supervisor_wait pid=%d branch=%s elapsed=%s status=unavailable", pid, branch, elapsed)
+	}
+	return fmt.Sprintf("parent supervisor_wait pid=%d branch=%s observed_at=%s elapsed=%s raw_status=%d signaled=%t signal=%d exit_status=%d", pid, branch, time.Now().Format(time.RFC3339Nano), elapsed, uint32(status), status.Signaled(), status.Signal(), status.ExitStatus())
 }
 
 func bindFD(file *os.File, target string) error {
@@ -520,13 +579,19 @@ func supervise() (int, error) {
 	if os.Getuid() <= 0 || os.Geteuid() != os.Getuid() || os.Getegid() != os.Getgid() {
 		return 1, errors.New("supervisor must be unprivileged")
 	}
+	diagnostic("supervisor stage=dispatch")
+	diagnostic("supervisor stage=check_dropped_begin")
 	if err := checkDropped(); err != nil {
-		return 1, err
+		return 1, fmt.Errorf("supervisor check dropped: %w", err)
 	}
+	diagnostic("supervisor stage=check_dropped_done")
+	diagnostic("supervisor stage=stdin_read_begin")
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, managedlaunch.Limit+1))
 	if err != nil || len(data) > managedlaunch.Limit {
 		return 1, errors.New("invalid supervisor input")
 	}
+	diagnostic("supervisor stage=stdin_eof")
+	diagnostic("supervisor stage=decode_begin")
 	var input supervisorInput
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -536,15 +601,23 @@ func supervise() (int, error) {
 	if decoder.Decode(new(any)) != io.EOF {
 		return 1, errors.New("trailing supervisor input")
 	}
+	diagnostic("supervisor stage=decode_done")
+	diagnostic("supervisor stage=revision_begin")
 	snapshot, err := config.ParseManagedProfileSnapshot(input.Name, input.Profile)
 	if err != nil || snapshot.Revision() != input.Revision {
 		return 1, errors.New("invalid selected snapshot")
 	}
+	diagnostic("supervisor stage=revision_done")
+	diagnostic("supervisor stage=resolve_begin")
 	resolved, err := managedlaunch.ReadOnlyProfile(snapshot, input.Project)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("supervisor resolve: %w", err)
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "Selected managed project %s profile %s revision %s; snapshot %s; no network, no live approvals.\n", input.ProjectID, input.Name, input.Revision, input.SnapshotPath)
+	diagnostic("supervisor stage=resolve_done")
+	diagnostic("supervisor stage=announcement_begin")
+	if _, err := fmt.Fprintf(os.Stderr, "Selected managed project %s profile %s revision %s; snapshot %s; no network, no live approvals.\n", input.ProjectID, input.Name, input.Revision, input.SnapshotPath); err != nil {
+		return 1, fmt.Errorf("supervisor announcement write: %w", err)
+	}
 	for name, value := range map[string]string{"SYDGUARD_SELECTED_PROFILE": input.SnapshotPath, "SYDGUARD_PROJECT_ID": input.ProjectID, "SYDGUARD_PROFILE_NAME": input.Name, "SYDGUARD_PROFILE_REVISION": input.Revision} {
 		if err := os.Setenv(name, value); err != nil {
 			return 1, err

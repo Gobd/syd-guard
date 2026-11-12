@@ -1,5 +1,45 @@
 # Temporary handoff — resumed integration checkpoint
 
+## Operator clarified acceptance contract — live persisted approvals
+
+Every UI approval must persist corresponding public intent through authenticated
+profile CAS AND apply it to the same running workload without process restart.
+Profile-editor additions/removals must likewise save and apply; later launches
+must enforce the same saved profile. Editing a registered project's saved profile
+must work BEFORE any agent session starts; starting an agent to expose an editor
+is not acceptable. Existing authenticated catalog is the pre-start discovery seam. UI must distinguish saved/applied/failure/
+uncertain states, not call existing ephemeral live approvals this workflow.
+Managed policy files remain UI/helper-writable only; ordinary project files are
+editable by the operator outside the agent sandbox. Failed operations may need an
+agent retry; previously read data/completed writes and held-FD/connection limits
+must be stated honestly. THIS CONTRACT IS NOT IMPLEMENTED YET.
+
+Real unprivileged upstream Syd probes confirmed same-shell-PID live rule addition
+and removal, but separate recursive additions override the protected deny preset.
+Follow-up found SCM_RIGHTS `load` parses multiple rules under one Sandbox write
+lock: successful batches preserve final deny-last ordering. It does NOT rollback
+on failure; a deliberately invalid later line left a recursive allow installed and
+made the test `.env` readable. Do not enable naive batching or reappend-after-add
+as live profile editing. Source task2 reports preserve these negative proofs.
+Need a prefix-safe representation or separately reviewed all-workload quiescence
+boundary (excluding Syd/IPC, otherwise freeze deadlocks). No such boundary has
+been implemented or privileged-tested. Do not infer fork/new engine permission.
+
+Private personal UI preview started on host localhost (separate new state/binary,
+existing PID37288 default UI untouched). Host state/binary directory is recorded
+in `/tmp/sydguard-personal-preview-path`; use its matching `ui ... status/stop`
+and backend/guest flags, not default UI. Guest managed preview controller attempt
+hit factory helper deadline and exited: current helper catalog takes ~2s per RPC,
+so two-entry startup may exceed six-second total budget. Static UI returned 200,
+profile API 502; link was given with explicit broken-profile-list caveat. Host
+preview was rebuilt using Bun1.4.4 assets and latest Go CLI, and restarted to port
+56655; use matching private UI status to obtain its operator URL. Frontend check,
+lint and default tests passed (3 ordinary tests, 6 browser tests skipped). The
+old TUN/explicit-proxy-only message is not the current App.tsx wording; veth and
+synthetic DNS have an actual HTTPS learn proof, not full saved/live network replay. Guest
+preview PID/identity recorded in fixture `personal-ui-controller.json` and log.
+Preview needs repair, not readiness advertising or deleting profiles to hide it.
+
 ## Current WIP checkpoint — 2026-11-12 continuation
 
 Operator requested a committed backup while work continues. **Not ready/green end-to-end.**
@@ -44,7 +84,15 @@ Operator requested a committed backup while work continues. **Not ready/green en
   signal: killed` before supervisor announcement; no successful replay proof yet.
   Do not infer kill origin or complete mount proof from this message. Watchdog cleanup
   left only intended persistent empty UID502 slot0; no anchor/journal/cgroup children.
-  Privileged retries stopped pending bounded stage/poll/elapsed-time diagnostics.
+  Reviewed bounded stage/poll/elapsed-time diagnostics are now integrated and
+  installed as matching immutable helper (manifest updated). P2 dispatch marker
+  moved after unprivileged UID check. Native/Linux vet/race/lint passed. Actual
+  diagnostic retry: supervisor PID199515 SIGKILL raw9 after ~888us; parent wait
+  observed before watchdog socket readiness/kill (~0.3ms later), pidfd revents0.
+  No supervisor entry marker. Outer fixture ~4.06s, 60s timeout did not expire.
+  Watchdog cleanup successful; only intended slot0 remains. Filtered kernel log
+  showed no PID/helper-name/SECCOMP-kill line. Do not infer kill origin yet.
+  Evidence `pinned-launch-stage-diagnostics.log`. Privileged retries stopped.
   Evidence: fixture `pinned-launch-reviewed.log`, `pinned-fixture.json`, and report
   `pinned-launch-einval-diagnosis.f5831b7e.1f826671.md`. Preserve both launch and
   cleanup errors in the next diagnostic patch; watchdog-trigger/wait races can mask cause.
