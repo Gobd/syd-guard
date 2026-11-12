@@ -61,10 +61,33 @@
   `6b10490`, bounded adapter/cancellation guards `6c737f3`, uncertain-save UI and
   independent polling `ae357cc`. Continue on the same feature branch/draft PR;
   no main merge or artifact promotion. Documentation checkpoint follows these.
-- Next: helper-authoritative automatic catalog/protected caller configuration,
-  separately authorized disposable installed-helper E2E, and pinned namespace
-  consumption before selected-profile runtime replay. No production provider/helper
-  deployment or active-session restart occurred.
+- Continued from `2e65ba1` with a bounded authenticated helper catalog and
+  `NewCatalogProfileProvider`. Catalog scans only caller-UID root registrations,
+  validates profile bytes/revisions and directory identities, has explicit caps
+  and fresh scan offsets, supports empty results and rejects partial/stale results.
+  Empty registered projects have no profile entry. Factory authenticates the whole
+  catalog before exact snapshot reads, rejects alias/namespace drift, and treats
+  fresh revisions as current intent rather than reviewed/applied permissions.
+- Worker `653139d6-0936-4148-9e97-cda8b0634311` completed isolated source; its patch
+  is integrated. Review `cd6be25c-2cac-43bd-bb45-74dcfc722713` found four P2s;
+  fixes cover restrictive umask on newly created locks, impossible namespace data,
+  cross-registration aliases and filesystem-locality wording. Follow-up reviewer
+  `9642e3bb-c055-4d0c-9464-8e485e868d29` reports no issues, OK unactivated only.
+- Catalog/factory source committed as `9f9ea71` (helper/catalog) and `a2f9db4`
+  (unactivated catalog-backed factory), followed by this documentation checkpoint.
+- Current catalog/factory checks: full macOS vet/uncached race/build/lint, Linux
+  aggregate and uncached managedstore/controller race checks, Linux enumeration/
+  wire/umask regressions, FreeBSD/Windows package builds all pass. Browser source
+  is unchanged from the prior 9-pass/150-assertion proof; guest browser tests skip.
+- Extended the opt-in installed-helper fixture with catalog assertions but did
+  NOT run it. Read-only probe found helper/admin paths and fixed registry absent.
+  Folded public deployment gates into README; no helper installation, real policy
+  enrollment, sudo/sudoers/account/audit change, active-controller restart or real
+  project ownership migration occurred.
+- Next: separately authorized disposable installed-helper E2E, protected caller
+  configuration/production adapter hookup, and pinned namespace consumption before
+  selected-profile runtime replay. Catalog source is not production activation.
+  Known hardlink gates remain failing and unchanged.
 - Retained initial worker patch/report: run `08551b8c-92c8-4608-8fa7-e894a55f7134`;
   failed reviewer retry: `cbe8e60f-012f-4abb-8b1f-e824046c335c`.
 

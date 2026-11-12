@@ -118,8 +118,12 @@ This checklist captures remaining work; don't infer full readiness from partial 
       explicit bounded registration/profile subset, binds stable opaque tuple IDs,
       maps CAS conflicts and preserves indeterminate outcomes. Injected-transport
       tests cover exact snapshots, binding changes, concurrency and read-only mode;
-      no installed-helper adapter E2E has run. Automatic helper-authoritative catalog
-      enumeration and protected caller configuration remain pending. Follow-up review
+      no installed-helper adapter E2E has run. Bounded helper-authoritative catalog
+      enumeration and an unactivated catalog-backed factory now have unit coverage:
+      UID-specific registrations, strict metadata, exact snapshot rereads, alias/drift
+      rejection, explicit empty results and whole-catalog failure on stale entries.
+      Catalogue caps, fresh scan offsets and restrictive-umask lock creation are
+      tested without privileged setup. Protected caller configuration remains pending. Follow-up review
       fixed invalid-UTF-8 registration drift, indeterminate API/UI handling, shared
       operation deadlines, long display paths and unsupported-platform compilation.
       Browser fixtures now prove draft preservation and no blind retry after typed,
@@ -257,9 +261,13 @@ This checklist captures remaining work; don't infer full readiness from partial 
 1. Review the checkpointed managed-store, strict replay and learning packages.
    Standard macOS/Linux checks and macOS opt-in browser tests pass after resume;
    real-Syd hardlink regressions remain blockers, not passing acceptance gates.
-2. Establish authenticated managed project/profile identity and exact helper-returned
-   snapshots before connecting a production profile provider. Folder discovery is
-   not authority. Keep unsupported shared mounts and platforms fail-closed.
+2. Complete separately authorized disposable installed-helper E2E and protected
+   caller configuration before connecting a production profile provider. Identity,
+   exact snapshots, explicit-ref adapter and authenticated catalog/factory exist as
+   unactivated components; folder discovery is not authority. One stale registration
+   fails the full catalog, and empty registrations have no profile entry. Backing
+   storage locality needs administrator proof beyond filesystem-magic checks.
+   Keep unsupported shared mounts and platforms fail-closed.
 3. Connect selected config/session revision binding and strict file/network replay
    through the private supervisor; do not give selected profiles implicit workspace
    writes. Live additions require explicit authorization; ceiling changes need restart.

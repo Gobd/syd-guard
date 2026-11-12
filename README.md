@@ -174,7 +174,8 @@ permissive learn must reuse this preset; learn is not implemented.
 
 The source includes a strict file-profile compiler, a bounded review-only
 permission-check collector, Linux managed-policy helper/admin/client code, and
-an unactivated managed-client profile adapter for explicitly registered refs.
+an unactivated managed-client profile adapter for registered refs and a bounded
+authenticated helper catalog.
 They are **not connected to normal selected-profile launches or production UI
 editing**. `learn` still fails explicitly; a compiler or collector package is not
 an implemented learning workflow. Do not install/enable the privileged helper
@@ -182,11 +183,12 @@ without the remaining deployment and integration review. Experimental snapshot
 responses include registered identity and namespace observations; the client checks
 exact returned bytes and typed revision conflicts. These checks do not pin a project
 namespace through later consumption. The stricter wire format requires matched
-helper/client builds. The adapter verifies an explicit bounded set of registered
-project/profile pairs through authenticated reads, maps helper CAS conflicts, and
-rejects changed bindings without reopening metadata paths. It is not an automatic
-helper catalog or a pinned launch namespace; its tests use an injected transport,
-not a deployed helper. Uncertain saves carry an explicit indeterminate outcome
+helper/client builds. The adapter verifies explicit registered refs or consumes
+an authenticated helper catalog, then rereads exact snapshots, maps CAS conflicts
+and rejects changed or aliased bindings without reopening metadata paths. Catalog
+enumeration is implemented but is **not installed or enabled in production**; the
+factory tests use an injected transport, not a deployed helper. It is not a pinned
+launch namespace. Uncertain saves carry an explicit indeterminate outcome
 through the API/bridge; the editor preserves drafts and blocks blind retry until
 an explicit fresh snapshot is loaded. Profile helper work shares a six-second
 cooperative budget inside a ten-second profile transport budget; existing live
@@ -201,6 +203,49 @@ resumed integration state and next steps.
 `internal/webui/assets` is intentionally tracked: Go embeds it, allowing a clean
 Go-only build and module installation. Rebuild from `web/src` with supported Bun
 before building Go, and verify the generated assets stay in sync.
+
+### Managed-helper deployment gates
+
+There is **no automatic installation or production enablement**. Before a disposable
+Linux helper E2E test, an administrator must independently review/install the dedicated
+helper and enrollment binaries at `/usr/local/libexec/sydguard-policy-helper` and
+`/usr/local/libexec/sydguard-policy-admin`, root-owned mode 0755, under root-owned,
+non-writable, non-symlink ancestors. The fixed `/var/lib/sydguard-policy` registry
+must be root-owned mode 0700. Never run a mutable checkout CLI or Go test binary as
+root; tests and workloads run as the ordinary operator UID.
+
+Only fresh managed directories passing the **ext4/tmpfs filesystem-magic and
+same-device allowlist** are supported. An administrator must separately verify
+that backing storage is local: an ext4 device backed by remote storage can still
+pass a magic check. Existing `.sydguard` directories are not adopted; unsupported
+filesystem types (including normal virtiofs/FUSE/network mounts) and Darwin are
+rejected. Root-owned inodes do not make operator-owned parent pathnames immutable. Snapshot bytes remain authority;
+returned display paths and namespace observations are not a pinned launch boundary.
+
+The authenticated catalog enumerates only the caller's registered profiles, not
+checkout folders. It caps work at 4096 registry names, 256 registrations, 256 names
+per policy directory/4096 total, 128 profiles, 1 MiB per profile and 8 MiB aggregate
+profile data, with a bounded response. Empty registrations have no profile entry;
+one stale or malformed registration makes the whole catalog fail closed. There is
+no partial/truncated success or automatic registry recovery. Catalog is read-only
+and opens an existing transaction lock; older enrollments missing that lock need
+an ordinary non-catalog transaction or administrator inspection before catalog use.
+
+Enrollment is a separate administrator authorization target, not an RPC option.
+Credentials must be private, single-link, outside every workload/project grant and
+absent from argv, environment, browser data and inherited workload descriptors.
+Administrator review must cover RPC-only sudo policy, real cross-UID origin checks,
+stdin/I/O logging and credential/proc/ptrace isolation; do not globally disable
+security auditing. Helper deadlines are not kernel-hang bounds or invocation quotas.
+Crash leftovers and indeterminate registration require administrator inspection,
+not blind retry or pathname-based cleanup.
+
+The opt-in installed-helper fixtures require separately authorized disposable setup
+and have **not** validated the current integration. The guest's fixed helper/admin
+paths and registry were observed absent at resume; no real installation was replaced.
+After fixture execution, an administrator must inspect and remove only the verified
+test-owned installation, registry and printed test directory. No production provider
+or Mac-backed project protection may be inferred from these prerequisites.
 
 ## Named project configs
 
