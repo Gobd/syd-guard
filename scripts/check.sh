@@ -22,15 +22,7 @@ if [[ -n "$unformatted" ]]; then
   exit 1
 fi
 
-go vet ./...
-go test -race ./...
-go build ./...
-golangci-lint run
-
-while IFS= read -r -d '' script; do
-  shellcheck "$script"
-done < <(find scripts -type f -name '*.sh' -print0)
-
+# Go embeds the frontend bundle; build it before testing or compiling consumers.
 if [[ -f web/package.json ]]; then
   command -v bun >/dev/null 2>&1 || { printf 'Missing Bun\n' >&2; exit 1; }
   (
@@ -51,10 +43,19 @@ if [[ -f web/package.json ]]; then
     bun run lint
     bun run fmt:check
     bun run check
-    bun run test
     bun run build
+    bun run test
   )
 else
   printf 'Frontend checks skipped: web/package.json does not exist yet.\n'
 fi
+go vet ./...
+go test -race ./...
+go build ./...
+golangci-lint run
+
+while IFS= read -r -d '' script; do
+  shellcheck "$script"
+done < <(find scripts -type f -name '*.sh' -print0)
+
 printf 'All existing-code checks passed. Runtime sandbox/integration gates are separate.\n'
