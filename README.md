@@ -168,6 +168,21 @@ secret classifier or a proven inode-level boundary. Other aliases, inherited
 FDs, concurrent renames and browser locations remain subject to audit. Future
 permissive learn must reuse this preset; learn is not implemented.
 
+## Checkpointed experimental components
+
+The source includes a strict file-profile compiler, a bounded review-only
+permission-check collector, and Linux managed-policy helper/admin/client code.
+They are **not connected to normal selected-profile launches or production UI
+editing**. `learn` still fails explicitly; a compiler or collector package is not
+an implemented learning workflow. Do not install/enable the privileged helper
+without the remaining deployment and integration review. Shared mounts and
+Darwin managed storage remain unsupported. See the temporary `HANDOFF.md` for the
+paused integration state and next steps.
+
+`internal/webui/assets` is intentionally tracked: Go embeds it, allowing a clean
+Go-only build and module installation. Rebuild from `web/src` with supported Bun
+before building Go, and verify the generated assets stay in sync.
+
 ## Named project configs
 
 Intended user layout:

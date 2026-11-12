@@ -7,8 +7,10 @@ import (
 )
 
 // ParseManagedProfileSnapshot requires every field of the managed wire schema,
-// including explicit empty arrays and recursive flags. It does not authorize a
-// profile or protect its storage; the managed store must provide both.
+// including explicit empty arrays and recursive flags. Parse the exact bytes
+// returned by an authenticated trusted managed helper; do not reopen a path.
+// The caller must bind their revision to operator authorization. This parser
+// does not authenticate the helper, authorize the profile or protect storage.
 func ParseManagedProfileSnapshot(name string, data []byte) (ProfileSnapshot, error) {
 	snapshot, err := ParseProfileSnapshot(name, data)
 	if err != nil {

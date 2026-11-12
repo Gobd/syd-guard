@@ -16,26 +16,110 @@ import (
 	"github.com/Gobd/syd-guard/internal/config"
 )
 
+// TrustedRuntimeInputs are separately authorized exact regular files. Execution
+// grants also include read; these are not part of the resolved profile.
+type TrustedRuntimeInputs struct {
+	Read []string
+	Exec []string
+}
+
+// HumanIPCApprovals establishes only ceilings, not automatic grants. The trusted
+// controller must obtain per-run human approval for each exact IPC grant and
+// enforce ceilings and protected paths on every grant. The caller must not use
+// this facility with an automatic or untrusted controller.
+type HumanIPCApprovals struct {
+	Scopes []string
+}
+
+// StrictRuntimeCapabilities describes requested extra runtime authority for the
+// parent integration to display and authorize alongside the reviewed profile.
+// Paths are caller-supplied spellings, subsequently revalidated, not immutable
+// filesystem identities. IPC ceilings include execution even though the current
+// file-grant API does not grant execution.
+type StrictRuntimeCapabilities struct {
+	Inputs                 TrustedRuntimeInputs
+	IPCScopes              []string
+	IPCCeilingCapabilities []string
+	Gateway                string
+	TransitDNS             string
+}
+
 type RunOptions struct {
-	Engine         string
-	Directory      string
-	Args           []string
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	Gateway        string
-	TransitDNS     string
-	Scopes         []string
-	ReadInputs     []string
-	ExecInputs     []string
-	OnReady        func(string, []string, []string) error
-	OnNetworkReady func(string) error
-	OnEvent        func([]byte) error
+	Engine     string
+	Directory  string
+	Args       []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	Gateway    string
+	TransitDNS string
+	Scopes     []string
+	ReadInputs []string
+	ExecInputs []string
+	// ResolvedProfile is caller-authorized, not proof of review or authorization.
+	// Callers must synchronize ownership and not mutate it during Run's entry
+	// copy. The strict capability callback, when invoked, signals the copy has
+	// finished; otherwise wait until Run returns before mutating. Nil selects
+	// legacy mode.
+	ResolvedProfile *config.ResolvedProfile
+	// Strict additions are separately authorized, and never inferred from the
+	// legacy input or scope fields. The parent must display the effective policy
+	// (profile + trusted runtime + per-run user approvals), not profile alone.
+	StrictInputs                TrustedRuntimeInputs
+	StrictIPC                   *HumanIPCApprovals
+	OnStrictRuntimeCapabilities func(StrictRuntimeCapabilities) error
+	OnReady                     func(string, []string, []string) error
+	OnNetworkReady              func(string) error
+	OnEvent                     func([]byte) error
 }
 
 // Run is an initial immutable/no-network foreground launcher. It is not the
 // future mutable controller, session registry or model-ready network workflow.
 func Run(ctx context.Context, options RunOptions) (int, error) {
+	// Copy before version execution or any asynchronous use. A caller writing
+	// concurrently with this copy is still a data race and violates the API.
+	if options.ResolvedProfile != nil {
+		owned := cloneResolvedProfile(*options.ResolvedProfile)
+		options.ResolvedProfile = &owned
+		options.StrictInputs.Read = append([]string(nil), options.StrictInputs.Read...)
+		options.StrictInputs.Exec = append([]string(nil), options.StrictInputs.Exec...)
+		if options.StrictIPC != nil {
+			ipc := *options.StrictIPC
+			ipc.Scopes = append([]string(nil), ipc.Scopes...)
+			options.StrictIPC = &ipc
+		}
+		if len(options.ReadInputs)+len(options.ExecInputs)+len(options.Scopes) != 0 {
+			return 2, fmt.Errorf("strict replay rejects legacy inputs and scopes; use separately authorized strict inputs and human IPC approvals")
+		}
+		metadata := StrictRuntimeCapabilities{Inputs: options.StrictInputs, Gateway: options.Gateway, TransitDNS: options.TransitDNS}
+		if options.StrictIPC != nil {
+			metadata.IPCScopes = append([]string(nil), options.StrictIPC.Scopes...)
+			metadata.IPCCeilingCapabilities = []string{"read", "readdir", "write", "create", "delete", "rename", "truncate", "mkdir", "rmdir", "symlink", "exec"}
+		}
+		// Detach metadata handed to the integration from the launch inputs.
+		metadata.Inputs.Read = append([]string(nil), metadata.Inputs.Read...)
+		metadata.Inputs.Exec = append([]string(nil), metadata.Inputs.Exec...)
+		if len(metadata.Inputs.Read)+len(metadata.Inputs.Exec)+len(metadata.IPCScopes) > 0 || metadata.Gateway != "" || metadata.TransitDNS != "" {
+			if options.OnStrictRuntimeCapabilities == nil {
+				return 2, fmt.Errorf("strict runtime additions require a trusted effective-policy authorization callback")
+			}
+			if err := options.OnStrictRuntimeCapabilities(metadata); err != nil {
+				return 2, fmt.Errorf("strict runtime additions not authorized: %w", err)
+			}
+		}
+		options.ReadInputs, options.ExecInputs = options.StrictInputs.Read, options.StrictInputs.Exec
+		if options.StrictIPC != nil {
+			options.Scopes = options.StrictIPC.Scopes
+			if len(options.Scopes) == 0 {
+				return 2, fmt.Errorf("human IPC approvals require explicit scopes")
+			}
+		}
+		if err := strictReplayLandlockGate(); err != nil {
+			return 2, err
+		}
+	} else if len(options.StrictInputs.Read)+len(options.StrictInputs.Exec) > 0 || options.StrictIPC != nil || options.OnStrictRuntimeCapabilities != nil {
+		return 2, fmt.Errorf("strict runtime options require a resolved profile")
+	}
 	if runtime.GOOS != "linux" {
 		return 2, fmt.Errorf("syd execution requires Linux")
 	}
@@ -101,7 +185,12 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		return 1, err
 	}
 	protected = append(protected, executable)
-	profile, err := Profile(options.Directory, temporary, protected)
+	var profile string
+	if options.ResolvedProfile == nil {
+		profile, err = Profile(options.Directory, temporary, protected)
+	} else {
+		profile, err = StrictProfile(options.Directory, temporary, protected, *options.ResolvedProfile)
+	}
 	if err != nil {
 		return 2, err
 	}
@@ -137,8 +226,9 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		}
 		for _, scope := range scopes {
 			for _, blocked := range protected {
-				if pathOverlaps(scope, blocked) {
-					return 2, fmt.Errorf("filesystem ceiling overlaps protected authority: %s", scope)
+				canonical, err := config.RevalidateResolvedFilePath(blocked)
+				if err != nil || pathOverlaps(scope, canonical) {
+					return 2, fmt.Errorf("filesystem ceiling overlaps or cannot validate protected authority; place engine, wrapper and state outside the ceiling")
 				}
 			}
 		}
@@ -269,6 +359,15 @@ func Run(ctx context.Context, options RunOptions) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func cloneResolvedProfile(profile config.ResolvedProfile) config.ResolvedProfile {
+	profile.Files = append([]config.FileRule(nil), profile.Files...)
+	for i := range profile.Files {
+		profile.Files[i].Access = append([]string(nil), profile.Files[i].Access...)
+	}
+	profile.Network = append([]config.NetworkRule(nil), profile.Network...)
+	return profile
 }
 
 func pathOverlaps(a, b string) bool {

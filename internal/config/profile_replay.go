@@ -113,6 +113,12 @@ func existingDirectory(path string) (string, error) {
 	return path, nil
 }
 
+// RevalidateResolvedFilePath resolves existing symlinks again immediately before
+// compilation. It does not authorize the path or make the filesystem immutable.
+func RevalidateResolvedFilePath(path string) (string, error) {
+	return resolveExistingPrefix(path)
+}
+
 func resolveExistingPrefix(path string) (string, error) {
 	if !filepath.IsAbs(path) || hasParentComponent(path) {
 		return "", fmt.Errorf("path must be absolute and contain no parent components")

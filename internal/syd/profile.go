@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // Profile builds an immutable, no-network foreground baseline. Filesystem-kind,
@@ -28,12 +29,30 @@ func Profile(workdir, temporary string, protected []string) (string, error) {
 			return "", fmt.Errorf("refusing writable whole-home workspace")
 		}
 	}
+	lines, err := runtimeRules()
+	if err != nil {
+		return "", err
+	}
+	for _, path := range []string{workdir, temporary} {
+		lines = append(lines, writableRuntimeRules(path, true)...)
+	}
+	rules, err := ProtectedRules(workdir, protected)
+	if err != nil {
+		return "", err
+	}
+	lines = append(lines, strings.TrimSuffix(rules, "\n"))
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+var runtimeExecutablePaths = []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"}
+
+func runtimeRules() ([]string, error) {
 	lines := []string{"# Generated immutable Syd Guard baseline; no network grants.", "include_profile fs", "trace/force_umask:7077", "allow/create+!pipe", "allow/stat+/proc/self/fd/pipe:*", "allow/ioctl+TCGETS", "allow/ioctl+TCSETS", "allow/ioctl+TCSETSW", "allow/ioctl+TCSETSF", "allow/ioctl+TIOCGWINSZ"}
-	for _, path := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"} {
+	for _, path := range runtimeExecutablePaths {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			continue
 		} else if err != nil {
-			return "", err
+			return nil, err
 		}
 		lines = append(lines, "allow/read,stat,readdir,readlink,chdir,exec+"+path+"/***", "allow/lock/read,readdir,exec+"+path)
 	}
@@ -42,26 +61,24 @@ func Profile(workdir, temporary string, protected []string) (string, error) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			continue
 		} else if err != nil {
-			return "", err
+			return nil, err
 		}
 		lines = append(lines, "allow/read,stat+"+path, "allow/lock/read+"+path)
 	}
 	lines = append(lines, "allow/write+/dev/null", "allow/lock/write+/dev/null")
-	for _, path := range []string{workdir, temporary} {
-		// Explicit operation list: no implicit socket/network/ioctl grants.
-		lines = append(lines,
-			"allow/read,stat,readdir,readlink,chdir,write,create,delete,rename,truncate,chmod,chattr,mkdir,rmdir,symlink,exec+"+path+"/***",
-			"allow/read,stat,readdir,readlink,chdir+"+path,
-			"allow/lock/read,readdir,write,create,delete,rename,truncate,mkdir,rmdir,symlink,exec+"+path)
+	return lines, nil
+}
+
+func writableRuntimeRules(path string, executable bool) []string {
+	exec := ""
+	if executable {
+		exec = ",exec"
 	}
-	rules, err := ProtectedRules(workdir, protected)
-	if err != nil {
-		return "", err
+	return []string{
+		"allow/read,stat,readdir,readlink,chdir,write,create,delete,rename,truncate,chmod,chattr,mkdir,rmdir,symlink" + exec + "+" + path + "/***",
+		"allow/read,stat,readdir,readlink,chdir+" + path,
+		"allow/lock/read,readdir,write,create,delete,rename,truncate,mkdir,rmdir,symlink" + exec + "+" + path,
 	}
-	lines = append(lines, strings.TrimSuffix(rules, "\n"))
-	// No lock:off, live IPC, user preset, unsafe options, or network grants.
-	// Upstream's default auto-seals after parsing. Test /dev/syd mutation denial.
-	return strings.Join(lines, "\n") + "\n", nil
 }
 
 func canonicalDirectory(path string) (string, error) {
@@ -87,7 +104,7 @@ func canonicalDirectory(path string) (string, error) {
 }
 
 func literalPath(path string) error {
-	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n*?[]{}\\$;!") {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "*?[]{}\\$;!") || strings.IndexFunc(path, unicode.IsControl) >= 0 {
 		return fmt.Errorf("path cannot be safely represented as a literal Syd rule: %q", path)
 	}
 	return nil
