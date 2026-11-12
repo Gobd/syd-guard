@@ -160,6 +160,11 @@ func run() (int, error) {
 	if err := validateProjectPaths(snapshot.Project, parsed.Profile()); err != nil {
 		return 1, fmt.Errorf("validate pinned project paths: %w", err)
 	}
+	if writable {
+		if err := validateWritableSource(snapshot.Project, parsed.Profile(), uid); err != nil {
+			return 1, fmt.Errorf("validate writable source: %w", err)
+		}
+	}
 	identity, err := session.ProcessIdentity(os.Getpid())
 	if err != nil {
 		return 1, err

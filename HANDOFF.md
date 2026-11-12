@@ -38,11 +38,30 @@ file remains. Crash/cancel/mount flags/namespace replacement/stale CAS still nee
 Saved writable source now integrated (common typed selected adapter, descriptor-relative
 openat2 checks and conditional project RW bind, policy stays RO); unprivileged static
 Syd file-operation tests passed and merged native/Linux full vet/race/build/lint passed.
-NOT PRIVILEGED-LAUNCHED YET. Reviewer0655 found P1: relocated private-view paths can
+Reviewer0655 initially found P1: relocated private-view paths can
 hide original source-project overlap with trusted runtime exec hierarchies/whole home.
-Add source descriptor-identity/ancestry guard before enabling mutating bind; DO NOT
-install writable candidate until repair accepted. Fresh disjoint writable fixture CAS
-and manual review prepared in pinned-writable-fixture.json, no workload launch.
+Source descriptor-identity/ancestry guard is now integrated and accepted after
+additional mount-topology repair. Direct runtime overlap checks fixed verified root
+FDs in both ancestry directions; UID home comes from root-controlled /etc/passwd,
+not requested HOME. STATX_MNT_ID checks plus bounded /proc/thread-self/mountinfo
+reject ANY other mount of the source filesystem, including descendant runtime/home
+bind aliases. No topology path reopened as authority; unsupported layouts fail closed.
+Failed reviewer provider502 followed unanswered supervisor question; recovered question,
+reported failure, and same Pi review retried after operator explicitly resumed. Review
+ad6e30c3 accepted scoped source fix; P2 ambient-topology test changed to getter-only.
+Native/Linux full vet/race/lint passed including parser/mount tests.
+Installed ONLY matching immutable writable launch helper after manifest identity/hash
+check; previous readonly helper preserved as launch_readonly_backup manifest entry.
+Actual fresh disjoint UID502 saved profile CAS/review/launch PASS exit0: create/edit,
+rename/delete inside granted directory; editable no-delete unlink denied; readonly
+write denied; outside/symlink-escape reads denied; both presented and private policy
+mutation/chmod denied. Policy inode/bytes and readonly contents unchanged. Cleanup
+no anchors/cgroup children, intended slot0 only. Evidence selected-writable-profile.log.
+Actual RootOwner same-inode hardlink policy alias direct UID502 write/chmod denied;
+aliased policy rejected before supervisor startup. Exact alias removed after checking
+inode, original policy bytes/mode/inode/link count restored. Evidence
+selected-policy-alias-rejection.log. This is not unmanaged-hardlink secret gate repair. Fresh disjoint writable fixture CAS
+and manual review and workload proof recorded in pinned-writable-fixture.json.
 Writable worker resume failed due auto-removed managed worktree (no further changes);
 reported/stopped; WIP checkpoint then single fresh Pi-worker retry is planned.
 

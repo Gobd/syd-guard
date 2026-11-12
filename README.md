@@ -202,10 +202,12 @@ independent current-snapshot authorization is not acknowledgment of the earlier 
 
 Real disposable Linux tests passed a Go-build learn, public HTTPS observation,
 explicitly edited candidate save and authenticated helper reread. Managed UI editing
-also passed its separate installed-helper/browser fixture. **Combined saved-profile
-replay is not yet proved.** The current launcher supports only project-relative
-read-only/no-network profiles; writes, deletion and network intent are rejected.
-Its first actual privileged retry failed before supervisor readiness. Do not install
+also passed its separate installed-helper/browser fixture. Disposable selected CLI
+launches now passed exact saved project-relative read/write/delete intent, scoped
+denials, policy protection and cleanup. Writable replay rejects runtime/home overlap
+and unsupported source-filesystem mount aliases. **Saved network replay and safe
+persist-and-apply-live editing remain incomplete**; selected network intent is still
+rejected. These are narrow VM-local proofs, not release certification. Do not install
 or enable these privileged components outside the reviewed disposable test setup.
 
 Experimental snapshot responses include registered identity and namespace
