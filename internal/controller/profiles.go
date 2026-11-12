@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/Gobd/syd-guard/internal/config"
+	"github.com/Gobd/syd-guard/internal/managedstore"
 	"github.com/Gobd/syd-guard/internal/syd"
 )
 
@@ -38,6 +40,12 @@ type ProfileSource struct {
 	Path    string
 	Edit    bool
 }
+
+// The entire catalog/save operation shares this budget, not one per helper call.
+// Leave time for helper process cleanup and operator transport before UI timeout.
+const ProfileOperationTimeout = 6 * time.Second
+
+const maxProfileDisplayPath = 4096 + 1 + len(config.ProfileFolder) + 1 + 64 + len(".json")
 
 type ProfileCapabilities struct {
 	Edit           bool `json:"edit"`
@@ -94,12 +102,22 @@ func safeProfileSource(s ProfileSource) bool {
 	if !validProfileID(s.ID) || config.ProfileName(s.Name) != nil || !filepath.IsAbs(s.Project) || !filepath.IsAbs(s.Path) {
 		return false
 	}
-	for _, v := range []string{s.Project, s.Path} {
-		if len(v) > 4096 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{s.Project, 4096}, {s.Path, maxProfileDisplayPath}} {
+		v := field.value
+		if len(v) > field.limit || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// Display names and paths are part of a provider's binding, not replacement IDs.
+// Edit capability may change, but a snapshot must not silently retarget an ID.
+func sameProfileIdentity(a, b ProfileSource) bool {
+	return a.ID == b.ID && a.Name == b.Name && a.Project == b.Project && a.Path == b.Path
 }
 
 func recordFromSource(s ProfileSource, data []byte, candidate bool) (ProfileRecord, error) {
@@ -120,16 +138,27 @@ func recordFromSource(s ProfileSource, data []byte, candidate bool) (ProfileReco
 
 // candidates is limited to the default profile found from active registered
 // projects. Its opaque IDs are ephemeral and carry no managed-store authority.
-func (server *Server) candidates() map[string]ProfileRecord {
-	server.profilesMu.Lock()
-	defer server.profilesMu.Unlock()
+func (server *Server) candidates(ctx context.Context) map[string]ProfileRecord {
 	result := map[string]ProfileRecord{}
+	if err := lockContext(ctx, &server.profilesMu); err != nil {
+		return result
+	}
+	defer server.profilesMu.Unlock()
 	next := map[string]string{}
 	sessions := server.registry.List(false)
 	if len(sessions) > 128 {
 		sessions = sessions[:128]
 	}
 	for _, session := range sessions {
+		if ctx.Err() != nil {
+			break
+		}
+		// Filter stale/reused PIDs without taking teardown authority or changing
+		// session state. Candidate discovery is limited to live identities.
+		identity, err := server.identity(session.PID)
+		if err != nil || identity != session.StartIdentity {
+			continue
+		}
 		project, err := filepath.EvalSymlinks(session.Project)
 		if err != nil || !filepath.IsAbs(project) || protectedCandidateProject(session.Project) || protectedCandidateProject(project) {
 			continue
@@ -193,25 +222,42 @@ func protectedCandidateProject(path string) bool {
 }
 
 func (server *Server) profileList(w http.ResponseWriter, r *http.Request) {
-	server.reap()
-	records := server.candidates()
+	ctx, cancel := context.WithTimeout(r.Context(), ProfileOperationTimeout)
+	defer cancel()
+	// Session cleanup can hold gatesMu during privileged teardown; it must not
+	// block intent catalog work. Candidates remain explicitly untrusted.
+	records := server.candidates(ctx)
+	if ctx.Err() != nil {
+		profileFailure(w, 503, "unavailable", "profile catalog deadline exceeded", "")
+		return
+	}
 	list := make([]ProfileMetadata, 0, len(records))
 	for _, record := range records {
 		list = append(list, record.ProfileMetadata)
 	}
 	if server.profiles != nil {
-		sources, err := server.profiles.List(r.Context())
+		sources, err := server.profiles.List(ctx)
 		if err != nil || len(sources) > 128 {
 			profileFailure(w, 503, "unavailable", "profile provider unavailable", "")
 			return
 		}
+		seen := make(map[string]bool, len(sources))
 		for _, s := range sources {
-			if _, exists := records[s.ID]; exists {
+			if ctx.Err() != nil {
+				profileFailure(w, 503, "unavailable", "profile catalog deadline exceeded", "")
+				return
+			}
+			if !safeProfileSource(s) {
+				profileFailure(w, 503, "unavailable", "invalid provider metadata", "")
+				return
+			}
+			if _, exists := records[s.ID]; exists || seen[s.ID] {
 				profileFailure(w, 503, "unavailable", "profile identity collision", "")
 				return
 			}
-			source, data, err := server.profiles.ReadSnapshot(r.Context(), s.ID)
-			if err != nil || source.ID != s.ID {
+			seen[s.ID] = true
+			source, data, err := server.profiles.ReadSnapshot(ctx, s.ID)
+			if err != nil || !sameProfileIdentity(source, s) {
 				profileFailure(w, 503, "unavailable", "profile provider unavailable", "")
 				return
 			}
@@ -227,11 +273,17 @@ func (server *Server) profileList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (server *Server) readProfile(ctx context.Context, id string) (ProfileRecord, bool, error) {
-	server.reap()
+	if err := ctx.Err(); err != nil {
+		return ProfileRecord{}, false, err
+	}
 	if !validProfileID(id) {
 		return ProfileRecord{}, false, fmt.Errorf("invalid profile id")
 	}
-	if record, ok := server.candidates()[id]; ok {
+	candidates := server.candidates(ctx)
+	if err := ctx.Err(); err != nil {
+		return ProfileRecord{}, false, err
+	}
+	if record, ok := candidates[id]; ok {
 		return record, true, nil
 	}
 	if server.profiles == nil {
@@ -246,7 +298,9 @@ func (server *Server) readProfile(ctx context.Context, id string) (ProfileRecord
 }
 
 func (server *Server) profileGet(w http.ResponseWriter, r *http.Request) {
-	record, _, err := server.readProfile(r.Context(), r.PathValue("id"))
+	ctx, cancel := context.WithTimeout(r.Context(), ProfileOperationTimeout)
+	defer cancel()
+	record, _, err := server.readProfile(ctx, r.PathValue("id"))
 	if err != nil {
 		profileFailure(w, 404, "unavailable", "profile unavailable", "")
 		return
@@ -255,7 +309,9 @@ func (server *Server) profileGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
-	record, candidate, err := server.readProfile(r.Context(), r.PathValue("id"))
+	ctx, cancel := context.WithTimeout(r.Context(), ProfileOperationTimeout)
+	defer cancel()
+	record, candidate, err := server.readProfile(ctx, r.PathValue("id"))
 	if err != nil {
 		profileFailure(w, 404, "unavailable", "profile unavailable", "")
 		return
@@ -281,9 +337,13 @@ func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
 		profileFailure(w, 409, "revision_conflict", "profile revision changed", record.Revision)
 		return
 	}
-	source, data, err := server.profiles.Replace(r.Context(), record.ID, input.ExpectedRevision, snapshot.Bytes())
+	if ctx.Err() != nil {
+		profileFailure(w, 503, "unavailable", "profile save deadline exceeded before replacement", "")
+		return
+	}
+	source, data, err := server.profiles.Replace(ctx, record.ID, input.ExpectedRevision, snapshot.Bytes())
 	if errors.Is(err, config.ErrProfileConflict) {
-		current, _, readErr := server.readProfile(r.Context(), record.ID)
+		current, _, readErr := server.readProfile(ctx, record.ID)
 		revision := ""
 		if readErr == nil {
 			revision = current.Revision
@@ -291,20 +351,30 @@ func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
 		profileFailure(w, 409, "revision_conflict", "profile revision changed", revision)
 		return
 	}
-	if err != nil || source.ID != record.ID || source.Name != record.Name || source.Project != record.Project || source.Path != record.Path {
+	if errors.Is(err, managedstore.ErrIndeterminate) || ctx.Err() != nil {
+		profileFailure(w, 503, "indeterminate", "Save may have committed; authenticate a fresh snapshot before retrying. Your draft must be preserved.", "")
+		return
+	}
+	if err != nil {
 		profileFailure(w, 503, "unavailable", "profile replacement unavailable", "")
+		return
+	}
+	if !sameProfileIdentity(source, ProfileSource{ID: record.ID, Name: record.Name, Project: record.Project, Path: record.Path}) {
+		profileFailure(w, 503, "indeterminate", "Save may have committed with an invalid binding; reconcile before retrying.", "")
 		return
 	}
 	updated, err := recordFromSource(source, data, false)
 	if err != nil || updated.Revision != snapshot.Revision() {
-		profileFailure(w, 503, "unavailable", "invalid replacement snapshot", "")
+		profileFailure(w, 503, "indeterminate", "Save may have committed with an invalid snapshot; reconcile before retrying.", "")
 		return
 	}
 	reply(w, 200, profileOutcome{Status: "saved", Profile: updated, Message: "Saved; running permissions are unchanged."})
 }
 
 func (server *Server) profileReload(w http.ResponseWriter, r *http.Request) {
-	_, _, err := server.readProfile(r.Context(), r.PathValue("id"))
+	ctx, cancel := context.WithTimeout(r.Context(), ProfileOperationTimeout)
+	defer cancel()
+	_, _, err := server.readProfile(ctx, r.PathValue("id"))
 	if err != nil {
 		profileFailure(w, 404, "unavailable", "profile unavailable", "")
 		return

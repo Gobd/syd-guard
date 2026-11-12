@@ -155,10 +155,24 @@ func OperatorRoute(method, path string) bool {
 	return len(parts) == 5 && parts[0] == "" && parts[1] == "api" && parts[2] == "profiles" && validProfileID(parts[3]) && parts[4] == "reload" && method == "POST"
 }
 
+// ProfileOperatorRoute distinguishes profile intent operations from live grants.
+func ProfileOperatorRoute(method, path string) bool {
+	return OperatorRoute(method, path) && (path == "/api/profiles" || strings.HasPrefix(path, "/api/profiles/"))
+}
+
+// OperatorOperationTimeout bounds profile transports under the UI's 15s write
+// timeout. Existing live-decision routes do not inherit this new timeout.
+const OperatorOperationTimeout = 10 * time.Second
+
 // Operate exposes only approval/read routes, not raw Syd commands or launch APIs.
 func (client *Client) Operate(ctx context.Context, method, path string, input any) (json.RawMessage, error) {
 	if !OperatorRoute(method, path) {
 		return nil, fmt.Errorf("unsupported operator route")
+	}
+	if ProfileOperatorRoute(method, path) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, OperatorOperationTimeout)
+		defer cancel()
 	}
 	var output json.RawMessage
 	err := client.request(ctx, method, path, input, &output)

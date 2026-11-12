@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Gobd/syd-guard/internal/config"
 )
@@ -112,6 +113,108 @@ func TestManagedProfileProviderWorkflow(t *testing.T) {
 	w = profileRequest(h, "POST", "/api/profiles/helper-id/reload", `{"session_id":"old","expected_revision":"`+outcome.Profile.Revision+`"}`, true)
 	if w.Code != 501 || !strings.Contains(w.Body.String(), "unsupported") {
 		t.Fatalf("reload %d %s", w.Code, w.Body)
+	}
+}
+
+// Override catalog metadata while keeping the snapshot independently supplied.
+type catalogProfileProvider struct {
+	*testProfileProvider
+	sources []ProfileSource
+}
+
+func (p *catalogProfileProvider) List(context.Context) ([]ProfileSource, error) {
+	return append([]ProfileSource(nil), p.sources...), nil
+}
+
+func TestManagedProfileCatalogIdentity(t *testing.T) {
+	binding := ProfileSource{ID: "helper-id", Name: "default", Project: "/project", Path: "/project/.sydguard/default.json", Edit: true}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ProfileSource)
+		repeat bool
+		want   int
+	}{
+		{name: "valid", want: 200},
+		{name: "duplicate ID", repeat: true, want: 503},
+		{name: "changed name", mutate: func(s *ProfileSource) { s.Name = "other" }, want: 503},
+		{name: "changed project", mutate: func(s *ProfileSource) { s.Project = "/other" }, want: 503},
+		{name: "changed path", mutate: func(s *ProfileSource) { s.Path = "/other/default.json" }, want: 503},
+		{name: "invalid catalog metadata", mutate: func(s *ProfileSource) { s.Path = "relative" }, want: 503},
+		{name: "changed edit capability", mutate: func(s *ProfileSource) { s.Edit = false }, want: 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, err := New(strings.Repeat("x", 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := binding
+			if tc.mutate != nil {
+				tc.mutate(&listed)
+			}
+			sources := []ProfileSource{listed}
+			if tc.repeat {
+				sources = append(sources, listed)
+			}
+			server.SetProfileProvider(&catalogProfileProvider{
+				testProfileProvider: &testProfileProvider{source: binding, data: []byte(profileFixture)},
+				sources:             sources,
+			})
+			w := profileRequest(server.Handler(), "GET", "/api/profiles", "", true)
+			if w.Code != tc.want {
+				t.Fatalf("catalog: %d %s", w.Code, w.Body)
+			}
+			if tc.want != 200 && strings.Contains(w.Body.String(), `"revision"`) {
+				t.Fatalf("partial catalog leaked: %s", w.Body)
+			}
+		})
+	}
+}
+
+type catalogBudgetProvider struct {
+	sources   map[string]ProfileSource
+	deadlines []time.Time
+}
+
+func (p *catalogBudgetProvider) List(context.Context) ([]ProfileSource, error) {
+	list := make([]ProfileSource, 0, len(p.sources))
+	for _, source := range p.sources {
+		list = append(list, source)
+	}
+	return list, nil
+}
+
+func (p *catalogBudgetProvider) ReadSnapshot(ctx context.Context, id string) (ProfileSource, []byte, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ProfileSource{}, nil, fmt.Errorf("unbounded catalog read")
+	}
+	p.deadlines = append(p.deadlines, deadline)
+	return p.sources[id], []byte(profileFixture), nil
+}
+
+func (p *catalogBudgetProvider) Replace(context.Context, string, string, []byte) (ProfileSource, []byte, error) {
+	return ProfileSource{}, nil, fmt.Errorf("read-only test catalog")
+}
+
+func TestManagedCatalogSharesOneBudget(t *testing.T) {
+	provider := &catalogBudgetProvider{sources: map[string]ProfileSource{}}
+	for i := range 128 {
+		id := fmt.Sprintf("profile-%d", i)
+		provider.sources[id] = ProfileSource{ID: id, Name: "default", Project: "/project", Path: "/project/.sydguard/default.json"}
+	}
+	server, err := New(strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.SetProfileProvider(provider)
+	w := profileRequest(server.Handler(), "GET", "/api/profiles", "", true)
+	if w.Code != 200 || len(provider.deadlines) != 128 {
+		t.Fatalf("bounded catalog: %d %s reads=%d", w.Code, w.Body, len(provider.deadlines))
+	}
+	for _, deadline := range provider.deadlines {
+		if deadline != provider.deadlines[0] || time.Until(deadline) > ProfileOperationTimeout {
+			t.Fatal("catalog budget was restarted per read")
+		}
 	}
 }
 
@@ -251,6 +354,50 @@ func TestCandidateDiscoveryUntrustedAndBounded(t *testing.T) {
 	w = profileRequest(h, "GET", "/api/profiles", "", true)
 	if strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("symlink folder discovered: %s", w.Body)
+	}
+}
+
+func TestCandidatesExcludeExitedOrReusedProcessIdentity(t *testing.T) {
+	project := t.TempDir()
+	folder := filepath.Join(project, config.ProfileFolder)
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "default.json"), []byte(profileFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.identity = func(int) (string, error) { return "original", nil }
+	registered, err := server.registry.Register(project, "agent", []string{"agent"}, os.Getpid(), "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := profileRequest(server.Handler(), "GET", "/api/profiles", "", true)
+	var list []ProfileMetadata
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("live candidate: %d %s %v", w.Code, w.Body, err)
+	}
+	id := list[0].ID
+	for _, identity := range []func(int) (string, error){
+		func(int) (string, error) { return "reused-PID", nil },
+		func(int) (string, error) { return "", os.ErrNotExist },
+	} {
+		server.identity = identity
+		w = profileRequest(server.Handler(), "GET", "/api/profiles", "", true)
+		if strings.TrimSpace(w.Body.String()) != "[]" {
+			t.Fatalf("stale process candidate: %d %s", w.Code, w.Body)
+		}
+		w = profileRequest(server.Handler(), "GET", "/api/profiles/"+id, "", true)
+		if w.Code != 404 {
+			t.Fatalf("stale candidate lookup: %d %s", w.Code, w.Body)
+		}
+	}
+	tracked, _ := server.registry.Get(registered.ID)
+	if tracked.State != "running" {
+		t.Fatal("profile filtering performed synchronous teardown")
 	}
 }
 

@@ -285,12 +285,14 @@ func (server *Server) networkEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (server *Server) decideNetwork(ctx context.Context, d network.Decision) error {
-	server.gatesMu.Lock()
+	if err := lockContext(ctx, &server.gatesMu); err != nil {
+		return err
+	}
 	defer server.gatesMu.Unlock()
 	if d.Scope == "saved" {
 		return fmt.Errorf("saved network rules unavailable")
 	}
-	return server.network.DecideWithApply(d, func(p network.Pending) error {
+	return server.network.DecideWithApplyContext(ctx, d, func(p network.Pending) error {
 		t := server.transparent[p.SessionID]
 		if t == nil {
 			if _, ok := server.gates[p.SessionID]; !ok {

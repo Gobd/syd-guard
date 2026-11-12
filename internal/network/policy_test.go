@@ -1,12 +1,46 @@
 package network
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"path/filepath"
 	"testing"
 )
+
+func TestQueuedPolicyDecisionHonorsCancellation(t *testing.T) {
+	for _, action := range []string{"allow", "deny"} {
+		policy, err := NewPolicy("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := Canonical("example.com", 443)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy.Check("session", "agent", target)
+		pending := policy.Pending()[0]
+		policy.mu.Lock()
+		ctx, cancel := context.WithCancel(context.Background())
+		entered := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			close(entered)
+			done <- policy.DecideWithApplyContext(ctx, Decision{ID: pending.ID, Action: action, Scope: "run"}, nil)
+		}()
+		<-entered
+		cancel()
+		policy.mu.Unlock()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued %s: %v", action, err)
+		}
+		if requests := policy.Pending(); len(requests) != 1 || requests[0].ID != pending.ID {
+			t.Fatal("canceled decision consumed its request")
+		}
+	}
+}
 
 func TestReviewScopePersistenceAndIsolation(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "network.json")

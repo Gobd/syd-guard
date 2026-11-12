@@ -3,6 +3,7 @@
 package network
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -160,8 +161,18 @@ func (p *Policy) Decide(d Decision) error {
 
 // DecideWithApply commits only after the typed backend operation succeeds.
 func (p *Policy) DecideWithApply(d Decision, apply func(Pending) error) error {
+	return p.DecideWithApplyContext(context.Background(), d, apply)
+}
+
+// DecideWithApplyContext checks cancellation after waiting for policy authority,
+// before either a deny or a proxy-mode allow can commit. An acknowledged backend
+// grant is still committed logically; cancellation cannot undo kernel changes.
+func (p *Policy) DecideWithApplyContext(ctx context.Context, d Decision, apply func(Pending) error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	value, ok := p.pending[d.ID]
 	if !ok {
 		return fmt.Errorf("pending request no longer exists")
