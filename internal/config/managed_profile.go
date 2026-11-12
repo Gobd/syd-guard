@@ -14,28 +14,32 @@ func ParseManagedProfileSnapshot(name string, data []byte) (ProfileSnapshot, err
 	if err != nil {
 		return ProfileSnapshot{}, err
 	}
+	return snapshot, nil
+}
+
+func validateProfileFields(data []byte) error {
 	root, err := managedObject(data, "version", "name", "files", "network")
 	if err != nil {
-		return ProfileSnapshot{}, err
+		return err
 	}
 	for _, list := range []struct {
 		name   string
 		fields []string
 	}{
-		{"files", []string{"path", "capabilities", "recursive"}},
+		{"files", []string{"path", "access", "recursive"}},
 		{"network", []string{"host", "port", "transport"}},
 	} {
 		var entries []json.RawMessage
 		if err := json.Unmarshal(root[list.name], &entries); err != nil || entries == nil {
-			return ProfileSnapshot{}, fmt.Errorf("managed profile %s must be an array", list.name)
+			return fmt.Errorf("managed profile %s must be an array", list.name)
 		}
 		for _, entry := range entries {
 			if _, err := managedObject(entry, list.fields...); err != nil {
-				return ProfileSnapshot{}, err
+				return err
 			}
 		}
 	}
-	return snapshot, nil
+	return nil
 }
 
 func managedObject(data []byte, required ...string) (map[string]json.RawMessage, error) {

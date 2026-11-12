@@ -9,7 +9,7 @@ import (
 
 func replaySnapshot(t *testing.T, path string) ProfileSnapshot {
 	t.Helper()
-	data, err := json.Marshal(Profile{Version: 1, Name: "build", Files: []FileRule{{Path: path, Capabilities: []string{"read"}, Recursive: true}}})
+	data, err := json.Marshal(Profile{Version: 1, Name: "build", Files: []FileRule{{Path: path, Access: []string{"read"}, Recursive: true}}, Network: []NetworkRule{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestResolveProfileCeilingsSymlinksAndProtectedPaths(t *testing.T) {
 }
 
 func TestResolveProfileRejectsTraversalAndUnsafeResolvedNames(t *testing.T) {
-	p := Profile{Version: 1, Name: "build", Files: []FileRule{{Path: "link/../file", Capabilities: []string{"read"}}}}
+	p := Profile{Version: 1, Name: "build", Files: []FileRule{{Path: "link/../file", Access: []string{"read"}}}}
 	data, _ := json.Marshal(p)
 	if _, err := ParseProfileSnapshot("build", data); err == nil {
 		t.Fatal("parent traversal accepted")
@@ -78,5 +78,15 @@ func TestResolveProfileRejectsTraversalAndUnsafeResolvedNames(t *testing.T) {
 	}
 	if _, err := ResolveProfile(replaySnapshot(t, "link"), root, "", []string{root}, nil); err == nil {
 		t.Fatal("unsafe resolved literal accepted")
+	}
+}
+
+func TestResolveProfileRejectsRootAfterSymlinkResolution(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink("/", filepath.Join(root, "root")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveProfile(replaySnapshot(t, "root"), root, "", []string{"/"}, nil); err == nil {
+		t.Fatal("resolved root accepted")
 	}
 }

@@ -141,7 +141,11 @@ func (server *Server) register(w http.ResponseWriter, r *http.Request) {
 		registered, _ = server.registry.SetNetwork(registered.ID, gate.Address, "", "")
 	}
 	if input.Transparent {
-		t, topology, err := server.startTransparent(r.Context(), registered, port)
+		host := ""
+		if port != 0 {
+			host = input.Services[0].Name + ".sydguard.internal"
+		}
+		t, topology, err := server.startTransparent(r.Context(), registered, host, port)
 		if err != nil {
 			_ = server.registry.Finish(registered.ID, registered.StartIdentity)
 			server.network.End(registered.ID)

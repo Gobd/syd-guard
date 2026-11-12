@@ -129,8 +129,8 @@ caller contract remain pending; ordinary permission intent belongs in profiles.
 discovery and trusted successful-access recording are not implemented. Use `run`
 for denial/review; it does not produce a finalized profile, and no broad learning
 policy is replayed. Go cache locations and project
-paths may be eligible immutable ceilings, not automatic grants; `--scope` adds an
-advanced ceiling. Outside-ceiling denials require a restart after review. The
+paths may be eligible immutable ceilings, not automatic grants. Outside-ceiling
+denials require a restart after review. The
 future opt-in discovery mode must record trusted actual accesses, deny known secret
 and authority paths, and make clear that real writes are irreversible and no secret
 denylist is universal; that mode is not implemented or audited.
@@ -141,9 +141,7 @@ and `ui`; they do not replace an existing installed controller. Implicit Mac
 working directories must match a reported mount; `--directory` is an explicit
 guest path.
 
-`--network-proxy` is an opt-in exploratory HTTP/CONNECT adapter. It is **not** the
-transparent product path. Direct networking stays denied if clients ignore its
-proxy environment variables. Don't advertise it as finished hostname isolation.
+The exploratory proxy adapter is not exposed by the launcher.
 
 ## Bounded protected preset
 
@@ -380,3 +378,26 @@ Sources:
 Distribution/API/kernel/license review is still required before shipping. No
 private enforcement fork, own PTY server, TLS-MITM stack or universal kernel-exploit
 resistance is claimed by this wrapper.
+
+## Profile schema and trusted caller inputs
+
+`examples/profiles/default.json` illustrates version 1 syntax; it is not an
+automatically imported or universally safe policy. File rules have a literal
+`path`, an `access` array containing only `read`, `write`, and/or `delete`,
+and an explicit `recursive` boolean. Read covers content, metadata, listing,
+traversal and readlink. Write covers creation, modification, truncation,
+chmod/chattr, mkdir and symlink, but not entry removal. **Write can destroy file
+contents even without delete.** Delete covers unlink, rmdir and rename/replace;
+atomic-saving editors may need it. Execution is a separate trusted runtime
+requirement, not implied by write. Network rules remain exact host/port/transport.
+Legacy `capabilities` fields must be manually migrated; they are rejected.
+Saved-profile storage, loading and replay are not yet launch authority; permissive
+learning and recording observed narrow groups are future work. The intended
+bootstrap includes supported public network access, narrowly recorded, with known
+protected paths and targets excluded; it is not implemented.
+
+Advanced trusted callers can currently supply narrow exact runtime inputs and a
+single named service through the internal launcher/controller interface; these
+are not ordinary profile-based workflow. Service names are lowercase DNS labels;
+the exact `NAME.sydguard.internal` TCP endpoint maps only to its declared
+`127.0.0.1:PORT`. Other reserved names and ports are not auto-granted.

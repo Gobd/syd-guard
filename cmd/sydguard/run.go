@@ -34,12 +34,11 @@ func runCommand() *cli.Command {
 		&cli.StringFlag{Name: "syd", Usage: "explicit tested Linux Syd 3.59.0 executable"},
 		&cli.StringFlag{Name: "directory", Usage: "explicit existing Linux working directory"},
 		&cli.StringFlag{Name: "name", Usage: "friendly session label; duplicates receive numeric suffixes"},
-		&cli.BoolFlag{Name: "network-proxy", Usage: "experimental explicit proxy adapter"},
 		&cli.BoolFlag{Name: "no-network", Usage: "immutable no-network mode"},
-		&cli.StringSliceFlag{Name: "service", Usage: "trusted exact service: lambdap-auth=127.0.0.1:PORT; repeatable"},
-		&cli.StringSliceFlag{Name: "read-input", Usage: "trusted exact regular file readable by the workload; repeatable"},
-		&cli.StringSliceFlag{Name: "exec-input", Usage: "trusted exact regular file readable and executable by the workload; repeatable"},
-		&cli.StringSliceFlag{Name: "scope", Usage: "explicit filesystem ceiling eligible for live learning/approval; repeatable"},
+		&cli.StringSliceFlag{Name: "service", Hidden: true, Usage: "advanced trusted exact service: NAME=127.0.0.1:PORT"},
+		&cli.StringSliceFlag{Name: "read-input", Hidden: true, Usage: "trusted exact regular file readable by the workload; repeatable"},
+		&cli.StringSliceFlag{Name: "exec-input", Hidden: true, Usage: "trusted exact regular file readable and executable by the workload; repeatable"},
+		&cli.StringSliceFlag{Name: "scope", Hidden: true, Usage: "explicit filesystem ceiling eligible for live learning/approval; repeatable"},
 	}, Action: runAction}
 }
 
@@ -96,8 +95,8 @@ func runAction(parent context.Context, c *cli.Command) error {
 	if c.Args().Len() == 0 {
 		return cli.Exit("usage: sydguard run -- COMMAND [ARGS...]", 2)
 	}
-	if c.Bool("network-proxy") && c.Bool("no-network") || len(c.StringSlice("service")) > 0 && (c.Bool("network-proxy") || c.Bool("no-network")) {
-		return cli.Exit("--network-proxy, --no-network and --service cannot be combined", 2)
+	if len(c.StringSlice("service")) > 0 && c.Bool("no-network") {
+		return cli.Exit("--no-network and --service cannot be combined", 2)
 	}
 	// Explicit engine selection until promotion/install capability is implemented.
 	if c.String("syd") == "" {
@@ -145,9 +144,6 @@ func runAction(parent context.Context, c *cli.Command) error {
 		}
 		if c.String("name") != "" {
 			guest = append(guest, "--name", c.String("name"))
-		}
-		if c.Bool("network-proxy") {
-			guest = append(guest, "--network-proxy")
 		}
 		if c.Bool("no-network") {
 			guest = append(guest, "--no-network")
@@ -206,7 +202,7 @@ func runAction(parent context.Context, c *cli.Command) error {
 	if err := client.Ensure(ctx, executable); err != nil {
 		return err
 	}
-	transparent := !c.Bool("network-proxy") && !c.Bool("no-network")
+	transparent := !c.Bool("no-network")
 	var registered session.Session
 	if transparent {
 		services := make([]controller.Service, 0, len(c.StringSlice("service")))
@@ -219,7 +215,7 @@ func runAction(parent context.Context, c *cli.Command) error {
 		}
 		registered, err = client.RegisterTransparent(ctx, directory, c.String("name"), c.Args().Slice(), services)
 	} else {
-		registered, err = client.RegisterProxy(ctx, directory, c.String("name"), c.Args().Slice(), c.Bool("network-proxy"))
+		registered, err = client.RegisterProxy(ctx, directory, c.String("name"), c.Args().Slice(), false)
 	}
 	if err != nil {
 		return err

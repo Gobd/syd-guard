@@ -14,9 +14,9 @@ const ProfileFolder = ".sydguard"
 
 type (
 	FileRule struct {
-		Path         string   `json:"path"`
-		Capabilities []string `json:"capabilities"`
-		Recursive    bool     `json:"recursive"`
+		Path      string   `json:"path"`
+		Access    []string `json:"access"`
+		Recursive bool     `json:"recursive"`
 	}
 	NetworkRule struct {
 		Host      string `json:"host"`

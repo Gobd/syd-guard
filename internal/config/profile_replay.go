@@ -67,6 +67,9 @@ func ResolveProfile(snapshot ProfileSnapshot, project, home string, ceilings, pr
 		if err != nil {
 			return ResolvedProfile{}, err
 		}
+		if path == "/" {
+			return ResolvedProfile{}, fmt.Errorf("filesystem root cannot be granted")
+		}
 		if strings.ContainsAny(path, "*?[]{}\\$;!") || strings.IndexFunc(path, unicode.IsControl) >= 0 {
 			return ResolvedProfile{}, fmt.Errorf("resolved path is not a literal Syd path")
 		}
@@ -86,7 +89,7 @@ func ResolveProfile(snapshot ProfileSnapshot, project, home string, ceilings, pr
 			}
 		}
 		rule.Path = path
-		rule.Capabilities = append([]string(nil), rule.Capabilities...)
+		rule.Access = append([]string(nil), rule.Access...)
 		result.Files = append(result.Files, rule)
 	}
 	return result, nil

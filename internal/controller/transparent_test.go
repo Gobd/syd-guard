@@ -174,18 +174,26 @@ func TestTransparentDenialDecisionAndLifecycle(t *testing.T) {
 	if err = s.decideNetwork(context.Background(), decision); err == nil {
 		t.Fatal("stale decision accepted")
 	}
-	serviceAddress, err := s.transparent[a.ID].synthetic.Address("lambdap-auth.sydguard.internal")
+	serviceAddress, err := s.transparent[a.ID].synthetic.Address("examplelocal-api.sydguard.internal")
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherAddress, err := s.transparent[a.ID].synthetic.Address("other.sydguard.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := request("/api/sessions/"+a.ID+"/network-event", NetworkEvent{Endpoint: otherAddress.String() + ":123"}); w.Code != 400 {
+		t.Fatal("undeclared reserved service accepted")
+	}
 	s.transparent[a.ID].servicePort = 123
+	s.transparent[a.ID].serviceHost = "examplelocal-api.sydguard.internal"
 	if w := request("/api/sessions/"+a.ID+"/network-event", NetworkEvent{Endpoint: serviceAddress.String() + ":124"}); w.Code != 400 {
 		t.Fatal("service port widened")
 	}
 	if w := request("/api/sessions/"+a.ID+"/network-event", NetworkEvent{Endpoint: serviceAddress.String() + ":123"}); w.Code != 200 {
 		t.Fatalf("service grant %d %s", w.Code, w.Body)
 	}
-	serviceTarget, _ := network.Canonical("lambdap-auth.sydguard.internal", 123)
+	serviceTarget, _ := network.Canonical("examplelocal-api.sydguard.internal", 123)
 	if !s.network.Check(a.ID, a.Name, serviceTarget) || s.network.Check(b.ID, b.Name, serviceTarget) {
 		t.Fatal("trusted service isolation")
 	}
@@ -242,12 +250,20 @@ func TestTransparentDenialDecisionAndLifecycle(t *testing.T) {
 }
 
 func TestTrustedServiceValidation(t *testing.T) {
-	for _, v := range []Service{{"other", "127.0.0.1:123"}, {"lambdap-auth", "localhost:123"}, {"lambdap-auth", "127.0.0.1:0123"}, {"lambdap-auth", "127.0.0.1:0"}} {
+	for _, v := range []Service{{"-bad", "127.0.0.1:123"}, {"UPPER", "127.0.0.1:123"}, {"other.name", "127.0.0.1:123"}, {"examplelocal-api", "localhost:123"}, {"examplelocal-api", "127.0.0.1:0123"}, {"examplelocal-api", "127.0.0.1:0"}} {
 		if _, err := servicePort([]Service{v}); err == nil {
 			t.Fatalf("accepted %+v", v)
 		}
 	}
-	port, err := servicePort([]Service{{"lambdap-auth", "127.0.0.1:123"}})
+	for _, name := range []string{"other", "examplelocal-api", "a1-b"} {
+		if _, err := servicePort([]Service{{name, "127.0.0.1:123"}}); err != nil {
+			t.Fatalf("valid service %s: %v", name, err)
+		}
+	}
+	if _, err := servicePort([]Service{{"a", "127.0.0.1:1"}, {"b", "127.0.0.1:2"}}); err == nil {
+		t.Fatal("accepted multiple services")
+	}
+	port, err := servicePort([]Service{{"examplelocal-api", "127.0.0.1:123"}})
 	if err != nil || port != 123 {
 		t.Fatal(port, err)
 	}

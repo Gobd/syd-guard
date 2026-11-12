@@ -1,6 +1,6 @@
 # Syd Guard implementation status
 
-Updated: 2026-11-11. Code lives here; no Git repo/PR has been initialized.
+Code is tracked on the bootstrap branch; a draft PR exists.
 Checked items are verified milestones, not a security certification.
 
 ## Current usable checkpoint
@@ -85,8 +85,9 @@ This checklist captures remaining work; don't infer full readiness from partial 
       rules, deny known secret/control/key paths and protect against aliases. Real
       writes cannot be undone; known-secret lists are not universal. The current
       denial/review workflow is not discovery, and no finalized profile is produced.
-      Separately approved public network recording remains unimplemented; current
-      network requests still require approval. No broad learning rules may be saved.
+      Supported public network access should also be allowed and recorded narrowly
+      during bootstrap, excluding protected targets; this remains unimplemented.
+      Current network requests still require approval. No broad learning rules may be saved.
 - [ ] Make `learn` usable without mandatory `--scope`: predeclare sensible
       tool/cache learning ceilings without granting access automatically, and show
       outside-ceiling denials as restart/ceiling-review required rather than hiding
@@ -183,12 +184,9 @@ This checklist captures remaining work; don't infer full readiness from partial 
       implemented or independently security-reviewed yet; no global DNS changes.
 - [ ] Immutable port ceilings, rebinding defenses, IPv6/UDP support and fail-closed
       behavior on component termination, cleanup ownership/collision audits.
-- [ ] Implement the approved transient lambdap service contract: trusted launcher
-      passes `--service lambdap-auth=127.0.0.1:<port>`; its harness must use
-      `lambdap-auth.sydguard.internal:<port>` through the per-session synthetic
-      mapping. No environment-derived authorization or blanket loopback access.
-      This flag, gateway route, and coordinated lambdap URL rewrite are not yet
-      implemented; only the fixed selected service port may reach guest loopback.
+- [ ] Audit the generic trusted named service route: a single validated DNS-label
+      name maps only its exact `<name>.sydguard.internal` TCP port to a declared
+      loopback endpoint. Cross-repository callers need coordinated URL changes.
 - [ ] Explicit HTTP/CONNECT proxy is an exploratory alternate adapter only; source
       exists, but real Syd egress integration and lifecycle audits are not complete.
 - [ ] Exact host+port+transport; no port inferred from DNS alone.
@@ -196,7 +194,7 @@ This checklist captures remaining work; don't infer full readiness from partial 
 - [ ] Protected resolver/control endpoints and narrow port-53 activation mechanism.
 - [x] Authenticated native ServeMux APIs for file/network pending requests and
       decisions; web bridge exposes only approval/read routes, not raw Syd IPC.
-- [ ] Charm TUI for session-context approvals and bounded event summaries.
+- [ ] Optional future TUI; deferred, no implementation planned for this stage.
 - [x] React/TypeScript/Bun/vanilla-extract approvals UI built and embedded; local
       operator-token bridge works from Mac to Lima. Live Chromium load/API check passes.
 - [ ] Browser-driven file and transparent-network approve/retry end-to-end tests;

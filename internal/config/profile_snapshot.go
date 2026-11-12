@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -45,6 +46,12 @@ func ParseProfileSnapshot(name string, data []byte) (ProfileSnapshot, error) {
 	decoder = json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&profile); err != nil {
+		if strings.Contains(err.Error(), `unknown field "capabilities"`) {
+			return ProfileSnapshot{}, fmt.Errorf("legacy capabilities field is unsupported; migrate to access values read, write, delete")
+		}
+		return ProfileSnapshot{}, err
+	}
+	if err := validateProfileFields(data); err != nil {
 		return ProfileSnapshot{}, err
 	}
 	if err := ValidateProfile(name, profile); err != nil {
@@ -110,18 +117,18 @@ func ValidateProfile(name string, p Profile) error {
 		return fmt.Errorf("invalid profile version/name/rule count")
 	}
 	for _, rule := range p.Files {
-		if rule.Path == "" || len(rule.Path) > 4096 || strings.ContainsAny(rule.Path, "*?[]{}\\$;!") || strings.IndexFunc(rule.Path, unicode.IsControl) >= 0 || hasParentComponent(rule.Path) || strings.HasPrefix(rule.Path, "~") && rule.Path != "~" && !strings.HasPrefix(rule.Path, "~/") || len(rule.Capabilities) == 0 || len(rule.Capabilities) > 12 {
+		if rule.Path == "" || filepath.Clean(rule.Path) == "/" || len(rule.Path) > 4096 || strings.ContainsAny(rule.Path, "*?[]{}\\$;!") || strings.IndexFunc(rule.Path, unicode.IsControl) >= 0 || hasParentComponent(rule.Path) || strings.HasPrefix(rule.Path, "~") && rule.Path != "~" && !strings.HasPrefix(rule.Path, "~/") || len(rule.Access) == 0 || len(rule.Access) > 3 {
 			return fmt.Errorf("invalid literal file rule")
 		}
 		seen := map[string]bool{}
-		for _, cap := range rule.Capabilities {
+		for _, cap := range rule.Access {
 			switch cap {
-			case "read", "stat", "write", "create", "delete", "rename", "truncate", "mkdir", "rmdir", "readdir", "readlink", "chdir":
+			case "read", "write", "delete":
 			default:
-				return fmt.Errorf("unsupported filesystem capability %q", cap)
+				return fmt.Errorf("unsupported filesystem access %q", cap)
 			}
 			if seen[cap] {
-				return fmt.Errorf("duplicate filesystem capability")
+				return fmt.Errorf("duplicate filesystem access")
 			}
 			seen[cap] = true
 		}

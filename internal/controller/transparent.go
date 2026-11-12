@@ -48,6 +48,7 @@ type transparentSession struct {
 	socket      string
 	socketInfo  os.FileInfo
 	servicePort uint16
+	serviceHost string
 	ending      bool
 }
 
@@ -58,8 +59,12 @@ func servicePort(services []Service) (uint16, error) {
 	if len(services) == 0 {
 		return 0, nil
 	}
-	if services[0].Name != "lambdap-auth" {
-		return 0, fmt.Errorf("unknown trusted service")
+	name := services[0].Name
+	if name == "" || len(name) > 63 || strings.Contains(name, ".") || strings.ToLower(name) != name {
+		return 0, fmt.Errorf("trusted service name must be a lowercase DNS label")
+	}
+	if _, err := network.Canonical(name+".sydguard.internal", 1); err != nil {
+		return 0, fmt.Errorf("trusted service name must be a lowercase DNS label")
 	}
 	host, text, err := net.SplitHostPort(services[0].Endpoint)
 	if err != nil || host != "127.0.0.1" {
@@ -82,17 +87,17 @@ func listenerPort(address string) (uint16, error) {
 }
 
 // Caller holds gatesMu; this serializes publication with teardown and decisions.
-func (server *Server) startTransparent(ctx context.Context, value session.Session, port uint16) (*transparentSession, netns.Topology, error) {
+func (server *Server) startTransparent(ctx context.Context, value session.Session, host string, port uint16) (*transparentSession, netns.Topology, error) {
 	topology, err := netns.New()
 	if err != nil {
 		return nil, topology, err
 	}
-	t := &transparentSession{synthetic: network.NewSyntheticWithAllocator(server.allocator), servicePort: port}
+	t := &transparentSession{synthetic: network.NewSyntheticWithAllocator(server.allocator), servicePort: port, serviceHost: host}
 	t.dns, err = network.StartDNS(t.synthetic, topology.Agent)
 	if err != nil {
 		return nil, topology, err
 	}
-	t.gate, err = network.StartTransparentWithService(t.synthetic, server.network, value.ID, value.Name, topology.Agent, port)
+	t.gate, err = network.StartTransparentWithService(t.synthetic, server.network, value.ID, value.Name, topology.Agent, host, port)
 	if err != nil {
 		t.dns.Close()
 		return nil, topology, err
@@ -262,8 +267,8 @@ func (server *Server) networkEvent(w http.ResponseWriter, r *http.Request) {
 		reply(w, 400, map[string]string{"error": "invalid target"})
 		return
 	}
-	if target.Host == "lambdap-auth.sydguard.internal" {
-		if t.servicePort == 0 || target.Port != t.servicePort {
+	if network.ReservedServiceHost(target.Host) {
+		if t.servicePort == 0 || target.Host != t.serviceHost || target.Port != t.servicePort {
 			reply(w, 400, map[string]string{"error": "service not declared for this exact port"})
 			return
 		}

@@ -4,41 +4,53 @@
   "files": [
     {
       "path": ".",
-      "capabilities": [
+      "recursive": true,
+      "access": [
         "read",
-        "stat",
-        "readdir",
-        "readlink",
-        "chdir",
         "write",
-        "create",
-        "truncate",
-        "mkdir",
-        "rename",
-        "delete",
-        "rmdir"
-      ],
-      "recursive": true
+        "delete"
+      ]
     },
     {
       "path": "~/.cache/go-build",
-      "capabilities": ["read", "stat", "readdir", "write", "create", "truncate", "mkdir"],
-      "recursive": true
+      "recursive": true,
+      "access": [
+        "read",
+        "write"
+      ]
     },
     {
       "path": "~/go/pkg/mod",
-      "capabilities": ["read", "stat", "readdir", "write", "create", "mkdir"],
-      "recursive": true
+      "recursive": true,
+      "access": [
+        "read",
+        "write"
+      ]
     },
     {
       "path": "~/.npm",
-      "capabilities": ["read", "stat", "readdir", "write", "create", "mkdir"],
-      "recursive": true
+      "recursive": true,
+      "access": [
+        "read",
+        "write"
+      ]
     }
   ],
   "network": [
-    {"host": "proxy.golang.org", "port": 443, "transport": "tcp"},
-    {"host": "sum.golang.org", "port": 443, "transport": "tcp"},
-    {"host": "registry.npmjs.org", "port": 443, "transport": "tcp"}
+    {
+      "host": "proxy.golang.org",
+      "port": 443,
+      "transport": "tcp"
+    },
+    {
+      "host": "sum.golang.org",
+      "port": 443,
+      "transport": "tcp"
+    },
+    {
+      "host": "registry.npmjs.org",
+      "port": 443,
+      "transport": "tcp"
+    }
   ]
 }
