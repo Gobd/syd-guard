@@ -80,23 +80,22 @@ This checklist captures remaining work; don't infer full readiness from partial 
       cases, revocation and controller failure; fixture is not a full audit.
 - [ ] Separate trusted Syd event source; do not trust arbitrary agent stderr.
 - [ ] Live changes vs immutable outer ceiling/restart-required behavior.
-- [ ] Implement opt-in permissive `learn` discovery/recording of actual supported
-      reads and writes under honest immutable ceilings; record only observed narrow
-      rules, deny known secret/control/key paths and protect against aliases. Real
-      writes cannot be undone; known-secret lists are not universal. The current
-      denial/review workflow is not discovery, and no finalized profile is produced.
-      Supported public network access should also be allowed and recorded narrowly
-      during bootstrap, excluding protected targets; this remains unimplemented.
-      Current network requests still require approval. No broad learning rules may be saved.
-- [ ] Make `learn` usable without mandatory `--scope`: predeclare sensible
-      tool/cache learning ceilings without granting access automatically, and show
-      outside-ceiling denials as restart/ceiling-review required rather than hiding
-      them. Keep `--scope` as an advanced additional ceiling override. For Go,
-      safely resolve the user's actual GOMODCACHE, GOCACHE and selected GOBIN or
-      GOPATH bin paths and make those paths eligible for read/write review; network
-      approvals remain exact and separate. Replay explicit saved approvals from the
-      selected profile. Do not grant the whole home, auto-grant access, disable
-      Landlock or overlap protected controller authority.
+- [ ] Implement opt-in permissive `learn` bootstrap under honest immutable ceilings:
+      allow supported nonprotected reads/writes and vetted public connections while
+      collecting only narrow review candidates. Deny known secret/control/key paths;
+      preexisting hardlink aliases remain a blocker. Real writes cannot be undone and
+      known-secret lists are not universal. The checkpointed collector labels upstream
+      warn events as permission-check candidates, not successful filesystem I/O;
+      DAC-failed attempts can appear and missing lookups can be absent. Preserve the
+      envelope, coverage/loss reasons and nonzero/canceled outcome. Network observation
+      happens only after a successful vetted public dial, never at DNS or for private
+      services. No broad learning permission may be persisted or replayed.
+- [ ] Make `learn` usable without mandatory `--scope` or directory guessing for
+      Go/npm setup. Keep `--scope` hidden as an advanced ceiling input. Resolve actual
+      tool/cache locations safely where needed, retain Landlock and protected-authority
+      exclusions, and show outside-ceiling denials as restart/ceiling-review required.
+      Stop, review/edit and explicitly save narrow intent before strict replay;
+      permissive bootstrap is not ordinary strict-run auto-approval.
 - [ ] Upstream Pandora/trace import, trusted learning candidate review and retention.
 - [x] Named repo profile create/discover/show/trust commands and hash-review tests:
       nearest ancestor .sydguard/default.json or NAME.json; new profiles start empty,
@@ -108,6 +107,32 @@ This checklist captures remaining work; don't infer full readiness from partial 
 - [ ] Integrate a reviewed protected helper as a managed provider; prove atomic CAS,
       helper-authoritative registration/snapshots, real browser/guest transport, and
       strict compiler/runtime replay before enabling production capabilities.
+      Experimental snapshot responses now carry the registered project ID, profile
+      name and registry-derived project/policy device/inode identities. The client
+      checks identity, exact bytes and typed CAS conflicts. These observations do
+      not pin a namespace across helper return and consumption; no provider is
+      enabled. The stricter wire format requires matching helper/client builds.
+      Independent review found and fixed inconsistent helper/client control-character
+      path validation; registration and stored lookup now reject incompatible paths
+      before policy publication. An unactivated controller adapter authenticates an
+      explicit bounded registration/profile subset, binds stable opaque tuple IDs,
+      maps CAS conflicts and preserves indeterminate outcomes. Injected-transport
+      tests cover exact snapshots, binding changes, concurrency and read-only mode;
+      no installed-helper adapter E2E has run. Automatic helper-authoritative catalog
+      enumeration and protected caller configuration remain pending. Follow-up review
+      fixed invalid-UTF-8 registration drift, indeterminate API/UI handling, shared
+      operation deadlines, long display paths and unsupported-platform compilation.
+      Browser fixtures now prove draft preservation and no blind retry after typed,
+      transport-lost or legacy ambiguous save failures. These are not installed-helper
+      deployment/latency/race acceptance gates. Profile-only cooperative deadlines
+      avoid session-cleanup authority waits; queued network allow/deny cancellation
+      is checked before commit. Independent catalog single-flight and live-status
+      polling accept slow catalogs and recover from stalled status reads. Candidate
+      discovery filters exited/reused process identities without synchronous teardown.
+      Browser tests pass 9/9 (150 assertions); filesystem syscall hangs and actual
+      installed-helper latency still need separate proof. Final independent source
+      review accepted this bounded unactivated component with no remaining findings;
+      it is not approval for production enablement or a sandbox safety certification.
 - [ ] Wire run/learn --config NAME, saved file/network decisions and fresh launch
       replay into selected repo profiles; no stale DNS-derived IPs persisted.
 - [ ] Prove agent-readable project configs deny write/delete/rename/replacement,
@@ -229,12 +254,26 @@ This checklist captures remaining work; don't infer full readiness from partial 
 
 ## Next immediate work
 
-1. Finish transparent veth DNS/hostname + port/transport approval-to-Syd grant wiring.
-2. Run real multi-agent file/network approvals from the web UI; no readiness claim
-   until both approved retries and bypass attempts are verified.
-3. Add directory/saved-file review controls and managed UI background lifecycle.
-4. Copy/build Linux lambdap into Lima and prove its real agent workflow; wrapper
-   support initially requires no Greywall integration changes.
+1. Review the checkpointed managed-store, strict replay and learning packages.
+   Standard macOS/Linux checks and macOS opt-in browser tests pass after resume;
+   real-Syd hardlink regressions remain blockers, not passing acceptance gates.
+2. Establish authenticated managed project/profile identity and exact helper-returned
+   snapshots before connecting a production profile provider. Folder discovery is
+   not authority. Keep unsupported shared mounts and platforms fail-closed.
+3. Connect selected config/session revision binding and strict file/network replay
+   through the private supervisor; do not give selected profiles implicit workspace
+   writes. Live additions require explicit authorization; ceiling changes need restart.
+4. Wire permissive learning to trusted permission-check events and successful vetted
+   public dials. Preserve candidate coverage/loss/attempt metadata and require explicit
+   review/save; upstream warn events are not proof of successful filesystem I/O.
+5. Prove full CLI/UI/helper/bootstrap/replay with disposable VM-local configs and
+   multiple sessions, including bypass attempts, conflicts, restart and cleanup.
+   Only then discuss administrator-assisted host-backed storage tests/deployment.
+
+The generic caller goal is same-project launch with Syd Guard owning mount mapping,
+backend/session selection, policy lifecycle, terminal/argv/exit handling and approvals.
+Caller-specific setup stays outside this project; no paid-model smoke or unrelated
+repository publication is authorized by this checklist.
 
 ## Gated migration / cleanup
 

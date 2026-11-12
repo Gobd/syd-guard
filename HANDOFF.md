@@ -1,4 +1,74 @@
-# Temporary handoff — resume here tomorrow
+# Temporary handoff — resumed integration checkpoint
+
+## Resume progress (2026-11-12)
+
+- Resumed on `feature/syd-guard-bootstrap` from clean checkpoint `44d14bb`.
+- macOS Go vet/race/build/golangci-lint passed; native Bun lint/fmt/check/build
+  and opt-in browser tests passed (6 tests / 111 assertions).
+- Linux aggregate check now passes, including the previously unrerun learning
+  fixture lint fixes. Guest browser tests remain skipped by default.
+- Corrected `scripts/check.sh` to build embedded frontend assets before browser
+  tests and Go consumers; reran the guest aggregate successfully.
+- Explicit static Syd 3.59.0 unprivileged fixtures: learning permission-check
+  candidate, strict `Run` and ordinary protected preset pass. Both retained
+  preexisting-hardlink gates still fail (secret read and policy alias mutation).
+  No failing gate was weakened or disabled.
+- Applied the completed worker's managed-store protocol/client prerequisite patch
+  to the local worktree: helper-returned registration/profile identity and namespace
+  observations, strict nested parsing, exact replacement-byte checks and typed CAS
+  conflicts. These are not namespace pinning or a production provider. Matching
+  helper/client builds are required. Extended installed-helper tests were not run.
+- Fresh aggregate macOS Go vet/race/build/lint and Linux aggregate checks pass after
+  applying the patch; Linux managedstore/controller race tests also passed uncached.
+- Original reviewer failed twice with provider server errors. After the operator
+  asked to continue, a fresh review on the working backend completed (run
+  `45d36baa-abb7-404d-91c9-23acf5609318`). Its P1 helper/client path mismatch is fixed
+  via shared validation before registration/publication and stored lookup; tests
+  cover tabs/Unicode controls and rejection before touching policy directories.
+- Added an unactivated `internal/controller/managed_profiles.go` adapter. It accepts
+  only an explicit bounded subset of registered refs authenticated by helper reads,
+  derives stable opaque tuple IDs, binds returned namespace observations, retains
+  exact bytes and maps CAS conflicts/indeterminate mutations. It never reopens a
+  returned path. Tests use injected transport, not a real installed helper. Catalog
+  duplicate IDs and metadata retargeting also now fail closed.
+- Follow-up review `d330bfc9-e5b1-4eab-894f-58720857537d` found five issues;
+  fixes validate original registration UTF-8 before marshaling, preserve uncertain
+  save outcomes through API/bridge/editor, bound the complete catalog/save operation
+  (6s helper work, 10s operator budget, 15s UI write timeout), permit long display
+  paths and move shared errors to platform-neutral source. Browser regression covers
+  typed/lost/legacy ambiguous saves, preserved drafts and explicit reconciliation.
+- Review `d0f34b1e-bb86-4a3b-8499-90c416eade64` caught timeout spillover into live
+  decisions, profile reaping lock waits and slow catalogs superseded by polling.
+  Fixes scope new transport/browser budgets to profiles, check cancellation before
+  queued network allow/deny commits, remove synchronous reaping from profile
+  handlers, make candidate-lock acquisition context-aware and serialize refreshes.
+  Tests cover these locks/cancellation seams and a 2.5s catalog response.
+- Review `8c305264-4633-4198-9c00-732628c21b76` found single-flight live-status
+  blocking and stale candidate visibility. Catalog and live status now have
+  independent sequencing/lifecycles, read-only fetches are bounded, and candidate
+  discovery checks current process-start identity without teardown. Tests recover
+  approvals after a stalled first status read and reject exited/reused PIDs.
+- Fresh macOS Go vet/uncached race/build/lint and Linux aggregate/touched uncached
+  race checks pass. Native Bun/browser tests now pass 9 tests / 150 assertions.
+  FreeBSD arm64 and Windows amd64 controller/managedstore package builds pass;
+  this is compile evidence, not platform runtime support. Real-Syd suite recheck
+  still fails only the two retained hardlink gates; files/learning packages pass.
+  Application budgets are cooperative, not universal kernel/filesystem-hang bounds.
+  Independent acceptance review `9c8309e3-3331-4d53-b883-2b7763064563` completed
+  with no findings: OK for the bounded unactivated component only, not production
+  deployment/catalog/replay. Reviewer did not run tests; parent ran the checks above.
+- Reviewable commits: build order `a0168b0`, managed snapshot identities/path checks
+  `6b10490`, bounded adapter/cancellation guards `6c737f3`, uncertain-save UI and
+  independent polling `ae357cc`. Continue on the same feature branch/draft PR;
+  no main merge or artifact promotion. Documentation checkpoint follows these.
+- Next: helper-authoritative automatic catalog/protected caller configuration,
+  separately authorized disposable installed-helper E2E, and pinned namespace
+  consumption before selected-profile runtime replay. No production provider/helper
+  deployment or active-session restart occurred.
+- Retained initial worker patch/report: run `08551b8c-92c8-4608-8fa7-e894a55f7134`;
+  failed reviewer retry: `cbe8e60f-012f-4abb-8b1f-e824046c335c`.
+
+The original paused context below remains relevant until integration is complete.
 
 Paused at the operator's explicit request on 2026-11-12. **Do not assume this is ready.** This file is intentionally committed for continuity and can be deleted after resuming. The operator wants the current imperfect/WIP state backed up, not another late-night check/fix loop.
 

@@ -5,8 +5,8 @@ macOS delegates into Lima; Windows users run the Linux CLI inside WSL. No Syd
 fork, custom syscall engine, TUN dependency, or browser terminal. Foreground
 inherits stdio; future persistent attachment delegates to tmux.
 
-Module: `github.com/Gobd/syd-guard`; Go 1.27; urfave/cli v3.14.0. No Git repository
-has been initialized here; the operator will create the Gobd repo.
+Module: `github.com/Gobd/syd-guard`; Go 1.27; urfave/cli v3.14.0.
+Development is on the bootstrap feature branch with a draft PR; not a release.
 
 ## Status: not yet a complete model-ready workflow
 
@@ -131,15 +131,17 @@ These are implementation-level caller capabilities, not a normal permission
 configuration workflow or workload self-declarations. CLI cleanup and a generic
 caller contract remain pending; ordinary permission intent belongs in profiles.
 
-`learn` currently fails explicitly: the requested permissive read/write/network
-discovery and trusted successful-access recording are not implemented. Use `run`
-for denial/review; it does not produce a finalized profile, and no broad learning
-policy is replayed. Go cache locations and project
-paths may be eligible immutable ceilings, not automatic grants. Outside-ceiling
-denials require a restart after review. The
-future opt-in discovery mode must record trusted actual accesses, deny known secret
-and authority paths, and make clear that real writes are irreversible and no secret
-denylist is universal; that mode is not implemented or audited.
+`learn` currently fails explicitly: permissive read/write/public-network bootstrap
+and its candidate lifecycle are not wired. Use `run` for denial/review; it does not
+produce a finalized profile. Intended learning allows supported nonprotected
+reads/writes and vetted public connections without mandatory directory guessing,
+then records narrow review candidates; its broad permissions must never be saved.
+Upstream `warn` events report permission checks, not successful filesystem I/O:
+a DAC-failed attempt can appear, and some missing lookups may not. Candidate
+attempt/coverage/loss metadata must survive review and saving. Known secret and
+authority paths remain excluded; real writes are irreversible and no secret denylist
+is universal. Outside immutable ceilings requires a reviewed restart, not a
+fictional live widening. This mode is not implemented or audited.
 
 For a private Lima candidate, `--guest-sydguard /absolute/guest/binary` and
 `--guest-config-home /absolute/guest/config` can be passed to both `run`/`learn`
@@ -171,13 +173,30 @@ permissive learn must reuse this preset; learn is not implemented.
 ## Checkpointed experimental components
 
 The source includes a strict file-profile compiler, a bounded review-only
-permission-check collector, and Linux managed-policy helper/admin/client code.
+permission-check collector, Linux managed-policy helper/admin/client code, and
+an unactivated managed-client profile adapter for explicitly registered refs.
 They are **not connected to normal selected-profile launches or production UI
 editing**. `learn` still fails explicitly; a compiler or collector package is not
 an implemented learning workflow. Do not install/enable the privileged helper
-without the remaining deployment and integration review. Shared mounts and
+without the remaining deployment and integration review. Experimental snapshot
+responses include registered identity and namespace observations; the client checks
+exact returned bytes and typed revision conflicts. These checks do not pin a project
+namespace through later consumption. The stricter wire format requires matched
+helper/client builds. The adapter verifies an explicit bounded set of registered
+project/profile pairs through authenticated reads, maps helper CAS conflicts, and
+rejects changed bindings without reopening metadata paths. It is not an automatic
+helper catalog or a pinned launch namespace; its tests use an injected transport,
+not a deployed helper. Uncertain saves carry an explicit indeterminate outcome
+through the API/bridge; the editor preserves drafts and blocks blind retry until
+an explicit fresh snapshot is loaded. Profile helper work shares a six-second
+cooperative budget inside a ten-second profile transport budget; existing live
+approval routes do not inherit that timeout. Profile lookup does not wait for
+session teardown; catalog refreshes do not overlap and live-status polling has an
+independent lifecycle with bounded read-only fetches. These are application deadlines,
+not universal kernel/filesystem-hang bounds. Lost save responses remain uncertain
+rather than proof of failure. Production integration remains gated. Shared mounts and
 Darwin managed storage remain unsupported. See the temporary `HANDOFF.md` for the
-paused integration state and next steps.
+resumed integration state and next steps.
 
 `internal/webui/assets` is intentionally tracked: Go embeds it, allowing a clean
 Go-only build and module installation. Rebuild from `web/src` with supported Bun
@@ -241,8 +260,9 @@ This is the chosen layered design, **not a completed launch feature**:
    transactions with expected revisions. It must never chown a preexisting
    hardlinked inode, modify unrelated repo files, expose arbitrary root writes,
    or make the agent/Syd broker privileged. Existing unmanaged configs require
-   explicit reviewed adoption, not silent migration. The helper is not yet
-   implemented or installed.
+   explicit reviewed adoption, not silent migration. Experimental Linux helper,
+   admin and client source exists, but production integration and deployment
+   remain gated; no production provider is installed.
 
 **Verified platform limits:** a disposable root-owned policy on VM-local Linux
 storage resisted tested canonical/alias writes and chmod by the unprivileged
@@ -263,8 +283,8 @@ managed store, or claim Syd path rules alone solve hardlinks.
 Per-run approvals must never silently change a file. Explicit saving updates
 only the selected profile, checks its expected revision, and must preserve or
 reject concurrent operator edits rather than overwrite them. File intent
-specifies literal path, capabilities and recursive scope;
-read/write/create/delete/rename remain distinct. Empty paths and arbitrary
+specifies a literal path, the public `read`/`write`/`delete` access groups and
+recursive scope; the compiler maps these to distinct Syd operations. Empty paths and arbitrary
 wildcards must not grant everything. No-delete does not preserve editable
 content: write/truncate can still destroy it. Persist network intent as exact
 hostname/port/transport, never resolved IPs; rebuild runtime bindings on launch.
