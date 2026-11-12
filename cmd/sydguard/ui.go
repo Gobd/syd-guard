@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/Gobd/syd-guard/internal/backend"
 	"github.com/Gobd/syd-guard/internal/config"
@@ -140,6 +141,7 @@ func runUIBridge(parent context.Context, manager *uiManager, kind backend.Kind, 
 					return nil, err
 				}
 				command := exec.CommandContext(ctx, "limactl", argv...) //nolint:gosec // validated instance and direct argv
+				command.WaitDelay = 2 * time.Second
 				command.Stdin, command.Stderr = bytes.NewReader(data), stderr
 				output, err := command.Output()
 				if err != nil {

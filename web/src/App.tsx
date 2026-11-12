@@ -34,31 +34,50 @@ export function App() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const refreshSequence = useRef(0);
+  const profileSequence = useRef(0);
+  const profileFlight = useRef<
+    { token: string; promise: Promise<void> } | undefined
+  >(undefined);
   useEffect(() => {
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
-  const refresh = useCallback(async () => {
-    const sequence = ++refreshSequence.current;
+  const refreshProfiles = useCallback(async () => {
+    // Catalog sequencing is independent of live status. A slow catalog is not
+    // superseded on every poll, and a stalled status read cannot freeze it.
+    if (profileFlight.current?.token === token)
+      return profileFlight.current.promise;
+    const sequence = ++profileSequence.current;
     setProfilesReady(false);
-    setSessionsReady(false);
-    if (!token) {
-      setError("Enter a UI token from sydguard ui status.");
-      return;
-    }
-    const profileRefresh = profileApi
+    const promise = profileApi
       .list(token)
       .then((list) => {
-        if (sequence === refreshSequence.current) {
+        if (sequence === profileSequence.current) {
           setProfiles(list);
           setProfilesReady(true);
         }
       })
       .catch(() => {
-        if (sequence === refreshSequence.current) {
+        if (sequence === profileSequence.current) {
           setProfiles([]);
           setProfilesReady(false);
         }
+      })
+      .finally(() => {
+        if (sequence === profileSequence.current)
+          profileFlight.current = undefined;
       });
+    profileFlight.current = { token, promise };
+    await promise;
+  }, [token]);
+  const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
+    setSessionsReady(false);
+    if (!token) {
+      setProfilesReady(false);
+      setError("Enter a UI token from sydguard ui status.");
+      return;
+    }
+    const profileRefresh = refreshProfiles();
     try {
       const [active, net, fs] = await Promise.all([
         api<Session[]>(token, "/api/sessions"),
@@ -78,16 +97,20 @@ export function App() {
       );
     }
     await profileRefresh;
-  }, [token]);
+  }, [token, refreshProfiles]);
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
     }, 2000);
     const sequence = refreshSequence;
+    const catalogSequence = profileSequence;
+    const catalogFlight = profileFlight;
     return () => {
       clearInterval(timer);
       sequence.current++;
+      catalogSequence.current++;
+      catalogFlight.current = undefined;
     };
   }, [refresh]);
   async function decide(
@@ -150,6 +173,8 @@ export function App() {
               return;
             setProfileDirty(false);
             refreshSequence.current++;
+            profileSequence.current++;
+            profileFlight.current = undefined;
             setSessionsReady(false);
             setProfilesReady(false);
             setSessions([]);

@@ -2,9 +2,11 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gobd/syd-guard/internal/controller"
 )
@@ -25,6 +27,61 @@ func TestProfileBridgeForwardsTypedConflict(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), `"current_revision":"new"`) {
 		t.Fatalf("typed conflict: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestProfileBridgeIndeterminateAndDeadline(t *testing.T) {
+	const host = "127.0.0.1:9876"
+	token := strings.Repeat("a", 64)
+	for _, mode := range []string{"typed", "lost transport", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			handler := Handler(host, token, func(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > controller.OperatorOperationTimeout {
+					t.Fatal("bridge did not bound operator work")
+				}
+				if mode == "typed" {
+					return nil, &controller.OperatorError{Status: 503, Body: []byte(`{"error":"may have committed","code":"indeterminate"}`)}
+				}
+				if mode == "deadline" {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return nil, errors.New("lost save response")
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+			defer cancel()
+			r := httptest.NewRequest("PUT", "http://"+host+"/api/profiles/opaque-id", strings.NewReader(`{}`)).WithContext(ctx)
+			r.Host = host
+			r.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != 503 || !strings.Contains(w.Body.String(), `"code":"indeterminate"`) {
+				t.Fatalf("uncertain outcome lost: %d %s", w.Code, w.Body)
+			}
+		})
+	}
+	if NewServer(nil).WriteTimeout <= controller.OperatorOperationTimeout+2*time.Second {
+		t.Fatal("bridge operation/cleanup exceeds HTTP response deadline")
+	}
+}
+
+func TestProfileTimeoutDoesNotChangeLiveDecisionRoutes(t *testing.T) {
+	const host = "127.0.0.1:9876"
+	token := strings.Repeat("a", 64)
+	handler := Handler(host, token, func(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+		if _, ok := ctx.Deadline(); ok {
+			t.Fatal("profile timeout leaked into live decisions")
+		}
+		return []byte(`{"status":"applied"}`), nil
+	})
+	r := httptest.NewRequest("POST", "http://"+host+"/api/network/decisions", strings.NewReader(`{}`))
+	r.Host = host
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("live decision: %d %s", w.Code, w.Body)
 	}
 }
 

@@ -121,6 +121,12 @@ export async function api<T>(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: "error",
+    // Read-only status requests are bounded too; live mutations retain their
+    // existing behavior rather than being canceled by a profile deadline.
+    signal:
+      path.startsWith("/api/profiles") || body === undefined
+        ? AbortSignal.timeout(12_000)
+        : undefined,
   });
   if (!response.ok) {
     let detail: {

@@ -185,13 +185,21 @@ export function ProfileEditor({
       await refresh();
     } catch (err) {
       if (sequence !== generation.current) return;
-      if (err instanceof ApiError && err.status === 409) setConflict(true);
+      const revisionConflict = err instanceof ApiError && err.status === 409;
+      const definiteRejection =
+        err instanceof ApiError &&
+        [401, 403, 404, 409, 422, 501].includes(err.status) &&
+        err.code !== "indeterminate";
+      const uncertain = !definiteRejection;
+      if (revisionConflict || uncertain) setConflict(true);
       setError(
-        err instanceof ApiError && err.status === 409
+        revisionConflict
           ? `Revision conflict. Your edits are preserved. ${err.currentRevision ? `Current revision: ${err.currentRevision}. ` : ""}Load the current revision explicitly to discard them.`
-          : err instanceof Error
-            ? err.message
-            : "Save failed",
+          : uncertain
+            ? "Save outcome indeterminate. Your edits are preserved. The save may have committed; do not retry blindly. Load the current revision explicitly to reconcile before saving again."
+            : err instanceof Error
+              ? err.message
+              : "Save failed",
       );
     } finally {
       if (sequence === generation.current) setBusy(false);

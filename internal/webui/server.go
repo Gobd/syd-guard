@@ -44,12 +44,18 @@ func HandlerWithAuth(host string, authorize func(string) bool, operate Operator)
 			http.Error(w, "unsupported UI route", http.StatusNotFound)
 			return
 		}
+		ctx := r.Context()
+		if controller.ProfileOperatorRoute(r.Method, r.URL.Path) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, controller.OperatorOperationTimeout)
+			defer cancel()
+		}
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024+4096))
 		if err != nil {
 			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		output, err := operate(r.Context(), r.Method, r.URL.Path, data)
+		output, err := operate(ctx, r.Method, r.URL.Path, data)
 		if err != nil {
 			if detail, ok := err.(interface {
 				StatusCode() int
@@ -58,6 +64,13 @@ func HandlerWithAuth(host string, authorize func(string) bool, operate Operator)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(detail.StatusCode())
 				_, _ = w.Write(detail.ResponseBody())
+				return
+			}
+			if r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/api/profiles/") {
+				// Losing a save response is not proof the helper failed to commit.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"Save outcome indeterminate; authenticate a fresh snapshot before retrying. Your draft must be preserved.","code":"indeterminate"}`))
 				return
 			}
 			http.Error(w, "controller operation failed; refresh or inspect operator terminal", http.StatusBadGateway)
