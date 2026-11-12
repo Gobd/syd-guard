@@ -59,6 +59,30 @@ SIGKILL tracing was explicitly requested from operator and remains UNAPPROVED;
 automated child notifications are not approval. Do not execute privileged tracing
 or change audit settings pending an actual operator response.
 
+## User-requested active UI demo — 2026-11-12
+
+Operator requested a live session and tokenized UI link. Started ONLY a disposable
+normal transparent-run demo in guest fixture, not selected replay or permissive learn.
+Current CLI PID204083, session `9a34f701f2c1b89e5538855cf0ea87ee`, friendly label
+`ui-activity-demo`, namespace `sg-863483`, project fixture `tmp/personal-demo-project`,
+extra eligibility scope `tmp/personal-demo-inputs`. Workload `/usr/bin/timeout 600`
+shell retries benign demo-file read and `https://www.example.com` every10s. Intended
+self-stop after600s of workload time; do not infer descendant containment proof.
+Identity/started time in fixture `personal-demo-session.json`; logs
+`personal-demo-session-fixed.log`. Real host Chromium verified running session,
+www.example.comTCP443 pending, and file metadata denials; screenshot
+`/tmp/sydguard-live-demo.png`. File denials observed were root/stat and inherited
+output-log metadata outside the ceiling, not a proved actionable input-file prompt.
+Saving approvals to a profile is unavailable for this unselected normal session;
+do not claim this is the full workflow. Preview port56655, obtain fresh token using
+matching private host `ui ... status` (tokensexpire30m; do not record token here).
+Initial demo PID203916/netns sg-f2c657 used /dev/null redirection and thus did not
+execute intended cat/curl. Stopped only identity-checked demo CLI; immediate netns
+check raced asynchronous cleanup and halted restart. Later verified all original
+CLI/sudo/supervisor/Syd/timeout/sh/sleep PIDs and namespace absent before new launch.
+Original completion RPC hit deadline during signal cancellation; cleanup did complete.
+No Root SIGKILL tracing was authorized by this request; that approval stays pending.
+
 ## Current WIP checkpoint — 2026-11-12 continuation
 
 Operator requested a committed backup while work continues. **Not ready/green end-to-end.**
