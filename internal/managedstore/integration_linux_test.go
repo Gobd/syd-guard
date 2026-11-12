@@ -18,7 +18,7 @@ import (
 )
 
 // Requires a disposable Linux guest and separately installed, root-owned helper.
-// See MANAGED_POLICY_HELPER.md; never run this through sudo.
+// See README.md's managed-helper deployment gates; never run this through sudo.
 func TestInstalledHelperIntegration(t *testing.T) {
 	if os.Getenv("SYDGUARD_HELPER_TEST") != "1" {
 		t.Skip("requires disposable guest setup")
@@ -91,6 +91,10 @@ func TestInstalledHelperIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	catalog, err := client.Catalog(ctx)
+	if err != nil || catalog == nil || len(catalog) != 0 {
+		t.Fatalf("fresh enrolled catalog: %+v %v", catalog, err)
+	}
 	id, err := client.Register(ctx, project)
 	if err != nil {
 		t.Fatal(err)
@@ -117,6 +121,10 @@ func TestInstalledHelperIntegration(t *testing.T) {
 	}
 	if created.Namespace.ProjectDev != projectStat.Dev || created.Namespace.ProjectIno != projectStat.Ino || created.Namespace.PolicyDev != policyStat.Dev || created.Namespace.PolicyIno != policyStat.Ino {
 		t.Fatalf("snapshot namespace mismatch: %+v", created.Namespace)
+	}
+	catalog, err = client.Catalog(ctx)
+	if err != nil || len(catalog) != 1 || catalog[0].Project != id || catalog[0].Name != "test" || catalog[0].Revision != created.Revision || catalog[0].Namespace == nil || *catalog[0].Namespace != *created.Namespace {
+		t.Fatalf("authenticated catalog binding: %+v %v", catalog, err)
 	}
 	file := filepath.Join(project, ".sydguard", "test.json")
 	if err := os.WriteFile(file, []byte("attacker"), 0o600); err == nil {

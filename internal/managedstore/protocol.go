@@ -14,9 +14,11 @@ import (
 
 const Limit = 1024 * 1024
 
+const maxCatalogProfiles = 128
+
 type Request struct {
 	Operation  string `json:"operation"`
-	Project    string `json:"project"`
+	Project    string `json:"project,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Expected   string `json:"expected_revision,omitempty"`
 	Profile    []byte `json:"profile,omitempty"`
@@ -33,6 +35,15 @@ type Response struct {
 	Project   string            `json:"project,omitempty"` // opaque registration ID
 	Name      string            `json:"name,omitempty"`
 	Namespace *ProjectNamespace `json:"namespace,omitempty"`
+	Catalog   *[]CatalogEntry   `json:"catalog,omitempty"`
+}
+
+// CatalogEntry is registry-derived metadata, not a pinned namespace.
+type CatalogEntry struct {
+	Project   string            `json:"project"`
+	Name      string            `json:"name"`
+	Namespace *ProjectNamespace `json:"namespace"`
+	Revision  string            `json:"revision"`
 }
 
 type ProjectNamespace struct {
@@ -126,6 +137,8 @@ func decodeRequest(data []byte) (Request, error) {
 	}
 	var names []string
 	switch r.Operation {
+	case "catalog":
+		names = []string{"operation", "credential"}
 	case "register":
 		names = []string{"operation", "project", "credential"}
 	case "create", "read":
@@ -138,7 +151,7 @@ func decodeRequest(data []byte) (Request, error) {
 	if err := requireFields(fields, names...); err != nil {
 		return r, err
 	}
-	if r.Project == "" || r.Credential == "" || r.Operation != "register" && r.Name == "" || r.Operation == "replace" && (r.Expected == "" || len(r.Profile) == 0) {
+	if r.Credential == "" || r.Operation != "catalog" && r.Project == "" || r.Operation != "register" && r.Operation != "catalog" && r.Name == "" || r.Operation == "replace" && (r.Expected == "" || len(r.Profile) == 0) {
 		return r, errors.New("empty field")
 	}
 	return r, nil
@@ -146,7 +159,10 @@ func decodeRequest(data []byte) (Request, error) {
 
 func decodeResponse(data []byte, operation string) (Response, error) {
 	var r Response
-	fields, err := strictObject(data, "revision", "profile", "error", "code", "project", "name", "namespace")
+	if len(data) > 2*Limit+8192 {
+		return r, errors.New("response too large")
+	}
+	fields, err := strictObject(data, "revision", "profile", "error", "code", "project", "name", "namespace", "catalog")
 	if err != nil {
 		return r, err
 	}
@@ -158,6 +174,20 @@ func decodeResponse(data []byte, operation string) (Response, error) {
 		if err := requireFields(fields, "error", "code"); err != nil || r.Code == "" || len(r.Error) > 256 || len(r.Code) > 32 {
 			return r, errors.New("invalid error response")
 		}
+	case operation == "catalog":
+		if err := requireFields(fields, "catalog"); err != nil || r.Catalog == nil {
+			return r, errors.New("invalid catalog response")
+		}
+		var entries []json.RawMessage
+		if err := json.Unmarshal(fields["catalog"], &entries); err != nil || entries == nil || len(entries) > maxCatalogProfiles {
+			return r, errors.New("invalid catalog entries")
+		}
+		for _, entry := range entries {
+			f, err := strictObject(entry, "project", "name", "namespace", "revision")
+			if err != nil || requireFields(f, "project", "name", "namespace", "revision") != nil || validateNamespaceWire(f["namespace"]) != nil {
+				return r, errors.New("invalid catalog entry")
+			}
+		}
 	case operation == "register":
 		if err := requireFields(fields, "project"); err != nil || r.Project == "" {
 			return r, errors.New("invalid registration response")
@@ -166,12 +196,19 @@ func decodeResponse(data []byte, operation string) (Response, error) {
 		if err := requireFields(fields, "revision", "profile", "project", "name", "namespace"); err != nil || r.Revision == "" || len(r.Profile) == 0 || r.Project == "" || r.Name == "" || r.Namespace == nil {
 			return r, errors.New("invalid snapshot response")
 		}
-		namespace, err := strictObject(fields["namespace"], "path", "project_dev", "project_ino", "policy_dev", "policy_ino")
-		if err != nil || requireFields(namespace, "path", "project_dev", "project_ino", "policy_dev", "policy_ino") != nil || r.Namespace.Path == "" || r.Namespace.ProjectIno == 0 || r.Namespace.PolicyIno == 0 {
+		if validateNamespaceWire(fields["namespace"]) != nil || r.Namespace.ProjectIno == 0 || r.Namespace.PolicyIno == 0 {
 			return r, errors.New("invalid snapshot namespace")
 		}
 	default:
 		return r, errors.New("unsupported response operation")
 	}
 	return r, nil
+}
+
+func validateNamespaceWire(data []byte) error {
+	fields, err := strictObject(data, "path", "project_dev", "project_ino", "policy_dev", "policy_ino")
+	if err != nil || requireFields(fields, "path", "project_dev", "project_ino", "policy_dev", "policy_ino") != nil {
+		return errors.New("invalid namespace")
+	}
+	return nil
 }

@@ -182,7 +182,7 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 }
 
 func processHelperResponse(request Request, out boundedBuffer, runErr error, deadline bool) (Response, error) {
-	mutation := request.Operation != "read"
+	mutation := request.Operation != "read" && request.Operation != "catalog"
 	transportError := func(message string) (Response, error) {
 		if mutation {
 			return Response{}, fmt.Errorf("%w: %s", ErrIndeterminate, message)
@@ -200,7 +200,7 @@ func processHelperResponse(request Request, out boundedBuffer, runErr error, dea
 		return transportError("helper unavailable or invalid response")
 	}
 	if response.Error != "" {
-		if response.Code == "409" && request.Operation != "replace" {
+		if (response.Code == "409" && request.Operation != "replace") || (response.Code == "indeterminate" && !mutation) {
 			return transportError("invalid helper conflict response")
 		}
 		return Response{}, &ClientError{Code: response.Code, Message: response.Error}
@@ -224,6 +224,48 @@ func validProjectID(id string) bool {
 }
 
 func validateResponse(request Request, response Response) (Response, error) {
+	if request.Operation == "catalog" {
+		if response.Catalog == nil || len(*response.Catalog) > maxCatalogProfiles {
+			return Response{}, errors.New("invalid catalog")
+		}
+		entries := make([]CatalogEntry, len(*response.Catalog))
+		projects := make(map[string]ProjectNamespace)
+		namespaces := make(map[ProjectNamespace]string)
+		paths := make(map[string]string)
+		tuples := make(map[string]bool)
+		for i, entry := range *response.Catalog {
+			if !validProjectID(entry.Project) || config.ProfileName(entry.Name) != nil || !validProjectID(entry.Revision) || entry.Namespace == nil || entry.Namespace.ProjectIno == 0 || entry.Namespace.PolicyIno == 0 || entry.Namespace.Path == "/" || entry.Namespace.ProjectDev != entry.Namespace.PolicyDev || ValidateProjectPath(entry.Namespace.Path) != nil {
+				return Response{}, errors.New("invalid catalog entry")
+			}
+			ns := *entry.Namespace
+			if old, ok := projects[entry.Project]; ok && old != ns {
+				return Response{}, errors.New("mixed project namespace")
+			}
+			if old, ok := namespaces[ns]; ok && old != entry.Project {
+				return Response{}, errors.New("duplicate registration")
+			}
+			if old, ok := paths[ns.Path]; ok && old != entry.Project {
+				return Response{}, errors.New("duplicate project path")
+			}
+			for id, other := range projects {
+				if id != entry.Project && (other.ProjectDev == ns.ProjectDev && other.ProjectIno == ns.ProjectIno || other.PolicyDev == ns.PolicyDev && other.PolicyIno == ns.PolicyIno) {
+					return Response{}, errors.New("duplicate registration identity")
+				}
+			}
+			key := entry.Project + "\x00" + entry.Name
+			if tuples[key] {
+				return Response{}, errors.New("duplicate catalog entry")
+			}
+			tuples[key] = true
+			projects[entry.Project] = ns
+			namespaces[ns] = entry.Project
+			paths[ns.Path] = entry.Project
+			entry.Namespace = &ns
+			entries[i] = entry
+		}
+		response.Catalog = &entries
+		return response, nil
+	}
 	if !validProjectID(response.Project) {
 		return Response{}, errors.New("invalid registration ID")
 	}
@@ -267,6 +309,15 @@ func (c *Client) Register(ctx context.Context, canonicalProject string) (string,
 	}
 	r, err := c.call(ctx, Request{Operation: "register", Project: canonicalProject})
 	return r.Project, err
+}
+
+// Catalog returns authenticated registry metadata; namespace observations do not pin paths.
+func (c *Client) Catalog(ctx context.Context) ([]CatalogEntry, error) {
+	r, err := c.call(ctx, Request{Operation: "catalog"})
+	if err != nil {
+		return nil, err
+	}
+	return *r.Catalog, nil
 }
 
 func (c *Client) Create(ctx context.Context, projectID, name string) (Response, error) {

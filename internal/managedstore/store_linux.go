@@ -95,6 +95,24 @@ func (s *Store) Bootstrap(credentialFile string) error {
 	if !validCredential(value) {
 		return fmt.Errorf("credential must be 32 random bytes encoded as hex")
 	}
+	// Enrollment establishes the lock before the credential becomes usable, so a
+	// catalog never creates registry files. Older enrollments without this lock
+	// fail closed until an ordinary mutating transaction creates it.
+	fdLock, err := openTransactionLock(int(s.root.Fd()), true)
+	if err != nil {
+		return err
+	}
+	lock := os.NewFile(uintptr(fdLock), "transactions.lock")
+	if err := checkRootFile(lock, 0o600); err != nil {
+		_ = lock.Close()
+		return err
+	}
+	if err := lock.Close(); err != nil {
+		return err
+	}
+	if err := unix.Fsync(int(s.root.Fd())); err != nil {
+		return err
+	}
 	digest := sha256.Sum256([]byte(value))
 	return s.create(strconv.Itoa(s.uid)+".credential", []byte(hex.EncodeToString(digest[:])), 0o600)
 }
@@ -119,10 +137,10 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 	if subtle.ConstantTimeCompare(enrolled, []byte(hex.EncodeToString(digest[:]))) != 1 {
 		return Response{}, fmt.Errorf("operator credential rejected")
 	}
-	if r.Operation != "register" && config.ProfileName(r.Name) != nil {
+	if r.Operation != "register" && r.Operation != "catalog" && config.ProfileName(r.Name) != nil {
 		return Response{}, fmt.Errorf("invalid profile name")
 	}
-	fd, err := unix.Openat(int(s.root.Fd()), "transactions.lock", unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	fd, err := openTransactionLock(int(s.root.Fd()), r.Operation != "catalog")
 	if err != nil {
 		return Response{}, err
 	}
@@ -145,6 +163,9 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
 	if r.Operation == "register" {
 		return s.register(r)
+	}
+	if r.Operation == "catalog" {
+		return s.catalog()
 	}
 	reg, err := s.lookup(r.Project)
 	if err != nil {
@@ -226,7 +247,7 @@ func (s *Store) Apply(r Request) (result Response, resultErr error) {
 	}
 }
 
-var ErrUnsupportedFilesystem = errors.New("project and registry require the same verified local ext4/tmpfs filesystem")
+var ErrUnsupportedFilesystem = errors.New("project and registry require the same ext4/tmpfs device; backing-storage locality requires administrator verification")
 
 func (s *Store) key(project string) string {
 	return "project-" + strconv.Itoa(s.uid) + "-" + project + ".json"
@@ -241,11 +262,18 @@ func (s *Store) lookup(project string) (registration, error) {
 	if err != nil {
 		return result, fmt.Errorf("project is not registered")
 	}
+	fields, err := strictObject(data, "project", "project_dev", "project_ino", "policy_dev", "policy_ino")
+	if err != nil || requireFields(fields, "project", "project_dev", "project_ino", "policy_dev", "policy_ino") != nil {
+		return result, errors.New("invalid registration")
+	}
 	if err := decodeStrict(data, &result); err != nil {
 		return result, err
 	}
 	// Reject older registrations incompatible with the client before any create
 	// or replace can publish an unreconcilable snapshot.
+	if result.ProjectIno == 0 || result.PolicyIno == 0 {
+		return result, errors.New("invalid registration identity")
+	}
 	if err := ValidateProjectPath(result.Project); err != nil {
 		return result, err
 	}
@@ -412,6 +440,31 @@ func (s *Store) read(name string, max int64, mode os.FileMode) ([]byte, error) {
 	return readAt(int(s.root.Fd()), name, max, mode)
 }
 
+// Only a newly and exclusively created lock inode may have its mode corrected.
+// Existing inodes retain fail-closed ownership/mode/link validation at the caller.
+// Catalog opens an existing lock read-only and never creates or chmods anything.
+func openTransactionLock(dir int, create bool) (int, error) {
+	flags := unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
+	if !create {
+		return unix.Openat(dir, "transactions.lock", unix.O_RDONLY|flags, 0)
+	}
+	fd, err := unix.Openat(dir, "transactions.lock", unix.O_RDWR|flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+	if err == nil {
+		if err = unix.Fchmod(fd, 0o600); err == nil {
+			err = unix.Fsync(fd)
+		}
+		if err != nil {
+			_ = unix.Close(fd)
+			return -1, err
+		}
+		return fd, nil
+	}
+	if !errors.Is(err, unix.EEXIST) {
+		return -1, err
+	}
+	return unix.Openat(dir, "transactions.lock", unix.O_RDWR|flags, 0)
+}
+
 func checkRootFile(f *os.File, mode os.FileMode) error {
 	st, err := f.Stat()
 	if err != nil {
@@ -428,7 +481,7 @@ func checkRootFile(f *os.File, mode os.FileMode) error {
 }
 
 func readAt(dir int, name string, max int64, mode os.FileMode) ([]byte, error) {
-	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -580,8 +633,9 @@ func localFilesystem(fd int) error {
 	if err := unix.Fstatfs(fd, &stat); err != nil {
 		return err
 	}
-	// Initial verified subset: local ext4 and tmpfs. In particular virtiofs/FUSE,
-	// network mounts and host-owned files presented through them are unsupported.
+	// Filesystem-magic allowlist only: ext4 can have remote block/loop backing.
+	// Locality needs administrator verification. Ordinary virtiofs/FUSE/network
+	// filesystem types are unsupported.
 	if stat.Type != unix.EXT4_SUPER_MAGIC && stat.Type != unix.TMPFS_MAGIC {
 		return ErrUnsupportedFilesystem
 	}

@@ -65,7 +65,7 @@ func run() managedstore.Response {
 		return fail("indeterminate", "operation may have committed; reconcile before retry")
 	}
 	if errors.Is(err, managedstore.ErrUnsupportedFilesystem) {
-		return fail("unsupported_filesystem", "project and registry require the same verified local ext4/tmpfs filesystem")
+		return fail("unsupported_filesystem", "project and registry require the same ext4/tmpfs device and administrator-verified local backing storage")
 	}
 	if errors.Is(err, managedstore.ErrConflict) {
 		return fail("409", "profile revision conflict")
