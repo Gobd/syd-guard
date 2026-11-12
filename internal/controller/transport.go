@@ -97,6 +97,22 @@ func operatorToken(directory string) (string, error) {
 // Serve holds the single-controller lock throughout its lifetime. No TCP
 // listener is exposed; operator clients use a private Unix socket and token.
 func Serve(ctx context.Context, directory string) error {
+	return serve(ctx, directory, nil)
+}
+
+// ServeManaged starts a separate explicitly opted-in controller. The provider is
+// constructed under the lifetime lock, before any endpoint is published.
+func ServeManaged(ctx context.Context, directory string, factory func(context.Context) (ProfileProvider, error)) error {
+	if factory == nil {
+		return fmt.Errorf("managed controller requires a provider factory")
+	}
+	return serve(ctx, directory, factory)
+}
+
+// PrepareState validates the selected private controller authority.
+func PrepareState(directory string) error { return privateState(directory) }
+
+func serve(ctx context.Context, directory string, factory func(context.Context) (ProfileProvider, error)) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("controller must run in Linux")
 	}
@@ -108,6 +124,19 @@ func Serve(ctx context.Context, directory string) error {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
+	var provider ProfileProvider
+	if factory != nil {
+		provider, err = factory(ctx)
+		if err != nil {
+			return fmt.Errorf("managed catalog unavailable: %w", err)
+		}
+		if provider == nil {
+			return fmt.Errorf("managed catalog returned no provider")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	token, err := operatorToken(directory)
 	if err != nil {
 		return err
@@ -136,6 +165,9 @@ func Serve(ctx context.Context, directory string) error {
 		return err
 	}
 	controller.state = directory
+	if provider != nil {
+		controller.SetProfileProvider(provider)
+	}
 	defer controller.Close()
 	server := &http.Server{Handler: controller.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	done := make(chan struct{})

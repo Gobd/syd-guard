@@ -42,7 +42,7 @@ func newCommand(out, stderr io.Writer) *cli.Command {
 	return &cli.Command{
 		Name: "sydguard", Version: version,
 		Usage:  "upstream Syd + Go session/policy usability (implementation spike)",
-		Writer: out, ErrWriter: stderr,
+		Reader: os.Stdin, Writer: out, ErrWriter: stderr,
 		// The caller, not the library, owns process exit (also safe for tests).
 		ExitErrHandler: func(context.Context, *cli.Command, error) {},
 		Action: func(ctx context.Context, c *cli.Command) error {
@@ -54,6 +54,7 @@ func newCommand(out, stderr io.Writer) *cli.Command {
 		Commands: []*cli.Command{
 			configCommand(),
 			profileCommand(),
+			managedCommand(),
 			{Name: "version", Usage: "show wrapper version", Action: func(_ context.Context, c *cli.Command) error { _, err := fmt.Fprintln(c.Writer, version); return err }},
 			{Name: "doctor", Usage: "inspect native Linux or an existing Lima guest", Flags: []cli.Flag{
 				&cli.StringFlag{Name: "backend", Value: "auto", Usage: "auto, native or lima"},

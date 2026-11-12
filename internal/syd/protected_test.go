@@ -9,7 +9,7 @@ import (
 
 func TestProtectedPathPreset(t *testing.T) {
 	policy := "/repo/.sydguard"
-	for _, p := range []string{"/repo/.env", "/repo/a/foo.env", "/repo/a/b/.env.local", "/repo/.ssh/id", "/repo/.netrc", "/home/u/.config/google-chrome/Default/Login Data"} {
+	for _, p := range []string{"/repo/.env", "/repo/a/foo.env", "/repo/a/b/.env.local", "/repo/.ssh/id", "/repo/.netrc", "/home/u/.config/google-chrome/Default/Login Data", "/repo/other-config/state/.sydguard-private/managed-credential"} {
 		if !ProtectedPath(p, "read", policy) {
 			t.Errorf("read allowed: %s", p)
 		}
@@ -30,7 +30,7 @@ func TestProtectedRulesAndInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"deny/all+/.env", "deny/all+/**/.env", "deny/all+/**/*.env", "deny/all+/**/.env.*/***", "deny/delete,rename,rmdir+"} {
+	for _, want := range []string{"deny/all+/.env", "deny/all+/**/.env", "deny/all+/**/*.env", "deny/all+/**/.env.*/***", "deny/all+/**/.sydguard-private/***", "deny/delete,rename,rmdir+"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("missing %s", want)
 		}

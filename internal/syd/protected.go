@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Gobd/syd-guard/internal/config"
 )
 
 // protectedNames is a bounded name-based preset, not a secret classifier.
@@ -12,7 +14,7 @@ import (
 var protectedNames = []string{
 	".env", "*.env", ".env.*", ".ssh", ".gnupg", ".aws", ".azure", ".kube",
 	".netrc", ".git-credentials", ".mozilla", "google-chrome", "chromium",
-	"BraveSoftware", "microsoft-edge",
+	"BraveSoftware", "microsoft-edge", config.PrivateAuthorityFolder,
 }
 
 // ProtectedPath rejects protected names and mutation of the project policy or

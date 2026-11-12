@@ -52,8 +52,10 @@ func (c *helperCASBarrier) Replace(ctx context.Context, project, name, revision 
 	return c.Client.Replace(ctx, project, name, revision, data)
 }
 
-// Requires a disposable Linux guest, an already installed immutable helper,
-// freshly enrolled credential and an empty fixed registry. Never run as root.
+// Requires administrator attestation that the installed immutable helper and
+// fixed registry are disposable, plus a freshly enrolled test credential. The
+// caller profile catalog must be empty; that check does not prove the registry
+// lacks other UIDs or empty registrations. Never run as root.
 func TestManagedHelperProfileBridgeIntegration(t *testing.T) {
 	if os.Getenv("SYDGUARD_MANAGED_UI_INTEGRATION") != "1" {
 		t.Skip("requires disposable installed-helper fixture")
@@ -72,7 +74,7 @@ func TestManagedHelperProfileBridgeIntegration(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := client.Catalog(ctx)
 	if err != nil || catalog == nil || len(catalog) != 0 {
-		t.Fatalf("fixture requires an empty authenticated registry: entries=%d err=%v", len(catalog), err)
+		t.Fatalf("fixture requires an empty caller profile catalog: entries=%d err=%v", len(catalog), err)
 	}
 	dir, err := os.MkdirTemp("", "sydguard-managed-ui-")
 	if err != nil {
