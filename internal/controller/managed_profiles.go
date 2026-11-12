@@ -21,6 +21,13 @@ type ManagedProfileClient interface {
 	Replace(context.Context, string, string, string, json.RawMessage) (managedstore.Response, error)
 }
 
+// ManagedProfileCatalogClient enumerates only authenticated helper registrations.
+// A catalog is metadata discovery, never permission review or launch authority.
+type ManagedProfileCatalogClient interface {
+	ManagedProfileClient
+	Catalog(context.Context) ([]managedstore.CatalogEntry, error)
+}
+
 // ManagedProfileRef is an explicitly selected registered project/profile pair.
 // Possessing an ID is not authorization: construction authenticates each read.
 type ManagedProfileRef struct {
@@ -60,12 +67,8 @@ func NewManagedProfileProvider(ctx context.Context, client ManagedProfileClient,
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if len(ref.ProjectID) != 64 || config.ProfileName(ref.Name) != nil {
-			return nil, fmt.Errorf("invalid managed profile reference")
-		}
-		decoded, err := hex.DecodeString(ref.ProjectID)
-		if err != nil || hex.EncodeToString(decoded) != ref.ProjectID {
-			return nil, fmt.Errorf("invalid registered project ID")
+		if err := validateManagedProfileRef(ref); err != nil {
+			return nil, err
 		}
 		// Stable across provider restart, but changes for a new registration.
 		digest := sha256.Sum256([]byte(ref.ProjectID + "\x00" + ref.Name))
@@ -93,6 +96,17 @@ func NewManagedProfileProvider(ctx context.Context, client ManagedProfileClient,
 		provider.order = append(provider.order, id)
 	}
 	return provider, nil
+}
+
+func validateManagedProfileRef(ref ManagedProfileRef) error {
+	if len(ref.ProjectID) != 64 || config.ProfileName(ref.Name) != nil {
+		return fmt.Errorf("invalid managed profile reference")
+	}
+	decoded, err := hex.DecodeString(ref.ProjectID)
+	if err != nil || hex.EncodeToString(decoded) != ref.ProjectID {
+		return fmt.Errorf("invalid registered project ID")
+	}
+	return nil
 }
 
 func (b managedProfileBinding) snapshot(response managedstore.Response) ([]byte, error) {
