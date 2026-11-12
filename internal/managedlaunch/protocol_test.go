@@ -50,7 +50,7 @@ func TestDecodeRequest(t *testing.T) {
 	}
 }
 
-func TestReadOnlyProfileRejectsUnsupportedIntent(t *testing.T) {
+func TestSelectedProfileRejectsUnsupportedIntent(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0o600); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,9 @@ func TestReadOnlyProfileRejectsUnsupportedIntent(t *testing.T) {
 	}{
 		{"relative read", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "file", Access: []string{"read"}}}, Network: []config.NetworkRule{}}, true},
 		{"project read", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: ".", Access: []string{"read"}, Recursive: true}}, Network: []config.NetworkRule{}}, true},
-		{"write", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "file", Access: []string{"write"}}}, Network: []config.NetworkRule{}}, false},
+		{"write", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "file", Access: []string{"write"}}}, Network: []config.NetworkRule{}}, true},
+		{"delete", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "missing/new", Access: []string{"delete"}}}, Network: []config.NetworkRule{}}, true},
+		{"unclean", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "dir/../file", Access: []string{"read"}}}, Network: []config.NetworkRule{}}, false},
 		{"absolute", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "/etc/passwd", Access: []string{"read"}}}, Network: []config.NetworkRule{}}, false},
 		{"home", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{{Path: "~/data", Access: []string{"read"}}}, Network: []config.NetworkRule{}}, false},
 		{"network", config.Profile{Version: 1, Name: "default", Files: []config.FileRule{}, Network: []config.NetworkRule{{Host: "example.com", Port: 443, Transport: "tcp"}}}, false},
@@ -74,9 +76,12 @@ func TestReadOnlyProfileRejectsUnsupportedIntent(t *testing.T) {
 			}
 			snap, err := config.ParseManagedProfileSnapshot("default", data)
 			if err != nil {
+				if !tc.valid {
+					return
+				}
 				t.Fatal(err)
 			}
-			_, err = ReadOnlyProfile(snap, root)
+			_, err = SelectedProfile(snap, root)
 			if (err == nil) != tc.valid {
 				t.Fatalf("subset acceptance: %v", err)
 			}
@@ -90,7 +95,7 @@ func TestReadOnlyProfileRejectsUnsupportedIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadOnlyProfile(snap, root); err == nil {
+	if _, err := SelectedProfile(snap, root); err == nil {
 		t.Fatal("symlink escaped project")
 	}
 }

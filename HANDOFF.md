@@ -35,7 +35,26 @@ Corrected fixture kept stdio and verified detached PID212448 ALIVE stateS in exa
 session cgroup before foreground exit, then no longer running after exit0; evidence
 selected-detached-alive-proof.log. No remaining anchor/cgroup children; intended slot0
 file remains. Crash/cancel/mount flags/namespace replacement/stale CAS still need gates.
-Saved writable/network replay and safe persisted live apply are NOT implemented.
+Saved writable source now integrated (common typed selected adapter, descriptor-relative
+openat2 checks and conditional project RW bind, policy stays RO); unprivileged static
+Syd file-operation tests passed and merged native/Linux full vet/race/build/lint passed.
+NOT PRIVILEGED-LAUNCHED YET. Reviewer0655 found P1: relocated private-view paths can
+hide original source-project overlap with trusted runtime exec hierarchies/whole home.
+Add source descriptor-identity/ancestry guard before enabling mutating bind; DO NOT
+install writable candidate until repair accepted. Fresh disjoint writable fixture CAS
+and manual review prepared in pinned-writable-fixture.json, no workload launch.
+Writable worker resume failed due auto-removed managed worktree (no further changes);
+reported/stopped; WIP checkpoint then single fresh Pi-worker retry is planned.
+
+Managed network half source integrated and reviewereb13 found no issues: exact
+session/project/name/generation/start binding + snapshot revision/epoch receipt,
+atomic profile-owned target replacement, no legacy-grant fallback for managed sessions,
+old-epoch cancellation and locked final admission in both gateway/transparent paths.
+Established admitted TCP connections may continue; future/pre-admission enforcement
+only. Unit/mock broker positive/revoke/race tests passed, no real outbound traffic.
+Not wired into selected Root network launch/controller yet; do NOT claim network
+replay or persisted-live workflow done. Safe filesystem live mutation remains blocked
+by upstream non-rollback load ordering; no unsafe dynamic recursive adds enabled.
 
 ## Operator clarified acceptance contract — live persisted approvals
 

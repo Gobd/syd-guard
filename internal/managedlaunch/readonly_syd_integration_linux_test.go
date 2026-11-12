@@ -38,7 +38,7 @@ func TestReadOnlyProfileStaticSydIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := managedlaunch.ReadOnlyProfile(snapshot, project)
+	resolved, err := managedlaunch.SelectedProfile(snapshot, project)
 	if err != nil {
 		t.Fatal(err)
 	}

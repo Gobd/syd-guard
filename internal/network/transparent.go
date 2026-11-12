@@ -149,11 +149,21 @@ func (g *Transparent) forward(conn *net.TCPConn) {
 	if ReservedServiceHost(host) && (g.servicePort == 0 || host != g.serviceHost || destination.Port() != g.servicePort) {
 		return
 	}
-	if err != nil || !g.learning && !g.policy.Check(g.session, g.name, target) {
+	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
 	defer cancel()
+	var epoch *policyEpoch
+	if !g.learning {
+		var leaseCancel context.CancelFunc
+		var allowed bool
+		ctx, leaseCancel, epoch, allowed = g.policy.beginDial(ctx, g.session, g.name, target)
+		if !allowed {
+			return
+		}
+		defer leaseCancel()
+	}
 	var upstream net.Conn
 	if target.Host == g.serviceHost && target.Port == g.servicePort && g.servicePort != 0 {
 		upstream, err = (&net.Dialer{}).DialContext(ctx, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(g.servicePort))))
@@ -164,6 +174,9 @@ func (g *Transparent) forward(conn *net.TCPConn) {
 		return
 	}
 	defer func() { _ = upstream.Close() }()
+	if ctx.Err() != nil || !g.learning && !g.policy.admitDial(g.session, target, epoch) {
+		return
+	}
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()

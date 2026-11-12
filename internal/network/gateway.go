@@ -70,16 +70,22 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "requires an exact HTTP/CONNECT DNS target", http.StatusBadRequest)
 		return
 	}
-	if !g.policy.Check(g.session, g.name, target) {
+	ctx, cancel, epoch, allowed := g.policy.beginDial(r.Context(), g.session, g.name, target)
+	if !allowed {
 		http.Error(w, "network target pending operator approval; approve then retry", http.StatusForbidden)
 		return
 	}
-	upstream, err := dialPublic(r.Context(), target)
+	defer cancel()
+	upstream, err := dialVettedPublic(ctx, target)
 	if err != nil {
 		http.Error(w, "target cannot be reached through vetted public DNS", http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = upstream.Close() }()
+	if ctx.Err() != nil || !g.policy.admitDial(g.session, target, epoch) {
+		http.Error(w, "network admission revoked", http.StatusForbidden)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -147,10 +153,17 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func dialPublic(ctx context.Context, target Target) (net.Conn, error) {
+	return dialPublicWith(ctx, target, net.DefaultResolver.LookupNetIP, (&net.Dialer{}).DialContext)
+}
+
+func dialPublicWith(ctx context.Context, target Target, resolve func(context.Context, string, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error)) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", target.Host)
+	addresses, err := resolve(ctx, "ip", target.Host)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if len(addresses) == 0 {
@@ -165,7 +178,10 @@ func dialPublic(ctx context.Context, target Target) (net.Conn, error) {
 	}
 	var last error
 	for _, address := range addresses {
-		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(int(target.Port))))
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		conn, err := dial(ctx, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(int(target.Port))))
 		if err == nil {
 			return conn, nil
 		}

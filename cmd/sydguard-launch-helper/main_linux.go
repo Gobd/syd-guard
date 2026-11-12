@@ -153,8 +153,12 @@ func run() (int, error) {
 	}
 	// Reject unsupported intent before privileged mount setup, independently of
 	// path resolution that must take place inside the pinned mount view.
-	if err := validateIntent(parsed.Profile()); err != nil {
+	writable, err := managedlaunch.ValidateIntent(parsed.Profile())
+	if err != nil {
 		return 1, err
+	}
+	if err := validateProjectPaths(snapshot.Project, parsed.Profile()); err != nil {
+		return 1, fmt.Errorf("validate pinned project paths: %w", err)
 	}
 	identity, err := session.ProcessIdentity(os.Getpid())
 	if err != nil {
@@ -174,7 +178,7 @@ func run() (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("watchdog startup failed; slot quarantined: %w", err)
 	}
-	code, launchErr := launch(request, snapshot, engine, slot, group, watch, uid, gid, startup)
+	code, launchErr := launch(request, snapshot, engine, slot, group, watch, uid, gid, startup, writable)
 	cleanupErr := watch.finish()
 	diagnostic(fmt.Sprintf("parent watchdog_finish_ok=%t reaped=%t", cleanupErr == nil, watch.crashed))
 	var recoveryErr error
@@ -217,19 +221,39 @@ func diagnostic(message string) {
 	}
 }
 
-func validateIntent(profile config.Profile) error {
-	if len(profile.Network) != 0 {
-		return errors.New("network intent is unsupported in this launcher")
-	}
+// Validate each existing prefix using the pinned project descriptor. Missing
+// suffixes are allowed for creation, but dangling and escaping symlinks are not.
+func validateProjectPaths(project *os.File, profile config.Profile) error {
 	for _, rule := range profile.Files {
-		if filepath.IsAbs(rule.Path) || strings.HasPrefix(rule.Path, "~") || filepath.Clean(rule.Path) != rule.Path || len(rule.Access) != 1 || rule.Access[0] != "read" {
-			return errors.New("only project-relative read intent is supported")
+		path := rule.Path
+		for {
+			how := &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS}
+			fd, err := unix.Openat2(int(project.Fd()), path, how)
+			if err == nil {
+				_ = unix.Close(fd)
+				break
+			}
+			if !errors.Is(err, unix.ENOENT) || path == "." {
+				return fmt.Errorf("invalid project file rule %q: %w", rule.Path, err)
+			}
+			// O_NOFOLLOW distinguishes a dangling final symlink from an absent
+			// component. Such a symlink must not become a creation ceiling.
+			noFollow := &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS}
+			fd, linkErr := unix.Openat2(int(project.Fd()), path, noFollow)
+			if linkErr == nil {
+				_ = unix.Close(fd)
+				return fmt.Errorf("dangling project file rule %q", rule.Path)
+			}
+			if !errors.Is(linkErr, unix.ENOENT) {
+				return fmt.Errorf("invalid project file rule %q: %w", rule.Path, linkErr)
+			}
+			path = filepath.Dir(path)
 		}
 	}
 	return nil
 }
 
-func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot, engine *os.File, slot *launchSlot, group *os.File, watch *watchdog, uid, gid uint32, startup *time.Timer) (int, error) {
+func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot, engine *os.File, slot *launchSlot, group *os.File, watch *watchdog, uid, gid uint32, startup *time.Timer, writable bool) (int, error) {
 	// run has already entered the private mount namespace on its locked thread,
 	// before acquiring snapshot and engine descriptors. Do not unshare here:
 	// doing so would leave those FDs attached to the previous namespace's mounts.
@@ -251,11 +275,11 @@ func launch(request managedlaunch.Request, snapshot *managedstore.PinnedSnapshot
 	if err := os.Chmod(policy, 0o755); err != nil { //nolint:gosec // root-owned mountpoint exposes only public policy intent
 		return 1, err
 	}
-	if err := bindFD(snapshot.Project, project); err != nil {
+	if err := bindFD(snapshot.Project, project, !writable); err != nil {
 		return 1, fmt.Errorf("bind pinned project: %w", err)
 	}
 	defer func() { _ = unix.Unmount(project, unix.MNT_DETACH) }()
-	if err := bindFD(snapshot.Policy, policy); err != nil {
+	if err := bindFD(snapshot.Policy, policy, true); err != nil {
 		return 1, fmt.Errorf("bind pinned policy: %w", err)
 	}
 	defer func() { _ = unix.Unmount(policy, unix.MNT_DETACH) }()
@@ -383,13 +407,21 @@ func supervisorWaitDiagnostic(pid int, branch string, state *os.ProcessState, el
 	return fmt.Sprintf("parent supervisor_wait pid=%d branch=%s observed_at=%s elapsed=%s raw_status=%d signaled=%t signal=%d exit_status=%d", pid, branch, time.Now().Format(time.RFC3339Nano), elapsed, uint32(status), status.Signaled(), status.Signal(), status.ExitStatus())
 }
 
-func bindFD(file *os.File, target string) error {
+func directoryBindFlags(readOnly bool) uintptr {
+	flags := uintptr(unix.MS_REMOUNT | unix.MS_BIND | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
+	if readOnly {
+		flags |= unix.MS_RDONLY
+	}
+	return flags
+}
+
+func bindFD(file *os.File, target string, readOnly bool) error {
 	if err := unix.Mount("/proc/self/fd/"+strconv.FormatUint(uint64(file.Fd()), 10), target, "", unix.MS_BIND, ""); err != nil {
 		return fmt.Errorf("initial FD mount: %w", err)
 	}
-	// The first supported subset never writes or executes from either mounted
-	// object. Remount the bind itself, not the underlying shared filesystem.
-	if err := unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+	// Restrict the bind itself, not the underlying shared filesystem. Only the
+	// project bind may be writable, when the reviewed snapshot requires it.
+	if err := unix.Mount("", target, "", directoryBindFlags(readOnly), ""); err != nil {
 		_ = unix.Unmount(target, unix.MNT_DETACH)
 		return fmt.Errorf("restrictive directory remount: %w", err)
 	}
@@ -609,7 +641,7 @@ func supervise() (int, error) {
 	}
 	diagnostic("supervisor stage=revision_done")
 	diagnostic("supervisor stage=resolve_begin")
-	resolved, err := managedlaunch.ReadOnlyProfile(snapshot, input.Project)
+	resolved, err := managedlaunch.SelectedProfile(snapshot, input.Project)
 	if err != nil {
 		return 1, fmt.Errorf("supervisor resolve: %w", err)
 	}

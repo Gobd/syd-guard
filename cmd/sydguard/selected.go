@@ -80,14 +80,8 @@ func runSelectedAuthorized(ctx context.Context, c *cli.Command, directory string
 	}
 	// Validate logical subset before creating a session. Path resolution happens
 	// again only in the launcher-created pinned mount view.
-	profile := snapshot.Profile()
-	if len(profile.Network) != 0 {
-		return fmt.Errorf("selected profile contains unsupported network intent")
-	}
-	for _, rule := range profile.Files {
-		if filepath.IsAbs(rule.Path) || filepath.Clean(rule.Path) != rule.Path || len(rule.Access) != 1 || rule.Access[0] != "read" || len(rule.Path) > 0 && rule.Path[0] == '~' {
-			return fmt.Errorf("selected profile supports only project-relative read rules")
-		}
+	if _, err := managedlaunch.ValidateIntent(snapshot.Profile()); err != nil {
+		return fmt.Errorf("unsupported selected profile: %w", err)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

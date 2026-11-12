@@ -44,6 +44,9 @@ type Policy struct {
 	file    string
 	durable map[Target]bool
 	run     map[string]map[Target]bool
+	trusted map[string]map[Target]bool
+	managed map[string]*managedProfile
+	epochs  map[string]*policyEpoch
 	denied  map[string]map[Target]bool
 	pending map[string]Pending
 	ended   map[string]bool
@@ -72,7 +75,7 @@ func Canonical(host string, port uint16) (Target, error) {
 }
 
 func NewPolicy(file string) (*Policy, error) {
-	p := &Policy{file: file, durable: map[Target]bool{}, run: map[string]map[Target]bool{}, denied: map[string]map[Target]bool{}, pending: map[string]Pending{}, ended: map[string]bool{}}
+	p := &Policy{file: file, durable: map[Target]bool{}, run: map[string]map[Target]bool{}, trusted: map[string]map[Target]bool{}, managed: map[string]*managedProfile{}, epochs: map[string]*policyEpoch{}, denied: map[string]map[Target]bool{}, pending: map[string]Pending{}, ended: map[string]bool{}}
 	if file == "" {
 		return p, nil
 	}
@@ -118,11 +121,15 @@ func NewPolicy(file string) (*Policy, error) {
 func (p *Policy) Check(session, name string, target Target) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ended[session] || p.denied[session][target] {
-		return false
-	}
-	if p.durable[target] || p.run[session][target] {
+	return p.checkLocked(session, name, target)
+}
+
+func (p *Policy) checkLocked(session, name string, target Target) bool {
+	if p.allowedLocked(session, target) {
 		return true
+	}
+	if p.ended[session] || p.managed[session] == nil && p.denied[session][target] {
+		return false
 	}
 	for id, value := range p.pending {
 		if value.SessionID == session && value.Target == target {
@@ -177,6 +184,9 @@ func (p *Policy) DecideWithApplyContext(ctx context.Context, d Decision, apply f
 	if !ok {
 		return fmt.Errorf("pending request no longer exists")
 	}
+	if p.managed[value.SessionID] != nil {
+		return fmt.Errorf("managed session requires profile authority")
+	}
 	if d.Action != "allow" && d.Action != "deny" {
 		return fmt.Errorf("decision must allow or deny")
 	}
@@ -228,10 +238,10 @@ func (p *Policy) AllowTrusted(session string, target Target, apply func() error)
 	if err := apply(); err != nil {
 		return err
 	}
-	if p.run[session] == nil {
-		p.run[session] = map[Target]bool{}
+	if p.trusted[session] == nil {
+		p.trusted[session] = map[Target]bool{}
 	}
-	p.run[session][target] = true
+	p.trusted[session][target] = true
 	for id, value := range p.pending {
 		if value.SessionID == session && value.Target == target {
 			delete(p.pending, id)
@@ -244,6 +254,9 @@ func (p *Policy) End(session string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.ended[session] = true
+	p.cutoverLocked(session)
+	delete(p.managed, session)
+	delete(p.trusted, session)
 	delete(p.run, session)
 	delete(p.denied, session)
 	for id, value := range p.pending {

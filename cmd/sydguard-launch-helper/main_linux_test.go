@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Gobd/syd-guard/internal/config"
+	"github.com/Gobd/syd-guard/internal/managedlaunch"
 	"golang.org/x/sys/unix"
 )
 
@@ -87,23 +88,65 @@ func TestWaitForSupervisorBranchesAndErrorPreservation(t *testing.T) {
 	}
 }
 
-func TestValidateIntent(t *testing.T) {
+func TestValidateIntentAndProjectBindFlags(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		profile  config.Profile
 		accepted bool
+		writable bool
 	}{
-		{"read", config.Profile{Files: []config.FileRule{{Path: ".", Access: []string{"read"}, Recursive: true}}}, true},
-		{"write", config.Profile{Files: []config.FileRule{{Path: "file", Access: []string{"write"}}}}, false},
-		{"absolute", config.Profile{Files: []config.FileRule{{Path: "/etc", Access: []string{"read"}}}}, false},
-		{"home", config.Profile{Files: []config.FileRule{{Path: "~/file", Access: []string{"read"}}}}, false},
-		{"network", config.Profile{Network: []config.NetworkRule{{Host: "example.com", Port: 443, Transport: "tcp"}}}, false},
+		{"read", config.Profile{Files: []config.FileRule{{Path: ".", Access: []string{"read"}, Recursive: true}}}, true, false},
+		{"write", config.Profile{Files: []config.FileRule{{Path: "file", Access: []string{"write"}}}}, true, true},
+		{"delete", config.Profile{Files: []config.FileRule{{Path: "file", Access: []string{"delete"}}}}, true, true},
+		{"absolute", config.Profile{Files: []config.FileRule{{Path: "/etc", Access: []string{"read"}}}}, false, false},
+		{"parent", config.Profile{Files: []config.FileRule{{Path: "../file", Access: []string{"read"}}}}, false, false},
+		{"wildcard", config.Profile{Files: []config.FileRule{{Path: "*", Access: []string{"read"}}}}, false, false},
+		{"home", config.Profile{Files: []config.FileRule{{Path: "~/file", Access: []string{"read"}}}}, false, false},
+		{"network", config.Profile{Network: []config.NetworkRule{{Host: "example.com", Port: 443, Transport: "tcp"}}}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateIntent(tc.profile); (err == nil) != tc.accepted {
-				t.Fatalf("validation: %v", err)
+			writable, err := managedlaunch.ValidateIntent(tc.profile)
+			if (err == nil) != tc.accepted || err == nil && writable != tc.writable {
+				t.Fatalf("validation: writable=%t err=%v", writable, err)
+			}
+			if err == nil {
+				flags := directoryBindFlags(!writable)
+				if (flags&unix.MS_RDONLY == 0) != writable || flags&(unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC) != unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC {
+					t.Fatalf("project flags=%#x", flags)
+				}
 			}
 		})
+	}
+	if flags := directoryBindFlags(true); flags&(unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC) != unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC {
+		t.Fatalf("policy flags=%#x", flags)
+	}
+}
+
+func TestValidateProjectPathsPinnedDescriptor(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"inside": "dir", "escape": outside, "dangling": "missing"} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := os.Open(root) //nolint:gosec // test-owned project directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = project.Close() }()
+	for _, tc := range []struct {
+		path  string
+		valid bool
+	}{
+		{".", true}, {"dir/new/nested", true}, {"inside/new", true}, {"escape/new", false}, {"dangling/new", false},
+	} {
+		err := validateProjectPaths(project, config.Profile{Files: []config.FileRule{{Path: tc.path}}})
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: %v", tc.path, err)
+		}
 	}
 }
 

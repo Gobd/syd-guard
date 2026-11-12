@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Gobd/syd-guard/internal/config"
@@ -108,16 +109,36 @@ func DecodeRequest(input io.Reader) (Request, error) {
 	return r, r.Validate()
 }
 
-// ReadOnlyProfile rejects intent that this first launcher cannot enforce.
-func ReadOnlyProfile(snapshot config.ProfileSnapshot, project string) (config.ResolvedProfile, error) {
-	profile := snapshot.Profile()
+// ValidateIntent accepts only literal, project-relative file intent and no network.
+// The boolean determines whether the pinned project bind must be writable.
+func ValidateIntent(profile config.Profile) (bool, error) {
 	if len(profile.Network) != 0 {
-		return config.ResolvedProfile{}, errors.New("saved network rules are unsupported by this no-network launcher")
+		return false, errors.New("saved network rules are unsupported by this no-network launcher")
 	}
+	writable := false
 	for _, rule := range profile.Files {
-		if filepath.IsAbs(rule.Path) || strings.HasPrefix(rule.Path, "~") || filepath.Clean(rule.Path) != rule.Path || len(rule.Access) != 1 || rule.Access[0] != "read" {
-			return config.ResolvedProfile{}, errors.New("only clean project-relative read rules are supported")
+		if rule.Path == "" || len(rule.Path) > 4096 || !utf8.ValidString(rule.Path) || strings.ContainsAny(rule.Path, "*?[]{}\\$;!") || strings.IndexFunc(rule.Path, unicode.IsControl) >= 0 || filepath.IsAbs(rule.Path) || strings.HasPrefix(rule.Path, "~") || filepath.Clean(rule.Path) != rule.Path || rule.Path == ".." || strings.HasPrefix(rule.Path, ".."+string(filepath.Separator)) {
+			return false, errors.New("only clean project-relative file rules are supported")
 		}
+		seen := map[string]bool{}
+		for _, access := range rule.Access {
+			if seen[access] || (access != "read" && access != "write" && access != "delete") {
+				return false, errors.New("invalid file access")
+			}
+			seen[access] = true
+			writable = writable || access == "write" || access == "delete"
+		}
+		if len(seen) == 0 {
+			return false, errors.New("empty file access")
+		}
+	}
+	return writable, nil
+}
+
+// SelectedProfile resolves reviewed intent only inside the pinned project view.
+func SelectedProfile(snapshot config.ProfileSnapshot, project string) (config.ResolvedProfile, error) {
+	if _, err := ValidateIntent(snapshot.Profile()); err != nil {
+		return config.ResolvedProfile{}, err
 	}
 	return config.ResolveProfile(snapshot, project, "", []string{project}, nil)
 }
