@@ -1,0 +1,26 @@
+# Default VM created by sydguard when none exists. Pass --lima FILE to use your own.
+# Mounts ~/Developer at the same path; forwards guest loopback ports (UI: 7878).
+base: template://ubuntu-lts
+cpus: 4
+memory: 8GiB
+mounts:
+  - location: "~/Developer"
+    writable: true
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 65535]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 65535]
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      apt-get update && apt-get install -y git curl xz-utils
+      # Upstream static Syd. Override SYD_URL to pin a different build.
+      arch=$(uname -m)
+      SYD_URL=${SYD_URL:-https://distfiles.exherbo.org/sydbox/syd-3.53.0-${arch}-unknown-linux-gnueabi.tar.xz}
+      if ! command -v syd >/dev/null; then
+        tmp=$(mktemp -d); curl -fsSL "$SYD_URL" | tar -xJ -C "$tmp"
+        find "$tmp" -type f -name syd -perm -u+x -exec install -m 0755 {} /usr/local/bin/syd \; || true
+      fi

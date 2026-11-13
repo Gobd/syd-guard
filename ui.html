@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sydguard</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafafa; --card:#fff; --fg:#1d1d1f; --mute:#6e6e73; --line:#e3e3e8; --accent:#0a66ff; --warn:#c2410c; --ok:#15803d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111214; --card:#1b1c1f; --fg:#ececf1; --mute:#9a9aa3; --line:#2c2d32; --accent:#5b9bff; --warn:#fb923c; --ok:#4ade80; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:baseline; gap:12px; padding:14px 24px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; }
+  header .mute { font-size:12px; }
+  main { max-width:1100px; margin:0 auto; padding:16px 24px 64px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin:28px 0 10px; display:flex; gap:10px; align-items:center; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .kind { font:600 11px ui-monospace, monospace; padding:2px 7px; border-radius:5px; background:var(--line); text-transform:uppercase; }
+  .kind.write, .kind.connect { background:color-mix(in srgb, var(--warn) 22%, transparent); }
+  .kind.hosts { background:color-mix(in srgb, var(--accent) 22%, transparent); }
+  .target { font:13px ui-monospace, monospace; word-break:break-all; }
+  .mute { color:var(--mute); }
+  .small { font-size:12px; }
+  .waiting { color:var(--warn); font-weight:600; font-size:12px; }
+  input[type=text], select { font:13px ui-monospace, monospace; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  input[type=text] { flex:1; min-width:260px; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.link { border:none; background:none; color:var(--mute); padding:2px 6px; }
+  button.link:hover { color:var(--warn); }
+  .opts { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
+  .opts button { font:12px ui-monospace, monospace; padding:3px 8px; }
+  .opts button.sel { border-color:var(--accent); color:var(--accent); }
+  .rules { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:10px; margin-top:8px; }
+  .rules ul { list-style:none; margin:4px 0 6px; padding:0; }
+  .rules li { display:flex; justify-content:space-between; gap:6px; font:12.5px ui-monospace, monospace; padding:2px 0; word-break:break-all; }
+  .rules h4 { margin:0; font-size:12px; color:var(--mute); text-transform:uppercase; }
+  .add { display:flex; gap:4px; } .add input { min-width:0; font-size:12px; }
+  .err { color:var(--warn); }
+  .empty { color:var(--mute); padding:8px 2px; }
+  details > summary { cursor:pointer; }
+</style>
+</head>
+<body>
+<header><h1>sydguard</h1><span class="mute" id="status">connecting…</span></header>
+<main>
+  <div id="toast" class="err"></div>
+  <h2>Waiting for you <span id="pendingCount"></span></h2>
+  <div id="pending"></div>
+  <h2>Learned suggestions <span id="learnedActions"></span></h2>
+  <div id="learned"></div>
+  <h2>Running sessions</h2>
+  <div id="sessions"></div>
+  <h2>Rules</h2>
+  <div id="rules"></div>
+</main>
+<script>
+const token = (() => {
+  if (location.hash.length > 1) { localStorage.setItem("sydguard-token", location.hash.slice(1)); history.replaceState(null, "", "/"); }
+  return localStorage.getItem("sydguard-token") || "";
+})();
+const $ = (id) => document.getElementById(id);
+const h = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k.startsWith("on") ? e.addEventListener(k.slice(2), v) : e.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null) e.append(k);
+  return e;
+};
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? "POST" : "GET", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.error) || r.statusText);
+  return j;
+}
+async function act(path, body) {
+  try { await api(path, body); $("toast").textContent = ""; } catch (e) { $("toast").textContent = e.message; }
+  refresh();
+}
+const short = (p) => p.replace(/^\/home\/[^/]+/, "~");
+const KIND_LABEL = { read: "read", write: "write", hosts: "web", connect: "connect" };
+
+// Per-card choices survive re-renders.
+const choice = {};
+function cardView(c) {
+  const st = choice[c.id] ||= { pattern: c.options[0], kind: c.kind, scope: "project" };
+  const input = h("input", { type: "text", value: st.pattern, oninput: (e) => (st.pattern = e.target.value) });
+  const opts = h("div", { class: "opts" }, c.options.map((o) => h("button", { class: o === st.pattern ? "sel" : "", onclick: () => { st.pattern = o; render(); } }, short(o))));
+  const kindSel = (c.kind === "read" || c.kind === "write")
+    ? h("select", { onchange: (e) => (st.kind = e.target.value) }, ["read", "write"].map((k) => { const o = h("option", { value: k }, k); if (k === st.kind) o.selected = true; return o; }))
+    : null;
+  const scopeSel = h("select", { onchange: (e) => (st.scope = e.target.value) }, [["project", "this project"], ["global", "all projects"]].map(([v, l]) => { const o = h("option", { value: v }, l); if (v === st.scope) o.selected = true; return o; }));
+  return h("div", { class: "card" },
+    h("div", { class: "row" },
+      h("span", { class: "kind " + c.kind }, KIND_LABEL[c.kind]),
+      h("span", { class: "target" }, short(c.target)),
+      c.count > 1 ? h("span", { class: "mute small" }, "×" + c.count) : null,
+      c.waiting ? h("span", { class: "waiting" }, `⏸ ${c.waiting} request${c.waiting > 1 ? "s" : ""} paused`) : null),
+    h("div", { class: "mute small" }, short(c.project), c.cmd ? " · " + c.cmd : ""),
+    c.protected ? h("div", { class: "err small" }, "protected: " + c.protected) : null,
+    opts,
+    h("div", { class: "row" }, input, kindSel, scopeSel,
+      h("button", { class: "primary", onclick: () => act("/api/allow", { card: c.id, scope: st.scope, project: c.project, kind: st.kind, pattern: st.pattern }) }, "Allow"),
+      h("button", { onclick: () => act("/api/dismiss", { card: c.id }) }, c.learned ? "Skip" : "Deny"),
+      h("button", { class: "link", title: "never ask again", onclick: () => act("/api/allow", { card: c.id, scope: st.scope, project: c.project, kind: "ignore", pattern: c.kind === "hosts" ? c.target.replace(/:\d+$/, "") : st.pattern }) }, "deny always")));
+}
+
+function rulesView(title, scope, project, rules, file, error) {
+  const block = (kind, label, placeholder) => {
+    let val = "";
+    const inp = h("input", { type: "text", placeholder, oninput: (e) => (val = e.target.value), onkeydown: (e) => e.key === "Enter" && add() });
+    const add = () => val && act("/api/allow", { scope, project, kind, pattern: val });
+    return h("div", {},
+      h("h4", {}, label),
+      h("ul", {}, (rules[kind] || []).map((p) => h("li", {}, h("span", {}, short(p)), h("button", { class: "link", title: "remove", onclick: () => act("/api/remove", { scope, project, kind, pattern: p }) }, "✕")))),
+      h("div", { class: "add" }, inp, h("button", { onclick: add }, "+")));
+  };
+  return h("div", { class: "card" },
+    h("div", { class: "row" }, h("strong", {}, title), h("span", { class: "mute small" }, file)),
+    error ? h("div", { class: "err small" }, error) : null,
+    h("div", { class: "rules" },
+      block("read", "Read", "/path/** or ~/.cache/**"),
+      block("write", "Write (incl. create/delete)", "/path/**"),
+      block("hosts", "Web hosts", "*.github.com or host:443"),
+      block("connect", "Raw connect", "1.2.3.4!22 or /run/x.sock"),
+      block("ignore", "Always deny", "pattern")));
+}
+
+let last = null;
+function render() {
+  const s = last; if (!s) return;
+  const pending = s.cards.filter((c) => !c.learned), learned = s.cards.filter((c) => c.learned);
+  document.title = (pending.length ? `(${pending.length}) ` : "") + "sydguard";
+  $("pendingCount").textContent = pending.length ? `(${pending.length})` : "";
+  $("pending").replaceChildren(...(pending.length ? pending.map(cardView) : [h("div", { class: "empty" }, "Nothing blocked right now.")]));
+  $("learned").replaceChildren(...(learned.length ? learned.map(cardView) : [h("div", { class: "empty" }, "Run with --learn to collect suggestions.")]));
+  $("learnedActions").replaceChildren(...(learned.length ? [
+    h("button", { onclick: async () => { for (const c of learned) { const st = choice[c.id] || { pattern: c.options[0], kind: c.kind, scope: "project" }; try { await api("/api/allow", { card: c.id, scope: st.scope, project: c.project, kind: st.kind, pattern: st.pattern }); } catch (e) { $("toast").textContent = e.message; } } refresh(); } }, `accept all ${learned.length} as shown`),
+    h("button", { onclick: () => act("/api/dismiss", { card: "learned" }) }, "clear")] : []));
+  $("sessions").replaceChildren(...(s.sessions.length ? s.sessions.map((x) => h("div", { class: "card row" },
+    h("span", { class: "kind" + (x.learn ? " write" : "") }, x.learn ? "learning" : "enforcing"),
+    h("span", { class: "target" }, x.cmd.join(" ")), h("span", { class: "mute small" }, short(x.cwd) + " · pid " + x.pid + " · since " + new Date(x.started).toLocaleTimeString()))) : [h("div", { class: "empty" }, "No agents running.")]));
+  $("rules").replaceChildren(
+    ...s.projects.map((p) => rulesView(short(p.path), "project", p.path, p.rules, p.file, p.error)),
+    rulesView("All projects", "global", "", s.global, "~/.config/sydguard/global.json"));
+}
+async function refresh() {
+  try {
+    const s = await api("/api/state");
+    $("status").textContent = `daemon ${s.version}`;
+    const sig = JSON.stringify(s);
+    if (sig !== JSON.stringify(last)) {
+      const focused = document.activeElement && document.activeElement.tagName === "INPUT";
+      last = s;
+      if (!focused) render();
+    }
+  } catch (e) { $("status").textContent = token ? "disconnected: " + e.message : "missing token — open the link printed by `sydguard ui`"; }
+}
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>
