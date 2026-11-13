@@ -56,9 +56,9 @@ fi
 
 echo "3. web by host name; private/local addresses"
 sydguard -- sh -c 'curl -s -m 20 -o /dev/null -w "%{http_code}\n" https://example.com; curl -s -m 5 -o /dev/null -w "%{http_code}\n" --noproxy "*" https://example.org; curl -s -m 5 --noproxy "" -o /dev/null -w "%{http_code}\n" http://127.0.0.1:22/ ; curl -s -m 5 -o /dev/null -w "%{http_code}\n" https://localhost.localdomain/' > out3 2>&1
-check "approved host works through proxy" "sed -n 2p out3 | grep -q 200"
+check "approved host works through TUN" "sed -n 2p out3 | grep -q 200"
 check "direct connection (no proxy) to an unapproved host fails" "sed -n 3p out3 | grep -q 000"
-check "loopback via proxy refused" "sed -n 4p out3 | grep -q 403"
+check "host loopback is isolated" "sed -n 4p out3 | grep -q 000"
 sydguard -- sh -c 'curl -s -m 30 -o /dev/null -w "%{http_code}\n" https://github.com' > out3b 2>&1 &
 sleep 2
 check "unknown host paused as a card" "cards | grep -q 'hosts https://github.com:443 1'"
@@ -113,11 +113,11 @@ check "rule saved for next time" "grep -q 'sydguard-e2e-secret' .sydguard.json"
 sydguard -- cat "$SECRET/a.txt" > out7b 2>&1
 check "normal run uses learned rule" "grep -q top-secret out7b"
 
-echo "8. DNS: host-name rules for tools that bypass the proxy"
+echo "8. synthetic DNS: exact host/port approvals without a proxy"
 cd "$DIR" || exit 1
 sydguard -- sh -c 'curl -s -m 25 --noproxy "*" -o /dev/null -w "%{http_code}\n" https://example.net' > out8 2>&1 &
 sleep 2
-check "name lookup became a card" "cards | grep -q 'hosts dns://example.net'"
+check "TLS connection became a host/port card" "cards | grep -q 'hosts https://example.net:443'"
 api /api/allow "{\"scope\":\"rules\",\"file\":\"$R\",\"kind\":\"hosts\",\"pattern\":\"tcp://example.net:443\"}" >/dev/null
 wait; check "raw HTTPS (no proxy) works after approving the name" "tail -1 out8 | grep -q 200"
 sydguard -- sh -c 'curl -s -m 8 --noproxy "*" -o /dev/null -w "%{http_code}\n" http://example.net' > out8b 2>&1
@@ -126,7 +126,7 @@ api /api/remove "{\"scope\":\"rules\",\"file\":\"$R\",\"kind\":\"hosts\",\"patte
 sydguard -- sh -c 'curl -s -m 6 --noproxy "*" -o /dev/null -w "%{http_code}\n" https://example.net' > out8c 2>&1
 check "removing the rule blocks it again" "tail -1 out8c | grep -q 000"
 sydguard -- sh -c 'getent hosts not-approved.example.org || echo refused' > out8d 2>&1
-check "unapproved names don't resolve (no DNS leaks)" "tail -1 out8d | grep -q refused"
+check "unapproved A/AAAA names receive local synthetic identities" "grep -q 'fd53:' out8d"
 
 echo "9. node_modules stays on the VM disk"
 mkdir -p "$DIR/web" && echo '{}' > "$DIR/web/package.json"
@@ -134,6 +134,12 @@ sydguard -- sh -c 'echo built > web/node_modules/artifact.txt && cat web/node_mo
 check "agent can write node_modules" "grep -q built out9"
 check "nothing written into the project's node_modules" "[ ! -e '$DIR/web/node_modules/artifact.txt' ]"
 check "it lives in the VM overlay cache" "find '$HOME/.cache/sydguard/overlay' -name artifact.txt | grep -q ."
+
+echo "9b. dev servers the agent starts are reachable from outside"
+( timeout 30 sydguard -- sh -c 'python3 -m http.server 18770 --bind 0.0.0.0 >/dev/null 2>&1 & sleep 12' >/dev/null 2>&1 & )
+for _ in $(seq 1 20); do curl -s -m 1 -o /dev/null http://127.0.0.1:18770/ && break; sleep 0.5; done
+check "agent's dev server reachable on the VM loopback" "[ \"\$(curl -s -m 3 -o /dev/null -w %{http_code} http://127.0.0.1:18770/)\" = 200 ]"
+sleep 12
 
 echo "10. --local-port for a trusted helper"
 python3 -m http.server 18765 --bind 127.0.0.1 >/dev/null 2>&1 & srv=$!

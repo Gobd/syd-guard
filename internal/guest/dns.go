@@ -1,18 +1,14 @@
 package guest
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
-	"log"
-	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,175 +19,98 @@ import (
 	"github.com/Gobd/syd-guard/internal/system"
 )
 
-// Each session gets its own DNS server on a private loopback address
-// (127.53.x.y:53); Syd bind-mounts a resolv.conf pointing at it. Names are
-// only resolved if a host rule allows them, and the returned IPs are then
-// allowed in Syd for the rule's ports. That gives tools that ignore the HTTP
-// proxy (psql, redis-cli, ssh-less git, UDP...) host-NAME rules, and closes
-// DNS as a way to leak data through unapproved names.
-
-// How long one lookup waits for your decision. The card stays afterwards:
-// approve it any time and the agent's retry resolves.
-const dnsWait = 8 * time.Second
-
-type dnsServer struct {
-	d      *Daemon
-	s      *Session
-	udp    *net.UDPConn
-	tcp    net.Listener
-	mu     sync.Mutex
-	Names  map[string]string               `json:"names"`  // ip -> name
-	Grants map[string]map[string]time.Time `json:"grants"` // host rule -> "ip!ports" -> expiry
-	done   chan struct{}
-}
-
-// Granted IPs live as long as the DNS answer said (clamped), then are revoked
-// unless a fresh lookup renewed them: DNS changes don't leave old IPs open.
 const (
-	minGrantTTL = time.Minute
-	maxGrantTTL = time.Hour
+	maxDNSNames = 8192
 )
 
-func clampTTL(seconds uint32) time.Duration {
-	d := time.Duration(seconds) * time.Second
-	return min(max(d, minGrantTTL), maxGrantTTL)
-}
+var (
+	synthetic4 = netip.MustParsePrefix("198.18.0.0/15")
+	synthetic6 = netip.MustParsePrefix("fd53::/96")
+)
 
-// expire removes grants past their expiry and returns the Syd revocations.
-func expireGrants(grants map[string]map[string]time.Time, now time.Time) []string {
-	var cmds []string
-	for rule, targets := range grants {
-		for target, exp := range targets {
-			if now.After(exp) {
-				cmds = append(cmds, "allow/net/connect-"+target)
-				delete(targets, target)
-			}
-		}
-		if len(targets) == 0 {
-			delete(grants, rule)
-		}
-	}
-	return cmds
-}
-
-func (x *dnsServer) sweep() {
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
-	for {
-		select {
-		case <-x.done:
-			return
-		case <-tick.C:
-		}
-		x.mu.Lock()
-		cmds := expireGrants(x.Grants, time.Now())
-		x.mu.Unlock()
-		if len(cmds) > 0 {
-			if res := x.d.pushOne(x.s, cmds); !res.Applied {
-				log.Printf("session %s: revoking expired DNS grants: %s", x.s.ID, res.Error)
-			}
-			x.save()
-		}
-	}
+// Synthetic answers preserve name identity even when unrelated domains share
+// a CDN IP. Mappings never expire/reassign during a session (clients cache DNS).
+// Real resolution happens in the daemon only after connection approval.
+type dnsServer struct {
+	d     *Daemon
+	s     *Session
+	mu    sync.Mutex
+	Names []string `json:"names"`
 }
 
 func (d *Daemon) startDNS(s *Session) error {
-	addr := s.DNSAddr
-	var udp *net.UDPConn
-	var tcp net.Listener
-	var err error
-	for range 20 {
-		if addr == "" {
-			addr = fmt.Sprintf("127.53.%d.%d:53", rand.IntN(254)+1, rand.IntN(254)+1)
+	x := &dnsServer{d: d, s: s}
+	if data, err := os.ReadFile(x.statePath()); err == nil {
+		if err := json.Unmarshal(data, x); err != nil {
+			return err
 		}
-		ua, _ := net.ResolveUDPAddr("udp", addr)
-		if udp, err = net.ListenUDP("udp", ua); err == nil {
-			if tcp, err = net.Listen("tcp", addr); err == nil {
-				break
-			}
-			_ = udp.Close()
+		if len(x.Names) > maxDNSNames {
+			return errors.New("too many saved DNS names")
 		}
-		if s.DNSAddr != "" {
-			return err // adopting: must keep the same address
-		}
-		addr = ""
 	}
-	if err != nil {
-		return fmt.Errorf("dns listen: %w", err)
-	}
-	srv := &dnsServer{d: d, s: s, udp: udp, tcp: tcp, Names: map[string]string{}, Grants: map[string]map[string]time.Time{}, done: make(chan struct{})}
-	if data, err := os.ReadFile(srv.statePath()); err == nil {
-		_ = json.Unmarshal(data, srv)
-	}
-	s.DNSAddr, s.dns = addr, srv
-	go srv.serveUDP()
-	go srv.serveTCP()
-	go srv.sweep()
+	s.DNSAddr, s.dns = networkGateway+":53", x
 	return nil
 }
 
 func (x *dnsServer) statePath() string { return filepath.Join(sessionsDir(), x.s.ID+".dns.json") }
-
-func (x *dnsServer) save() {
-	x.mu.Lock()
-	data, _ := json.Marshal(x)
-	x.mu.Unlock()
-	_ = os.WriteFile(x.statePath(), data, 0o600)
-}
-
-func (x *dnsServer) close() {
-	_ = x.udp.Close()
-	_ = x.tcp.Close()
-	select {
-	case <-x.done:
-	default:
-		close(x.done)
+func fakeIP(index int, ipv6 bool) netip.Addr {
+	if ipv6 {
+		a := synthetic6.Addr().As16()
+		binary.BigEndian.PutUint32(a[12:], uint32(index+1))
+		return netip.AddrFrom16(a)
 	}
+	a := synthetic4.Addr().As4()
+	binary.BigEndian.PutUint16(a[2:], uint16(index+1))
+	return netip.AddrFrom4(a)
 }
 
 func (x *dnsServer) nameOf(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	a = a.Unmap()
+	index := -1
+	if synthetic4.Contains(a) {
+		b := a.As4()
+		index = int(binary.BigEndian.Uint16(b[2:])) - 1
+	}
+	if synthetic6.Contains(a) {
+		b := a.As16()
+		index = int(binary.BigEndian.Uint32(b[12:])) - 1
+	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return x.Names[ip]
+	if index >= 0 && index < len(x.Names) {
+		return x.Names[index]
+	}
+	return ""
 }
 
-func (x *dnsServer) serveUDP() {
-	buf := make([]byte, 4096)
-	for {
-		n, from, err := x.udp.ReadFromUDP(buf)
-		if err != nil {
-			return
+func (x *dnsServer) address(name string, ipv6 bool) (netip.Addr, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for i, n := range x.Names {
+		if n == name {
+			return fakeIP(i, ipv6), nil
 		}
-		q := append([]byte(nil), buf[:n]...)
-		go func() {
-			if resp := x.handle(q, "udp"); resp != nil {
-				_, _ = x.udp.WriteToUDP(resp, from)
-			}
-		}()
 	}
-}
-
-func (x *dnsServer) serveTCP() {
-	for {
-		c, err := x.tcp.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer func() { _ = c.Close() }()
-			_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-			for {
-				q, err := readTCPMsg(c)
-				if err != nil {
-					return
-				}
-				resp := x.handle(q, "tcp")
-				if resp == nil || writeTCPMsg(c, resp) != nil {
-					return
-				}
-			}
-		}()
+	if len(x.Names) >= maxDNSNames {
+		return netip.Addr{}, errors.New("session DNS map full")
 	}
+	x.Names = append(x.Names, name)
+	data, err := json.Marshal(x)
+	if err == nil {
+		err = os.WriteFile(x.statePath()+".tmp", data, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(x.statePath()+".tmp", x.statePath())
+	}
+	if err != nil {
+		x.Names = x.Names[:len(x.Names)-1]
+		return netip.Addr{}, err
+	}
+	return fakeIP(len(x.Names)-1, ipv6), nil
 }
 
 func readTCPMsg(r io.Reader) ([]byte, error) {
@@ -205,6 +124,9 @@ func readTCPMsg(r io.Reader) ([]byte, error) {
 }
 
 func writeTCPMsg(w io.Writer, b []byte) error {
+	if len(b) > 65535 {
+		return errors.New("DNS message too large")
+	}
 	if err := binary.Write(w, binary.BigEndian, uint16(len(b))); err != nil {
 		return err
 	}
@@ -212,7 +134,6 @@ func writeTCPMsg(w io.Writer, b []byte) error {
 	return err
 }
 
-// refuse builds a REFUSED reply for query q.
 func refuse(q []byte, rcode dnsmessage.RCode) []byte {
 	var p dnsmessage.Parser
 	h, err := p.Start(q)
@@ -231,34 +152,56 @@ func refuse(q []byte, rcode dnsmessage.RCode) []byte {
 
 func (x *dnsServer) handle(q []byte, proto string) []byte {
 	var p dnsmessage.Parser
-	if _, err := p.Start(q); err != nil {
+	h, err := p.Start(q)
+	if err != nil {
 		return nil
 	}
 	qs, err := p.AllQuestions()
-	if err != nil || len(qs) != 1 {
+	if err != nil || len(qs) != 1 || h.Response || h.OpCode != 0 || qs[0].Class != dnsmessage.ClassINET {
 		return refuse(q, dnsmessage.RCodeFormatError)
 	}
 	name := strings.ToLower(strings.TrimSuffix(qs[0].Name.String(), "."))
-	if _, err := policy.ParseHostRule(name); err != nil || system.SafeText(name) != nil {
+	if _, err := policy.ParseHostRule(name); err != nil || strings.Contains(name, "*") {
 		return refuse(q, dnsmessage.RCodeRefused)
 	}
-	rules := x.rules()
-	if policy.Ignored(rules, "hosts", "dns://"+name) {
+	if policy.Ignored(x.rules(), "hosts", "dns://"+name) {
 		return refuse(q, dnsmessage.RCodeRefused)
 	}
-	matching := matchingRules(rules, name)
-	if len(matching) == 0 {
-		if !x.ask(name) {
+	// A/AAAA answers are entirely local synthetic identities, not upstream
+	// lookups. Approval happens on the connection with its actual protocol
+	// and port, never as a broad tcp:// grant just to obtain an address.
+	// HTTPS/SVCB records could disclose real addresses or advertise ECH, which
+	// hides SNI. Return NODATA; clients fall back to ordinary A/AAAA + TLS.
+	if qs[0].Type != dnsmessage.TypeA && qs[0].Type != dnsmessage.TypeAAAA {
+		if qs[0].Type != dnsmessage.TypeTXT && qs[0].Type != dnsmessage.TypeMX && qs[0].Type != dnsmessage.TypeSRV {
+			return refuse(q, dnsmessage.RCodeSuccess)
+		}
+		if len(matchingRules(x.rules(), name)) == 0 {
 			return refuse(q, dnsmessage.RCodeRefused)
 		}
-		matching = matchingRules(x.rules(), name)
+		resp, err := forward(q, proto)
+		if err != nil {
+			return refuse(q, dnsmessage.RCodeServerFailure)
+		}
+		return resp
 	}
-	resp, err := forward(q, proto)
+	ip, err := x.address(name, qs[0].Type == dnsmessage.TypeAAAA)
 	if err != nil {
 		return refuse(q, dnsmessage.RCodeServerFailure)
 	}
-	x.grant(name, resp, matching)
-	return resp
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, RecursionDesired: h.RecursionDesired, RecursionAvailable: true})
+	b.EnableCompression()
+	_ = b.StartQuestions()
+	_ = b.Question(qs[0])
+	_ = b.StartAnswers()
+	rh := dnsmessage.ResourceHeader{Name: qs[0].Name, Type: qs[0].Type, Class: dnsmessage.ClassINET, TTL: 60}
+	if ip.Is4() {
+		_ = b.AResource(rh, dnsmessage.AResource{A: ip.As4()})
+	} else {
+		_ = b.AAAAResource(rh, dnsmessage.AAAAResource{AAAA: ip.As16()})
+	}
+	out, _ := b.Finish()
+	return out
 }
 
 func (x *dnsServer) rules() []policy.Rules {
@@ -277,239 +220,66 @@ func matchingRules(rules []policy.Rules, name string) []policy.HostRule {
 	return out
 }
 
-// ask shows a card for an unknown name and waits briefly. Learn mode allows
-// everything and records it.
-func (x *dnsServer) ask(name string) bool {
-	x.d.mu.Lock()
-	if _, live := x.d.sessions[x.s.ID]; !live {
-		x.d.mu.Unlock()
-		return false
-	}
-	c := x.d.addCardLocked(x.s, "hosts", "dns://"+name, "", x.s.Learn, false,
-		"name lookup by a tool that bypasses the proxy. If it times out, approve anyway: the agent's retry works. tcp:// allows raw connections (add :port to limit)")
-	if x.s.Learn || c == nil {
-		x.d.mu.Unlock()
-		x.d.events.Notify()
-		return x.s.Learn
-	}
-	return x.d.waitCard(context.Background(), c, dnsWait)
-}
-
-var upstreamOnce = sync.OnceValue(func() string {
-	data, err := os.ReadFile("/etc/resolv.conf")
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if f := strings.Fields(line); len(f) == 2 && f[0] == "nameserver" {
-				if a, err := netip.ParseAddr(f[1]); err == nil {
-					return net.JoinHostPort(a.String(), "53")
-				}
-			}
-		}
-	}
-	return "127.0.0.53:53"
-})
-
-func forward(q []byte, proto string) ([]byte, error) {
-	c, err := net.DialTimeout(proto, upstreamOnce(), 3*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if proto == "tcp" {
-		if err := writeTCPMsg(c, q); err != nil {
-			return nil, err
-		}
-		return readTCPMsg(c)
-	}
-	if _, err := c.Write(q); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, 65535)
-	n, err := c.Read(buf)
-	return buf[:n], err
-}
-
-// grant allows the answer's IPs on the matching rules' ports, live, before
-// the answer is returned (so the following connect works).
-func (x *dnsServer) grant(name string, resp []byte, rules []policy.HostRule) {
-	var p dnsmessage.Parser
-	if _, err := p.Start(resp); err != nil {
-		return
-	}
-	_ = p.SkipAllQuestions()
-	answers, _ := p.AllAnswers()
-	var ips []netip.Addr
-	ttl := map[netip.Addr]time.Duration{}
-	for _, a := range answers {
-		var ip netip.Addr
-		switch r := a.Body.(type) {
-		case *dnsmessage.AResource:
-			ip = netip.AddrFrom4(r.A)
-		case *dnsmessage.AAAAResource:
-			ip = netip.AddrFrom16(r.AAAA)
-		default:
-			continue
-		}
-		ips = append(ips, ip)
-		ttl[ip] = clampTTL(a.Header.TTL)
-	}
-	now := time.Now()
-	var cmds []string
-	x.mu.Lock()
-	for _, ip := range ips {
-		class := addrClass(ip)
-		x.Names[ip.Unmap().String()] = name
-		for _, h := range rules {
-			// Only tcp:// rules open raw connections; http(s) names stay proxy-only,
-			// where every request is checked by name (shared CDN IPs stay closed).
-			if h.Scheme != "tcp" || class == "blocked" || (class == "private" && !h.Exact()) {
-				continue
-			}
-			key := h.String()
-			if x.Grants[key] == nil {
-				x.Grants[key] = map[string]time.Time{}
-			}
-			target := ip.Unmap().String() + "!" + h.PortRange()
-			exp, granted := x.Grants[key][target]
-			if !granted {
-				cmds = append(cmds, "allow/net/connect+"+target)
-			}
-			if until := now.Add(ttl[ip]); until.After(exp) {
-				x.Grants[key][target] = until // a fresh answer renews it
-			}
-		}
-	}
-	x.mu.Unlock()
-	if len(cmds) > 0 {
-		if res := x.d.pushOne(x.s, cmds); !res.Applied {
-			log.Printf("session %s dns grant %s: %s", x.s.ID, name, res.Error)
-		}
-		x.save()
-	}
-}
-
-// regrant renews an expired grant when a tool reconnects to an IP it got from
-// an earlier lookup of a still-approved name (e.g. a connection pool that
-// cached the address). Returns false if no rule allows it (ask instead).
-func (x *dnsServer) regrant(ip, name, port string) bool {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return false
-	}
-	class := addrClass(addr)
-	var cmds []string
-	x.mu.Lock()
-	for _, h := range matchingRules(x.rules(), name) {
-		if h.Scheme != "tcp" || !h.Match("tcp", name, port) || class == "blocked" || (class == "private" && !h.Exact()) {
-			continue
-		}
-		key, target := h.String(), ip+"!"+h.PortRange()
-		if x.Grants[key] == nil {
-			x.Grants[key] = map[string]time.Time{}
-		}
-		if _, ok := x.Grants[key][target]; !ok {
-			cmds = append(cmds, "allow/net/connect+"+target)
-		}
-		x.Grants[key][target] = time.Now().Add(minGrantTTL)
-	}
-	x.mu.Unlock()
-	if len(cmds) == 0 {
-		return false
-	}
-	go func() {
-		x.d.pushOne(x.s, cmds)
-		x.save()
-	}()
-	return true
-}
-
-// revokeRemoved returns the Syd commands that take back IPs granted by host
-// rules that were removed (and aren't still present in another rules file).
-func (x *dnsServer) revokeRemoved(before, after policy.Rules) []string {
-	still := map[string]bool{}
-	for _, r := range x.rules() {
-		for _, p := range r.Hosts {
-			still[p] = true
-		}
-	}
-	for _, p := range after.Hosts {
-		still[p] = true
-	}
-	var cmds []string
-	x.mu.Lock()
-	for _, p := range before.Hosts {
-		h, err := policy.ParseHostRule(p)
-		if err != nil || still[p] {
-			continue
-		}
-		for target := range x.Grants[h.String()] {
-			cmds = append(cmds, "allow/net/connect-"+target)
-		}
-		delete(x.Grants, h.String())
-	}
-	x.mu.Unlock()
-	if len(cmds) > 0 {
-		go x.save()
-	}
-	return cmds
-}
-
-// Overlays ------------------------------------------------------------------
-
-// overlayDirs picks build/dependency folders to keep on the VM disk instead of
-// the (host-mounted) project. Known names follow their ecosystem's markers:
-// node_modules next to every package.json, .venv for Python, target for Rust;
-// other names apply at the project root if that folder exists. Missing known
-// folders are created empty.
-func overlayDirs(project string, names []string) []string {
+// Read the current host resolver each time: VPN/Lima/resolved changes should
+// not permanently pin sessions to a dead server. No public fallback (DNS leak).
+func upstreamServers() []string {
+	data, _ := os.ReadFile("/etc/resolv.conf")
 	var out []string
-	add := func(rel string) {
-		if strings.Contains(rel, ":") || len(out) >= 64 || slices.Contains(out, rel) {
-			return
-		}
-		_ = os.MkdirAll(filepath.Join(project, rel), 0o755)
-		out = append(out, rel)
-	}
-	exists := func(rel string) bool { _, err := os.Stat(filepath.Join(project, rel)); return err == nil }
-	for _, n := range names {
-		switch n {
-		case ".venv":
-			if exists("pyproject.toml") || exists("requirements.txt") || exists(".venv") {
-				add(".venv")
-			}
-		case "target":
-			if exists("Cargo.toml") {
-				add("target")
-			}
-		case "node_modules":
-			_ = filepath.WalkDir(project, func(p string, e os.DirEntry, err error) error {
-				if err != nil {
-					return nil
-				}
-				rel, _ := filepath.Rel(project, p)
-				if e.IsDir() {
-					if base := e.Name(); rel != "." && (base == "node_modules" || base == ".git" || strings.Count(rel, "/") >= 3) {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				if e.Name() == "package.json" {
-					add(filepath.Join(filepath.Dir(rel), "node_modules"))
-				}
-				return nil
-			})
-		default:
-			if exists(n) {
-				add(n)
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			if a, err := netip.ParseAddr(f[1]); err == nil {
+				out = append(out, net.JoinHostPort(a.String(), "53"))
 			}
 		}
 	}
 	return out
 }
 
-func overlaySource(project, rel string) string {
-	dir := filepath.Join(system.Home(), ".cache", "sydguard", "overlay", system.HashBytes([]byte(project))[:16], rel)
-	_ = os.MkdirAll(dir, 0o755)
-	return dir
+func forward(q []byte, proto string) ([]byte, error) {
+	last := errors.New("no host DNS resolvers configured")
+	for _, server := range upstreamServers() {
+		resp, err := exchangeDNS(q, proto, server)
+		if err == nil {
+			return resp, nil
+		}
+		last = err
+	}
+	return nil, last
+}
+
+func exchangeDNS(q []byte, proto, server string) ([]byte, error) {
+	c, err := net.DialTimeout(proto, server, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	var resp []byte
+	if proto == "tcp" {
+		if err = writeTCPMsg(c, q); err == nil {
+			resp, err = readTCPMsg(c)
+		}
+	} else {
+		if _, err = c.Write(q); err == nil {
+			resp = make([]byte, 65535)
+			var size int
+			size, err = c.Read(resp)
+			resp = resp[:size]
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	var query, reply dnsmessage.Message
+	if query.Unpack(q) != nil || reply.Unpack(resp) != nil || !reply.Response || reply.ID != query.ID || len(query.Questions) != 1 || len(reply.Questions) != 1 || query.Questions[0] != reply.Questions[0] {
+		return nil, errors.New("invalid upstream DNS response")
+	}
+	if reply.Truncated && proto == "udp" {
+		return exchangeDNS(q, "tcp", server)
+	}
+	if reply.RCode == dnsmessage.RCodeServerFailure {
+		return nil, errors.New("upstream DNS SERVFAIL")
+	}
+	return resp, nil
 }

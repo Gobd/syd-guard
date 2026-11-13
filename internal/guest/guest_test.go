@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Gobd/syd-guard/internal/api"
 	"github.com/Gobd/syd-guard/internal/policy"
@@ -28,7 +27,7 @@ func TestAddrClass(t *testing.T) {
 }
 
 // An unapproved name must never be resolved (that would leak data via DNS).
-func TestProxyDoesNotResolveBeforeApproval(t *testing.T) {
+func TestEgressDoesNotResolveBeforeApproval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	lookups := 0
@@ -58,21 +57,6 @@ func TestProxyDoesNotResolveBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestDNSGrantsExpire(t *testing.T) {
-	now := time.Now()
-	grants := map[string]map[string]time.Time{
-		"tcp://db.example.com:5432": {"10.0.0.5!5432": now.Add(-time.Second), "10.0.0.6!5432": now.Add(time.Minute)},
-		"example.com":               {"93.184.216.34!0-65535": now.Add(-time.Minute)},
-	}
-	cmds := expireGrants(grants, now)
-	if len(cmds) != 2 || len(grants) != 1 || len(grants["tcp://db.example.com:5432"]) != 1 {
-		t.Fatalf("expired %v, left %v", cmds, grants)
-	}
-	if clampTTL(5) != minGrantTTL || clampTTL(86400) != maxGrantTTL || clampTTL(300) != 5*time.Minute {
-		t.Error("TTL clamp")
-	}
-}
-
 // helloFor captures a real TLS ClientHello for serverName.
 func helloFor(t *testing.T, serverName string) *bufio.Reader {
 	t.Helper()
@@ -84,20 +68,29 @@ func helloFor(t *testing.T, serverName string) *bufio.Reader {
 	return bufio.NewReaderSize(b, 5+16<<10)
 }
 
-func TestTunnelServerNameMustMatch(t *testing.T) {
-	if err := checkTunnel(helloFor(t, "github.com"), "github.com", nil); err != nil {
-		t.Errorf("matching name refused: %v", err)
+func TestTransparentWebIdentity(t *testing.T) {
+	if scheme, _, name, err := sniffWeb(helloFor(t, "github.com"), "github.com", "443"); err != nil || scheme != "https" || name != "github.com" {
+		t.Fatalf("matching TLS: %q %q %v", scheme, name, err)
 	}
-	if err := checkTunnel(helloFor(t, "evil.example"), "github.com", nil); err == nil {
-		t.Error("domain fronting allowed")
+	if _, _, _, err := sniffWeb(helloFor(t, "evil.example"), "github.com", "443"); err == nil {
+		t.Fatal("domain fronting allowed")
 	}
-	plain := bufio.NewReader(strings.NewReader("GET / HTTP/1.1\r\n\r\n"))
-	if err := checkTunnel(plain, "github.com", nil); err == nil {
-		t.Error("non-TLS tunnel allowed without a tcp:// rule")
-	}
-	tcp, _ := policy.ParseHostRule("tcp://db.example.com:5432")
-	plain = bufio.NewReader(strings.NewReader("PGSQL..."))
-	if err := checkTunnel(plain, "db.example.com", []policy.HostRule{tcp}); err != nil {
-		t.Errorf("tcp:// rule should allow raw tunnels: %v", err)
+	for _, tc := range []struct {
+		input, port, scheme string
+		denied              bool
+	}{
+		{"GET / HTTP/1.1\r\nHost: github.com\r\n\r\n", "80", "tcp", false},
+		{"GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n", "80", "", true},
+		{"PGSQL...", "443", "tcp", false},
+	} {
+		in := bufio.NewReader(strings.NewReader(tc.input))
+		scheme, _, _, err := sniffWeb(in, "github.com", tc.port)
+		if (err != nil) != tc.denied || scheme != tc.scheme {
+			t.Errorf("%q: %q %v", tc.input, scheme, err)
+		}
+		b, _ := in.Peek(len(tc.input))
+		if string(b) != tc.input {
+			t.Fatal("inspection consumed traffic")
+		}
 	}
 }

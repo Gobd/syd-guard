@@ -20,12 +20,10 @@ import (
 )
 
 // Brokered commands. Inside the sandbox, `sydguard cmd NAME k=v` sends the
-// request through the session's own proxy to the reserved name sydguard.cmd;
+// request through the session's TUN to its dedicated command-broker endpoint;
 // the daemon tags it with the session's project and rules file and queues it.
 // The UI server (on the host) picks it up, decides (it alone trusts command
 // definitions), runs it there with your normal credentials, and answers.
-
-const brokerHost = "sydguard.cmd"
 
 // Job is one request from an agent, waiting for the host.
 type Job struct {
@@ -66,7 +64,7 @@ type CmdResult struct {
 
 const jobTimeout = 15 * time.Minute
 
-// serveBroker handles requests the agent sends to http://sydguard.cmd/OP.
+// serveBroker handles requests to the session's SG_BROKER endpoint.
 func (d *Daemon) serveBroker(s *Session, w http.ResponseWriter, r *http.Request) {
 	op := strings.Trim(r.URL.Path, "/")
 	if op != "list" && op != "run" && op != "propose" {
@@ -173,15 +171,18 @@ func (d *Daemon) jobRoutes(mux *http.ServeMux) {
 
 // RunClient is `sydguard cmd` inside the sandbox.
 func RunClient(args []string, stdin io.Reader) (int, error) {
-	proxy := os.Getenv("HTTP_PROXY")
-	if proxy == "" || os.Getenv("SYDGUARD") == "" {
+	endpoint := os.Getenv("SG_BROKER")
+	if endpoint == "" {
 		return 2, errors.New("sydguard cmd only works inside a sydguard sandbox")
 	}
-	pu, err := url.Parse(proxy)
+	pu, err := url.Parse(endpoint)
 	if err != nil {
 		return 2, err
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}, Timeout: jobTimeout + time.Minute}
+	if pu.Scheme != "http" || pu.Hostname() != networkGateway || pu.Port() == "" || pu.User != nil || pu.Path != "" || pu.RawQuery != "" || pu.Fragment != "" {
+		return 2, errors.New("invalid session broker endpoint")
+	}
+	client := &http.Client{Transport: &http.Transport{}, Timeout: jobTimeout + time.Minute}
 	post := func(op string, req CmdRequest) (CmdResult, error) {
 		var res CmdResult
 		body, _ := json.Marshal(req)
@@ -189,8 +190,8 @@ func RunClient(args []string, stdin io.Reader) (int, error) {
 		if op == "list" {
 			method, body = http.MethodGet, nil
 		}
-		hreq, _ := http.NewRequestWithContext(context.Background(), method, "http://"+brokerHost+"/"+op, bytes.NewReader(body))
-		resp, err := client.Do(hreq)
+		hreq, _ := http.NewRequestWithContext(context.Background(), method, pu.String()+"/"+op, bytes.NewReader(body)) //nolint:gosec // validated session gateway; this client runs inside the sandbox
+		resp, err := client.Do(hreq)                                                                                   //nolint:gosec // validated session gateway, not an operator-side fetch
 		if err != nil {
 			return res, err
 		}

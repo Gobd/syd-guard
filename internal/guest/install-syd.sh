@@ -38,6 +38,10 @@ if ! "$ENGINE" --version 2>/dev/null | grep -q "^syd $SYD_VERSION"; then
   sudo install -D -m 0755 -o root -g root "$work/syd/bin/syd" "$ENGINE"
 fi
 "$ENGINE" --version | head -1
+HELPER=/usr/local/libexec/sydguard/net-helper
+if [ -n "${SYDGUARD_HELPER_SOURCE:-}" ]; then
+  sudo install -D -m 0755 -o root -g root "$SYDGUARD_HELPER_SOURCE" "$HELPER"
+fi
 
 if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null; then
   sudo tee /etc/apparmor.d/sydguard-engine >/dev/null <<APPARMOR
@@ -45,6 +49,10 @@ abi <abi/4.0>,
 include <tunables/global>
 # sydguard: let the root-owned Syd engine create user/mount namespaces.
 profile sydguard-engine $ENGINE flags=(unconfined) {
+  userns,
+}
+# The helper creates only its own user/net namespaces; it is not setuid.
+profile sydguard-network $HELPER flags=(unconfined) {
   userns,
 }
 APPARMOR

@@ -3,6 +3,7 @@ import {
   base,
   type Card,
   type CommandCard,
+  type Connection,
   decideCommand,
   describe,
   edit,
@@ -22,7 +23,7 @@ import * as s from "./styles.css";
 const KIND_LABEL: Record<string, string> = {
   read: "read",
   write: "write",
-  hosts: "web",
+  hosts: "network",
   connect: "connect",
 };
 const KIND_PILL: Record<string, keyof typeof s.pill> = {
@@ -141,7 +142,7 @@ export function App() {
         {sessionCount > 0 && (
           <>
             <h2 class={s.section}>Running agents</h2>
-            <Sessions state={state} />
+            <Sessions state={state} act={act} />
           </>
         )}
 
@@ -530,7 +531,7 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
   );
 }
 
-function Sessions({ state }: { state: State | null }) {
+function Sessions({ state, act }: { state: State | null; act: Act }) {
   const rows =
     state?.vms.flatMap((vm) =>
       (vm.state?.sessions ?? []).map((x) => [vm.name, x] as const),
@@ -577,6 +578,43 @@ function Sessions({ state }: { state: State | null }) {
                 : ""}
             </span>
           </div>
+          {(x.ports ?? []).length > 0 && (
+            <div class={s.row}>
+              <span class={s.mute}>dev servers:</span>
+              {(x.ports ?? []).map((p) =>
+                p.exposed ? (
+                  <a
+                    key={p.port}
+                    class={s.target}
+                    href={`http://localhost:${p.port}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    localhost:{p.port}
+                  </a>
+                ) : (
+                  <span key={p.port} class={s.warn} title={p.error}>
+                    {p.port} (not exposed: {p.error})
+                  </span>
+                ),
+              )}
+            </div>
+          )}
+          <details open>
+            <summary class={s.summary}>
+              Approvals for this session’s rules
+            </summary>
+            <div class={s.mute}>
+              Grants are saved to {base(x.rulesFile)} and shared by sessions
+              using that file.
+            </div>
+            {(state?.vms.find((v) => v.name === vm)?.state?.cards ?? [])
+              .filter((c) => c.rulesFile === x.rulesFile && !c.learned)
+              .map((c) => (
+                <CardView key={c.id} vm={vm} card={c} act={act} />
+              ))}
+          </details>
+          {x.network && <Connections connections={x.connections ?? []} />}
           {x.lastError && (
             <div class={s.warn}>
               last update failed: {x.lastError} — policy state unknown; restart
@@ -589,13 +627,83 @@ function Sessions({ state }: { state: State | null }) {
   );
 }
 
+function Connections({ connections }: { connections: Connection[] }) {
+  const [filter, setFilter] = useState<"all" | "active">("all");
+  const [search, setSearch] = useState("");
+  const rows = connections.filter(
+    (c) =>
+      (filter === "all" || !c.ended) &&
+      [
+        c.hostname,
+        c.httpHost,
+        c.sni,
+        c.destination,
+        c.protocol,
+        c.scheme,
+        c.port,
+      ].some((v) => v?.toLowerCase().includes(search.toLowerCase())),
+  );
+  const active = connections.filter((c) => !c.ended).length;
+  return (
+    <details>
+      <summary class={s.summary}>
+        Connections ({active} active · {connections.length} recent)
+      </summary>
+      <div class={s.row}>
+        <Toggle
+          value={filter}
+          onChange={setFilter}
+          options={[
+            ["all", "Recent"],
+            ["active", "Active"],
+          ]}
+        />
+        <input
+          class={s.grow}
+          placeholder="Filter hostname, IP, protocol…"
+          value={search}
+          onInput={(e) => setSearch(e.currentTarget.value)}
+        />
+      </div>
+      <div class={s.mute}>
+        Latest 256 flows per session · metadata only, no decrypted HTTPS ·
+        history resets on daemon restart.
+      </div>
+      {rows.length === 0 && <div class={s.empty}>No matching connections.</div>}
+      {rows.map((c) => (
+        <div key={c.id} class={s.card}>
+          <div class={s.row}>
+            <span class={s.pill[c.error ? "warn" : c.ended ? "plain" : "ok"]}>
+              {c.scheme || c.protocol} · port {c.port} · {c.state}
+            </span>
+            <span class={s.target}>{c.hostname || c.destination}</span>
+            <span class={s.mute}>
+              {c.destination} · ↑ {c.sent.toLocaleString()} B · ↓{" "}
+              {c.received.toLocaleString()} B ·{" "}
+              {new Date(c.started).toLocaleTimeString()}
+            </span>
+          </div>
+          {(c.httpHost || c.sni) && (
+            <div class={s.mute}>
+              {c.httpHost && `HTTP Host: ${c.httpHost}`}
+              {c.httpHost && c.sni && " · "}
+              {c.sni && `TLS SNI: ${c.sni}`}
+            </div>
+          )}
+          {c.error && <div class={s.warn}>{c.error}</div>}
+        </div>
+      ))}
+    </details>
+  );
+}
+
 const BLOCKS: [Kind, string, string][] = [
   ["read", "Read", "~/.cache/go-build/**"],
   ["write", "Read + write", "~/.npm/**"],
   [
     "hosts",
-    "Web & DNS (by host name)",
-    "https://github.com, *.npmjs.org, tcp://db:5432",
+    "Network & DNS (by host name)",
+    "https://github.com, tcp://db:5432, udp://service:9000",
   ],
   ["connect", "Raw connect (advanced)", "1.2.3.4!22"],
   ["ignore", "Always deny", "host or path"],

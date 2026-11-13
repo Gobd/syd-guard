@@ -17,6 +17,23 @@ export interface Card {
   note?: string;
 }
 
+export interface Connection {
+  id: string;
+  protocol: string;
+  scheme?: string;
+  port: string;
+  destination: string;
+  hostname?: string;
+  httpHost?: string;
+  sni?: string;
+  state: string;
+  error?: string;
+  started: string;
+  ended?: string;
+  sent: number;
+  received: number;
+}
+
 export interface Session {
   id: string;
   project: string;
@@ -30,6 +47,9 @@ export interface Session {
   lastError?: string;
   dnsAddr?: string;
   overlays?: string[];
+  ports?: { port: number; exposed: boolean; error?: string }[];
+  network?: boolean;
+  connections?: Connection[];
 }
 
 export type Rules = Partial<Record<Kind, string[]>>;

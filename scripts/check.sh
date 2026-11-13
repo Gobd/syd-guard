@@ -36,7 +36,8 @@ unformatted="$(gofumpt -l cmd internal)"
 if [ -n "$unformatted" ]; then echo "gofumpt needed (scripts/check.sh --fix):" >&2; echo "$unformatted" >&2; exit 1; fi
 go vet ./...
 go test -race ./...
-golangci-lint run
+# Guest transport entry points are Linux-only; lint with that build context.
+GOOS=linux golangci-lint run
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /dev/null ./cmd/sydguard
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /dev/null ./cmd/sydguard
 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/sydguard
