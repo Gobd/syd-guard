@@ -7,6 +7,7 @@ package managedstore
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -127,8 +128,8 @@ func validCredential(v string) bool {
 	return err == nil
 }
 
-// transaction authenticates and locks all managed-store operations.
-func (s *Store) transaction(credential string, createLock bool) (*os.File, error) {
+// openAuthenticatedLock verifies the credential and opens the fixed lock inode.
+func (s *Store) openAuthenticatedLock(credential string, createLock bool) (*os.File, error) {
 	if !validCredential(credential) {
 		return nil, fmt.Errorf("operator credential required")
 	}
@@ -149,6 +150,16 @@ func (s *Store) transaction(credential string, createLock bool) (*os.File, error
 		_ = lock.Close()
 		return nil, err
 	}
+	return lock, nil
+}
+
+// transaction retains the existing five-second behavior for non-live operations.
+func (s *Store) transaction(credential string, createLock bool) (*os.File, error) {
+	lock, err := s.openAuthenticatedLock(credential, createLock)
+	if err != nil {
+		return nil, err
+	}
+	fd := int(lock.Fd())
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
@@ -173,6 +184,67 @@ func (s *Store) Authenticate(credential string) error {
 		return err
 	}
 	return lock.Close()
+}
+
+// AuthenticateContext authenticates without mutation, using the caller's
+// deadline (and at most the normal five-second lock budget). Filesystem calls
+// themselves are synchronous; the context bounds lock waiting, not a stuck FS.
+func (s *Store) AuthenticateContext(ctx context.Context, credential string) error {
+	if ctx == nil {
+		return errors.New("authentication context required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := authenticationContextErr(ctx); err != nil {
+		return err
+	}
+	lock, err := s.openAuthenticatedLock(credential, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	if err := lockWithContext(ctx, int(lock.Fd())); err != nil {
+		return err
+	}
+	if err := authenticationContextErr(ctx); err != nil {
+		return err
+	}
+	if err := lock.Close(); err != nil {
+		return err
+	}
+	return authenticationContextErr(ctx)
+}
+
+func authenticationContextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func lockWithContext(ctx context.Context, fd int) error {
+	for {
+		if err := authenticationContextErr(ctx); err != nil {
+			return err
+		}
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return authenticationContextErr(ctx)
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return fmt.Errorf("lock unavailable: %w", err)
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Store) Apply(r Request) (result Response, resultErr error) {

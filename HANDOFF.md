@@ -104,6 +104,48 @@ Latest source state (unmerged isolated worktrees):
   frozen during current read-only review. Neither source slice is ready to install.
 - Parent ordinary helper test binary/temp owned fixture is recorded at guest
   ~/.sydguard-network-unpriv-parent-path; no Root/static-engine install there.
+- Firewallworker63b1516e added actual journal-derived inet EXCL install, scoped
+  guards/DNAT/filter rules+multi-message ALLACK native transport and tests. First
+  actual ordinary Linux run exposed testmock keepingonlylastGET (notbatchhistory);
+  parent fixedmockSend appendhistory and ALLhelpertests PASS. Sourcefirewallreview
+  e511c7fe/task1 active; kernel behavior/otherbasechainflowtable interactions unproved.
+  StillunwirednoRootdeployment.
+- Live-root design3b67a52f acceptedsourceplan withconcrete hardgates: hashHELD
+  validatedengineFD; retainRootcredential/store/pinnedproject+policyFD for exactsaved
+  rereads; startup/releasegate+independent watchdogARM/complete absolute deadlines;
+  everylive launch validatewholeProjectRWD ceiling eveninitialreadonly. Rootcontrol
+  backing socket coveredonlyinprivatemountview afterwatchspawn, engineIPC0/0; protected
+  FD/nondumpability; display32hexID notbank64hexnonce; CASsavednotapplied untilbound
+  authenticatedreceipt. Newsourceworkerbcf076b1 activein explicitly isolated ordinary
+  gitworktree /Users/briankemper/Developer/worktrees/syd-guard/live-root-source from
+  b3a747f. Parent correctedworkflowisolation beforeanymain edit; main sourceunchanged.
+  Liveworkerbcf076b1 added eight UNTRACKED protocol/client/state/Rootauthority/
+  watchdog-state/test files inlive-root-source; NO actuallive launcher/watcherwire/
+  banktransport/startupgate/layout/CLI/UI integration. Rootconstructorfuturebranch
+  hashesheldengineFD, retainscredential/store/pins/rereads exactbytes/wholeRWDguard;
+  growthboundedrequestIDmap requiresreview. Parent actualordinaryLinux managedlive
+  tests and ALLhelper tests PASS. Review10bf62c6/live-root-review active. Noactivation.
+  Firewallreview552adc50 P1 off-vethdirectprivateDNS state mutation despiteveth-only
+  drops, P2 incompleteembeddedACKheader length/flags; repair3ff578a2 fixedboth and
+  parentordinaryLinux ALLhelpertests PASS; rereviewefe22161 nofindings/sourceOK.
+  Parent added OPTIN root isolated anonymous-netns-only TestManagedNFTIsolatedKernelAcceptance
+  in network_nft_kernel_linux_test.go; sourcecompiled/vet PASS, NOT executedasRoot.
+  Fixture changesnoHosttables/interfaces/sysctl/mount/workload; checksactual26msg/
+  24ACK commit/GET/mismatch/EEXIST/handleDelete/ENOENT andcallerNSunchanged; namespace
+  destructionfinalcleanup. Safetyreview5e31abad/task2 activebeforeparentRootinvoke.
+  Kernel batchACKemission/CTdirectionU8 expression acceptance stillunproved.
+  LiveReview81d46dfc P1 acceptedIDhistoryunbounded,P2 absoluteauthdeadline/earlyStartupStopped/
+  typednil; repairbaf047dd adds4096bound/contextAuth flock/preReady correlatedterminal/
+  nilerrorhandling. Rereviewb51a599f nofindings/sourceOK; parent actualordinaryLinux
+  repairedmanagedlive/managedstore/ALLhelper suites PASS (ASTguard source-lessskip
+  distinguished). Reviewed slice appliedmain; nativeGo/race/vet Linuxbuild/vet PASS.
+  No actuallivebranch/watchwire/UI yet.
+  Kernel-fixture review517e6a50 acceptednamespaceconfinement butBLOCKED missing5s
+  commit budget; parent wrapped EACH initial/duplicate socket-open+commit inshared5s
+  childctx beneath20souter fixture and closes/cancels promptly. NotRootexecuted yet.
+  Originalstage manifestverifieddev64769/inode840172/root0700; nohelpers/engine
+  replaced. Candidate/credential/control/nftRootfixtures remainseparate scopedgates.
+  Activation/CLI/UI/Rootengineinstallation stillblockedpendingimplementations/proofs.
 
 
 Unintended guest global rustup nightly install occurred during an intended read-only
