@@ -1,11 +1,15 @@
 package syd
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/Gobd/syd-guard/internal/config"
@@ -20,6 +24,9 @@ import (
 const liveBankEngineSHA256 = "523122c5dcc5f3b65b68b58fd642086d80aaa76c5c2e9825efc47b1750c69d01"
 const liveBankMaxRules = 128
 const liveBankMaxBytes = 256 * 1024
+
+// FixedReleaseFD is the only release descriptor consumed by the fixed gate.
+const FixedReleaseFD = 3
 
 // BankBinding identifies an externally authenticated session and project. IDs
 // are opaque 256-bit lowercase hex; Generation must never be reused in a session.
@@ -52,6 +59,8 @@ type BankLedger struct {
 	workdir, temporary string
 	protected          []string
 	base, tail         []string
+	startupACL         []string
+	startupFingerprint string
 	inventories        [2][]string
 	active             int // -1 means restrictive default
 	receipt            BankReceipt
@@ -136,6 +145,83 @@ func NewBankLedger(binding BankBinding, engineDigest, workdir, temporary, socket
 	return l, startup, nil
 }
 
+// RootWriterStartup is fixed internal startup authority, not saved profile data.
+// Its gate inode must be independently verified against the ROOT-held FD.
+type RootWriterStartup struct {
+	GatePath         string
+	GateDev, GateIno uint64
+	UID, GID         uint32
+	ReleaseFD        int
+	WholeProjectRWD  bool
+	RequirePIE       bool
+}
+
+// NewRootWriterBankLedger compiles only the reviewed fixed ROOT-writer mode.
+// The digest remains an assertion: callers must independently hash the held FD.
+func NewRootWriterBankLedger(binding BankBinding, engineDigest, workdir, temporary, socket string, protected []string, spec RootWriterStartup) (*BankLedger, string, error) {
+	if spec.UID == 0 || spec.GID == 0 || spec.GateDev == 0 || spec.GateIno == 0 || spec.ReleaseFD != FixedReleaseFD || !spec.WholeProjectRWD || literalPath(spec.GatePath) != nil || filepath.Clean(spec.GatePath) != spec.GatePath {
+		return nil, "", fmt.Errorf("invalid root writer startup authority")
+	}
+	gate, err := config.RevalidateResolvedFilePath(spec.GatePath)
+	if err != nil || gate != spec.GatePath || pathOverlaps(gate, workdir) || pathOverlaps(gate, temporary) {
+		return nil, "", fmt.Errorf("invalid fixed gate path")
+	}
+	info, err := os.Lstat(gate)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, "", fmt.Errorf("invalid fixed gate file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint64(stat.Dev) != spec.GateDev || uint64(stat.Ino) != spec.GateIno {
+		return nil, "", fmt.Errorf("fixed gate identity changed")
+	}
+	for _, p := range protected {
+		if pathOverlaps(gate, p) {
+			return nil, "", fmt.Errorf("gate overlaps protected authority")
+		}
+	}
+	ledger, startup, err := NewBankLedger(binding, engineDigest, workdir, temporary, socket, protected, spec.RequirePIE)
+	if err != nil {
+		return nil, "", err
+	}
+	if pathOverlaps(gate, ledger.workdir) || pathOverlaps(gate, ledger.temporary) {
+		return nil, "", fmt.Errorf("gate overlaps canonical project or scratch")
+	}
+	gateACL := []string{"allow/read,stat,exec+" + gate, "allow/lock/read,exec+" + gate, "allow/lock/read,readdir,write,create,delete,rename,truncate,mkdir,rmdir,symlink+" + ledger.workdir}
+	ledger.startupACL = append([]string(nil), gateACL...)
+	ledger.base = append(ledger.base, gateACL...)
+	tail := strings.Join(ledger.tail, "\n") + "\n"
+	if !strings.Contains(startup, tail) {
+		return nil, "", fmt.Errorf("invalid root writer baseline")
+	}
+	startup = strings.Replace(startup, tail, strings.Join(gateACL, "\n")+"\n"+tail, 1)
+	marker := "domain+@sgbankA:@default\n"
+	settings := fmt.Sprintf("ipc/uid:0\nipc/gid:0\npassfd^\npassfd+stdio,%d\n", spec.ReleaseFD)
+	if !strings.Contains(startup, marker) {
+		return nil, "", fmt.Errorf("invalid root writer startup")
+	}
+	startup = strings.Replace(startup, marker, settings+marker, 1)
+	if len(startup) > liveBankMaxBytes || !bankLinesValid(strings.Split(startup, "\n")) {
+		return nil, "", fmt.Errorf("root writer startup exceeds limit")
+	}
+	material, err := json.Marshal(struct {
+		Binding                    BankBinding
+		EngineDigest               string
+		WriterUID, WriterGID       uint32
+		Workdir, Temporary, Socket string
+		Protected                  []string
+		Spec                       RootWriterStartup
+	}{binding, engineDigest, 0, 0, ledger.workdir, ledger.temporary, socket, append([]string(nil), protected...), spec})
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(material)
+	ledger.startupFingerprint = hex.EncodeToString(sum[:])
+	return ledger, startup, nil
+}
+
+// StartupFingerprint is a local immutable-spec identifier, not IPC proof.
+func (l *BankLedger) StartupFingerprint() string { return l.startupFingerprint }
+
 // Prepare parses the exact submitted intent bytes and verifies the preceding
 // receipt. It makes no runtime changes and allows only one outstanding batch.
 // The caller must not mutate intent concurrently with this call.
@@ -168,6 +254,13 @@ func (l *BankLedger) Prepare(expected BankReceipt, intent []byte) (BankBatch, er
 		return BankBatch{}, err
 	}
 	basePrefix := strings.Join(l.base, "\n") + "\n"
+	if len(l.startupACL) != 0 {
+		plain := strings.Join(l.base[:len(l.base)-len(l.startupACL)], "\n") + "\n"
+		if !strings.HasPrefix(compiled, plain) {
+			return BankBatch{}, fmt.Errorf("baseline changed")
+		}
+		compiled = plain + strings.Join(l.startupACL, "\n") + "\n" + strings.TrimPrefix(compiled, plain)
+	}
 	tail := strings.Join(l.tail, "\n") + "\n"
 	if !strings.HasPrefix(compiled, basePrefix) || !strings.HasSuffix(compiled, tail) {
 		return BankBatch{}, fmt.Errorf("baseline changed")

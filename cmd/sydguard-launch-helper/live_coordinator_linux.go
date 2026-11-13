@@ -39,6 +39,7 @@ type liveCoordinator struct {
 	state           *managedlive.State
 	ready           managedlive.Ready
 	startup         liveWatchFrame
+	watch           *liveWatchClient
 	broken          bool
 }
 
@@ -59,7 +60,7 @@ func newLiveCoordinator(a *liveAuthority, w *liveWatchClient, e *liveEngineEndpo
 	if err := checkHeldCoordinatorEngine(a.engine); err != nil {
 		return nil, err
 	}
-	return &liveCoordinator{binding: b, initialRevision: a.original.Revision, initialBank: initial, ops: liveCoordinatorOps{authenticate: a.store.AuthenticateContext, arm: w.arm, complete: w.complete, prepare: a.prepareSaved, load: e.load, finish: a.ledger.Finish, quarantine: a.ledger.Stop, stop: stop, release: release}}, nil
+	return &liveCoordinator{binding: b, initialRevision: a.original.Revision, initialBank: initial, watch: w, ops: liveCoordinatorOps{authenticate: a.store.AuthenticateContext, arm: w.arm, complete: w.complete, prepare: a.prepareSaved, load: e.load, finish: a.ledger.Finish, quarantine: a.ledger.Stop, stop: stop, release: release}}, nil
 }
 
 func checkHeldCoordinatorEngine(file *os.File) error {
@@ -123,6 +124,13 @@ func (c *liveCoordinator) start(ctx context.Context, ticket, requestID, revision
 		c.broken = true
 		return managedlive.Ready{}, err
 	}
+	return c.startBankLocked(ctx, ticket, requestID, revision, start, frame)
+}
+
+// startBankLocked consumes an already-acknowledged startup ARM and never
+// changes its acceptance timestamp or renews its watchdog budget.
+func (c *liveCoordinator) startBankLocked(ctx context.Context, ticket, requestID, revision string, start time.Time, frame liveWatchFrame) (managedlive.Ready, error) {
+	var err error
 	c.state, err = managedlive.NewState(c.binding, ticket, requestID, revision, start)
 	if err != nil {
 		return managedlive.Ready{}, c.fail(err)

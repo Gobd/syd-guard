@@ -188,7 +188,9 @@ Latest source state (unmerged isolated worktrees):
   retained; existingordinarySyd+workload, RoottakesownershipprivateSocket/dir AFTER
   trustedbind BEFORERelease, exactordinarypeerUID derivedRootselection notcaller.
   These are proposalsONLY pending source/independentreview andactualRootfixture;
-  currentRoot0endpointconstructor UNCHANGED/unreachable. No deploymentorReadyclaim.
+  HistoricalRoot0SERVERendpointcontract supersededbyreviewedordinarySyd/Root0WRITER
+  separateinodeowner/peerUID/runtimeexe-pidfd pins; currentconstructor stillunreachable,
+  noRootlayout/spawn/proc qualification/deploymentorReadyclaim.
   Acceptedcoordinator/watchwire/transport/context source slice copiedMAIN afterworker
   stoppedwithoutstartupedits; parentnativeGo/race/vet andLinuxARMbuild/vet PASS.
   Diagnosticstartup report2d5e7919/root-live-startup.md mandatesstartup ipc/uid:0,
@@ -211,7 +213,15 @@ Latest source state (unmerged isolated worktrees):
   Frozen14files snapshot /Users/briankemper/Developer/worktrees/syd-guard/live-startup-review
   base158 branchpi-subagents/live-startup-review-9b4e23ee. Reviewac2d90a9 BLOCK3P1:
   gateOverlapbeforeproject/scratchcanonicalization, releaseFD3..255vsfixed3, gatevalid
-  EOFafterdeadline accepted. Repaira1e106c3 active snapshotsolewriter, originalsuntouched.
+  EOFafterdeadline accepted. Repaira1e106c3 fixedcanonicalaliaschecks/sharedEXACTfd3/
+  originalMONOdeadline afterpoll/read/EOF/restore/preexec; actualLinuxGo/race/vet+
+  NEWcandidate engine284110/gate-agent284111 PASS Coreonly. Rereviewa8944f95 sourceOK.
+  ParentAPPLIED14filepatchagainstmain4e05a10 CLEAN(nohistoricalfullfileoverwrites),
+  preservesf45Network/watchCleanup; nativeGo/race/vet LinuxARMbuild/vet andNEWmerged
+  actualordinaryLinuxALLhelperPASS SHA802bd72bd45e2a26a8f47f604a6d7472fc8c60ad9e55b31d00a365509e50619c,
+  logec92ad4a9c1de4bd4b31a31b3bfa1cb03dfcce0ac9409f5f807e74f6c67ab1e0.
+  RuntimeEXEchecksSAMPLEDcurrentimage notexec-away/backhistory; trustedSydpost-seal
+  nofurtherexecinvariant remainsfuturecompositiongate. Defaultsnonlive unchanged.
   Layoutworker27483a53 STOPPEDbeforeedits crossPROCESSsetup/cleanup serialization:
   slot.lifecycleMu processlocal/sharedinheritedflock OFD notexclusion; lateRootmutator
   afterCGcleanup couldwrite/createafterreuse. NarrowedDIAGNOSTIC containedfixedRoot

@@ -59,8 +59,15 @@ func main() {
 }
 
 func run() (int, error) {
+	if len(os.Args) >= 2 && os.Args[1] == "--live-gate" {
+		return liveGateMain()
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--supervise" {
 		return supervise()
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--watchdog-live" {
+		if err := watchdogMainMode(true); err != nil { return 1, err }
+		return 0, nil
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--watchdog" {
 		if err := watchdogMain(); err != nil {

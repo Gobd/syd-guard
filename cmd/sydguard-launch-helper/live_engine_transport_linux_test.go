@@ -265,6 +265,9 @@ func TestLiveEngineGenuinePeerAndPinnedSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	dfd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +284,7 @@ func TestLiveEngineGenuinePeerAndPinnedSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint := &liveEngineEndpoint{dir: dir, socket: sock, uid: uint32(os.Getuid()), pid: os.Getpid(), identity: identity}
+	endpoint := &liveEngineEndpoint{dir: dir, socket: sock, serverUID: uint32(os.Getuid()), socketOwner: uint32(os.Getuid()), runtime: &liveRuntimeIdentity{pid: os.Getpid(), start: identity}}
 	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -292,18 +295,18 @@ func TestLiveEngineGenuinePeerAndPinnedSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	if err := endpoint.verifyPeer(c); err != nil {
+	if err := endpoint.verifyPeerSocket(c); err != nil {
 		t.Fatal(err)
 	}
 	pair, _ := enginePair(t)
-	if err := endpoint.verifyPeer(pair); err == nil {
+	if err := endpoint.verifyPeerSocket(pair); err == nil {
 		t.Fatal("pre-fork socketpair accepted as engine peer")
 	}
-	endpoint.pid++
-	if err := endpoint.verifyPeer(c); err == nil {
+	endpoint.runtime.pid++
+	if err := endpoint.verifyPeerSocket(c); err == nil {
 		t.Fatal("wrong PID accepted")
 	}
-	endpoint.pid--
+	endpoint.runtime.pid--
 	if err := os.Rename(path, path+"-old"); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +315,7 @@ func TestLiveEngineGenuinePeerAndPinnedSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer replacement.Close()
-	if err := endpoint.verifyPeer(c); err == nil {
+	if err := endpoint.verifyPeerSocket(c); err == nil {
 		t.Fatal("replaced socket accepted")
 	}
 }

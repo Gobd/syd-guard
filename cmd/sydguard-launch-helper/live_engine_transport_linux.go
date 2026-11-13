@@ -24,22 +24,25 @@ var liveEngineACK = []byte("{\"err\":0,\"msg\":\"ACK\"}\n")
 
 // liveEngineEndpoint can only be constructed by ROOT from its fixed private
 // layout and a newly dialed connection. The caller must already have protected
-// that directory from the workload and obtained pid/start identity from the
-// trusted supervisor; executable identity pinning remains a later startup gate.
+// that directory from the workload and retained the actual spawned Syd pidfd
+// and verified sealed runtime executable.
 // It never accepts a remote path or a controller-selected process.
 type liveEngineEndpoint struct {
 	dir, socket *os.File
-	uid         uint32
-	pid         int
-	identity    string
+	serverUID   uint32
+	socketOwner uint32
+	runtime     *liveRuntimeIdentity
 	dial        func(context.Context) (*net.UnixConn, error)
 }
 
-func newLiveEngineEndpoint(dir, socket *os.File, uid uint32, pid int, identity string, dial func(context.Context) (*net.UnixConn, error)) (*liveEngineEndpoint, error) {
-	if os.Geteuid() != 0 || dir == nil || socket == nil || pid <= 0 || identity == "" || dial == nil {
+func newLiveEngineEndpoint(dir, socket *os.File, uid uint32, runtime *liveRuntimeIdentity, dial func(context.Context) (*net.UnixConn, error)) (*liveEngineEndpoint, error) {
+	if os.Geteuid() != 0 || os.Getegid() != 0 || dir == nil || socket == nil || uid == 0 || runtime == nil || dial == nil {
 		return nil, errors.New("invalid root engine endpoint")
 	}
-	e := &liveEngineEndpoint{dir: dir, socket: socket, uid: uid, pid: pid, identity: identity, dial: dial}
+	e := &liveEngineEndpoint{dir: dir, socket: socket, serverUID: uid, socketOwner: 0, runtime: runtime, dial: dial}
+	if err := runtime.verify(); err != nil {
+		return nil, err
+	}
 	if err := e.checkSocket(); err != nil {
 		return nil, err
 	}
@@ -50,7 +53,7 @@ func (e *liveEngineEndpoint) checkSocket() error {
 	if err := unix.Fstat(int(e.dir.Fd()), &dir); err != nil {
 		return err
 	}
-	if dir.Mode&unix.S_IFMT != unix.S_IFDIR {
+	if dir.Mode&unix.S_IFMT != unix.S_IFDIR || dir.Uid != e.socketOwner || dir.Mode&0o7777 != 0o700 {
 		return errors.New("invalid private engine directory")
 	}
 	if err := unix.Fstat(int(e.socket.Fd()), &held); err != nil {
@@ -59,7 +62,7 @@ func (e *liveEngineEndpoint) checkSocket() error {
 	if err := unix.Fstatat(int(e.dir.Fd()), "s", &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
-	if held.Mode&unix.S_IFMT != unix.S_IFSOCK || held.Uid != e.uid || held.Dev != named.Dev || held.Ino != named.Ino || named.Mode&unix.S_IFMT != unix.S_IFSOCK {
+	if held.Mode&unix.S_IFMT != unix.S_IFSOCK || held.Uid != e.socketOwner || held.Mode&0o7777 != 0o600 || held.Dev != named.Dev || held.Ino != named.Ino || named.Mode&unix.S_IFMT != unix.S_IFSOCK {
 		return errors.New("private engine socket identity changed")
 	}
 	for _, file := range []*os.File{e.dir, e.socket} {
@@ -71,6 +74,24 @@ func (e *liveEngineEndpoint) checkSocket() error {
 	return nil
 }
 func (e *liveEngineEndpoint) verifyPeer(c *net.UnixConn) error {
+	if e.runtime == nil {
+		return errors.New("missing runtime identity")
+	}
+	if err := e.runtime.verify(); err != nil {
+		return err
+	}
+	if err := e.verifyPeerSocket(c); err != nil {
+		return err
+	}
+	return e.runtime.verify()
+}
+
+// verifyPeerSocket alone does not authenticate an executable; only verifyPeer
+// is used by ROOT. Ordinary tests exercise this socket-specific seam separately.
+func (e *liveEngineEndpoint) verifyPeerSocket(c *net.UnixConn) error {
+	if e.runtime == nil {
+		return errors.New("missing expected peer identity")
+	}
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return err
@@ -88,7 +109,7 @@ func (e *liveEngineEndpoint) verifyPeer(c *net.UnixConn) error {
 			return
 		}
 		cred, x := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-		if x != nil || cred.Uid != e.uid || int(cred.Pid) != e.pid {
+		if x != nil || cred.Uid != e.serverUID || int(cred.Pid) != e.runtime.pid {
 			result = errors.New("engine peer identity mismatch")
 			return
 		}
@@ -108,8 +129,8 @@ func (e *liveEngineEndpoint) verifyPeer(c *net.UnixConn) error {
 	if result != nil {
 		return result
 	}
-	current, err := session.ProcessIdentity(e.pid)
-	if err != nil || current != e.identity {
+	current, err := session.ProcessIdentity(e.runtime.pid)
+	if err != nil || current != e.runtime.start {
 		return errors.New("engine process identity changed")
 	}
 	return e.checkSocket()
@@ -156,6 +177,9 @@ func sealedLiveBatch(data []byte) (*os.File, error) {
 // batch. It sends one exact load header and one descriptor, then requires the
 // candidate's exact ACK followed by EOF; any uncertainty is a failed operation.
 func (e *liveEngineEndpoint) load(ctx context.Context, data []byte) error {
+	if os.Geteuid() != 0 || os.Getegid() != 0 {
+		return errors.New("ROOT 0/0 engine writer required")
+	}
 	if ctx == nil {
 		return errors.New("engine deadline required")
 	}

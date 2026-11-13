@@ -24,18 +24,29 @@ type watchdog struct {
 	cmd     *exec.Cmd
 	done    chan error
 	crashed bool
+	live    bool
 }
 
 // startWatchdog executes only this fixed immutable binary. Its socket peer and
 // the locked slot FD authenticate the otherwise inaccessible watchdog mode.
 func startWatchdog(slot *launchSlot, j slotJournal) (*watchdog, error) {
+	return startWatchdogMode(slot, j, false)
+}
+
+// startWatchdogMode uses only the fixed immutable helper and its existing
+// authenticated parent/slot/journal handshake; live remains unactivated.
+func startWatchdogMode(slot *launchSlot, j slotJournal, live bool) (*watchdog, error) {
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	parent := os.NewFile(uintptr(pair[0]), "watchdog-parent")
 	child := os.NewFile(uintptr(pair[1]), "watchdog-child")
-	cmd := exec.Command(executable, "--watchdog")
+	mode := "--watchdog"
+	if live {
+		mode = "--watchdog-live"
+	}
+	cmd := exec.Command(executable, mode)
 	// Keep the privileged watchdog out of the sudo/terminal signal group; the
 	// pidfd and cgroup, not this session boundary, provide lifecycle control.
 	// Clone the launcher's already-private namespace before any binds. The
@@ -52,7 +63,7 @@ func startWatchdog(slot *launchSlot, j slotJournal) (*watchdog, error) {
 		return nil, err
 	}
 	_ = child.Close()
-	watch := &watchdog{guard: parent, cmd: cmd, done: make(chan error, 1)}
+	watch := &watchdog{guard: parent, cmd: cmd, done: make(chan error, 1), live: live}
 	go func() { watch.done <- cmd.Wait() }()
 	if err := parent.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		_ = parent.Close()

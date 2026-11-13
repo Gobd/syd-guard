@@ -156,6 +156,54 @@ func TestLiveCoordinatorStartupReleaseAndUpdateOrder(t *testing.T) {
 		t.Fatal("duplicate release")
 	}
 }
+func TestLiveCoordinatorAdoptsSingleStartupARM(t *testing.T) {
+	f := newCoordinatorFixture(t)
+	h := newLiveWatchHarness(t, 2*time.Second)
+	f.c.watch = h.client
+	token, err := armLiveStartup(h.client, f.c.binding, strings.Repeat("1", 64), strings.Repeat("2", 64), f.rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.c.ops.complete = h.client.complete
+	ready, err := f.c.startAdopted(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ready = ready
+	if !reflect.DeepEqual(f.events, []string{"prepare", "load", "finish"}) {
+		t.Fatalf("adoption sent second ARM: %v", f.events)
+	}
+	if _, err := f.c.startAdopted(context.Background(), token); err == nil {
+		t.Fatal("startup token reused")
+	}
+	f.release(t)
+	if err := h.client.stop(watchNow(t) + uint64(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	h.result(t, false)
+}
+
+func TestLiveCoordinatorAdoptionDeadlineStops(t *testing.T) {
+	f := newCoordinatorFixture(t)
+	h := newLiveWatchHarness(t, 2*time.Second)
+	f.c.watch = h.client
+	token, err := armLiveStartup(h.client, f.c.binding, strings.Repeat("1", 64), strings.Repeat("2", 64), f.rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token.start = time.Now().Add(-managedlive.StartupTimeout - time.Second)
+	if _, err := f.c.startAdopted(context.Background(), token); !errors.Is(err, errLiveUnknown) || f.stopped != 1 {
+		t.Fatal("expired adoption not fail-stop", err)
+	}
+	if _, err := f.c.status(); !errors.Is(err, errLiveUnknown) {
+		t.Fatal("expired adoption status remained available", err)
+	}
+	if err := h.client.stop(watchNow(t) + uint64(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	h.result(t, false)
+}
+
 func TestLiveCoordinatorPreARMFailureDoesNotAccept(t *testing.T) {
 	f := newCoordinatorFixture(t)
 	f.start(t)
