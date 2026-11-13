@@ -73,6 +73,16 @@ export function App() {
     for (const c of vm.state?.cards ?? []) cards.push([vm.name, c]);
     for (const f of vm.state?.files ?? []) files.push([vm.name, f]);
   }
+  const sessionCount =
+    state?.vms.reduce((n, v) => n + (v.state?.sessions.length ?? 0), 0) ?? 0;
+  // "All projects" rules: owned by this UI's machine, or per VM when it doesn't own them.
+  const globals: [string, RuleFile][] = state?.ownsGlobal
+    ? state.global
+      ? [["", state.global]]
+      : []
+    : (state?.vms.flatMap((v) =>
+        v.state ? [[v.name, v.state.global] as [string, RuleFile]] : [],
+      ) ?? []);
   const active = files.filter(([, f]) => f.sessions.length > 0);
   const idle = files.filter(([, f]) => f.sessions.length === 0);
   const pending = cards.filter(([, c]) => !c.learned);
@@ -106,56 +116,36 @@ export function App() {
         {pending.map(([vm, c]) => (
           <CardView key={c.id} vm={vm} card={c} act={act} />
         ))}
-        {waiting === 0 && <div class={s.empty}>Nothing blocked right now.</div>}
-
-        <h2 class={s.section}>
-          Learning now{" "}
-          <span class={s.mute}>
-            (saved to the rules file when the learn run exits)
-          </span>
-        </h2>
-        {learned.length ? (
-          learned.map(([vm, c]) => (
-            <CardView key={c.id} vm={vm} card={c} act={act} />
-          ))
-        ) : (
+        {waiting === 0 && (
           <div class={s.empty}>
-            Run sydguard --learn -- &lt;agent&gt; to record rules automatically.
+            {sessionCount > 0
+              ? "Nothing blocked right now."
+              : "No agents running. Start one with: sydguard -- claude (or --learn for a first run)."}
           </div>
         )}
 
-        <h2 class={s.section}>Running agents</h2>
-        <Sessions state={state} />
+        {learned.length > 0 && (
+          <>
+            <h2 class={s.section}>
+              Learning now{" "}
+              <span class={s.mute}>
+                (saved to the rules file when the learn run exits)
+              </span>
+            </h2>
+            {learned.map(([vm, c]) => (
+              <CardView key={c.id} vm={vm} card={c} act={act} />
+            ))}
+          </>
+        )}
 
-        <h2 class={s.section}>Rules for running agents</h2>
-        {state?.ownsGlobal && state.global && (
-          <RulesView
-            title="All projects"
-            vm=""
-            scope="global"
-            file={state.global}
-            act={act}
-          />
+        {sessionCount > 0 && (
+          <>
+            <h2 class={s.section}>Running agents</h2>
+            <Sessions state={state} />
+          </>
         )}
-        {state?.vms.map(
-          (vm) =>
-            !state.ownsGlobal &&
-            vm.state && (
-              <RulesView
-                key={vm.name}
-                title="All projects"
-                vm={vm.name}
-                scope="global"
-                file={vm.state.global}
-                act={act}
-              />
-            ),
-        )}
-        {active.length === 0 && (
-          <div class={s.empty}>
-            Rules for a project show here while an agent runs in it.
-          </div>
-        )}
+
+        <h2 class={s.section}>Rules</h2>
         {active.map(([vm, f]) => (
           <RulesView
             key={vm + f.path}
@@ -168,6 +158,29 @@ export function App() {
             running={f.sessions.length}
           />
         ))}
+        {globals.map(([vm, f]) =>
+          hasRules(f) ? (
+            <RulesView
+              key={`global-${vm}`}
+              title="All projects"
+              vm={vm}
+              scope="global"
+              file={f}
+              act={act}
+            />
+          ) : (
+            <details key={`global-${vm}`}>
+              <summary class={s.summary}>All projects (no rules yet)</summary>
+              <RulesView
+                title="All projects"
+                vm={vm}
+                scope="global"
+                file={f}
+                act={act}
+              />
+            </details>
+          ),
+        )}
         {idle.length > 0 && (
           <details>
             <summary class={s.summary}>Other projects ({idle.length})</summary>
@@ -192,6 +205,11 @@ export function App() {
     </>
   );
 }
+
+const hasRules = (f: RuleFile) =>
+  Object.values(f.rules ?? {}).some((v) =>
+    Array.isArray(v) ? v.length > 0 : !!v,
+  );
 
 // "myproject" or "myproject · review" for --rules review.
 function projectTitle(f: FileView): string {

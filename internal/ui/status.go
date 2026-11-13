@@ -103,7 +103,7 @@ func ListMachines() {
 		switch {
 		case m.Status != "Running":
 		case m.Version == "":
-			line += "  (sydguard daemon not running; starts on the next run)"
+			line += "  (not connected: reconnecting, or the daemon starts on the next run)"
 		default:
 			line += fmt.Sprintf("  %d agent(s)  build %s", m.Agents, m.Version)
 			if m.Kind == "lima" {

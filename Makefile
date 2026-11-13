@@ -19,4 +19,8 @@ check:
 # Installs the Mac binary plus the Linux binaries it copies into Lima VMs.
 install: all
 	mkdir -p $(HOME)/.local/bin
-	cp $(BIN)/sydguard $(BIN)/sydguard-linux-* $(HOME)/.local/bin/
+	# Replace, don't overwrite in place: macOS kills binaries whose signed
+	# file was modified under it.
+	for f in sydguard sydguard-linux-arm64 sydguard-linux-amd64; do \
+		rm -f $(HOME)/.local/bin/$$f && cp $(BIN)/$$f $(HOME)/.local/bin/$$f; \
+	done
