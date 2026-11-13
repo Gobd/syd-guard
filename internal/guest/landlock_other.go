@@ -4,4 +4,4 @@ package guest
 
 import "errors"
 
-func checkLandlock() error { return errors.New("Landlock requires Linux") }
+func checkLandlock() error { return errors.New("optional Landlock requires Linux") }

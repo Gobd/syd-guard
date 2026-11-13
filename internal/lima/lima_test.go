@@ -1,10 +1,27 @@
 package lima
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Gobd/syd-guard/internal/config"
 )
+
+func TestDefaultVMPlatform(t *testing.T) {
+	if !strings.Contains(string(defaultConfig(true)), "vmType: qemu") || !strings.Contains(string(defaultConfig(true)), "mountType: 9p") {
+		t.Fatal("Linux default must not require macOS virtualization")
+	}
+	if !strings.Contains(string(defaultConfig(false)), "vmType: vz") {
+		t.Fatal("macOS default changed")
+	}
+}
+
+func TestMissingLimaFailsClosed(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := Prepare(Options{}); err == nil || !strings.Contains(err.Error(), "limactl not found") {
+		t.Fatalf("missing Lima did not fail closed: %v", err)
+	}
+}
 
 func TestBackendSelection(t *testing.T) {
 	for _, key := range []string{"SYDGUARD_BACKEND", "SYDGUARD_VM", "SYDGUARD_LIMA"} {

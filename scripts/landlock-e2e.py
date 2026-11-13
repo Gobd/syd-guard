@@ -20,6 +20,7 @@ root = Path(tempfile.mkdtemp(prefix=".sgll-", dir=Path.home()))
 home, project, inside, outside = [root / n for n in ("home", "project", "inside", "outside")]
 for p in (home, project, inside, outside):
     p.mkdir()
+(project / "package.json").write_text("{}") # exercise the VM-local node_modules overlay
 (inside / "secret").write_text("inside")
 (outside / "secret").write_text("outside")
 config = home / ".config/sydguard"
@@ -59,6 +60,8 @@ agent = project / "agent.py"
 agent.write_text('''from pathlib import Path
 import time, sys
 inside = Path(sys.argv[1])
+Path("node_modules/artifact.txt").write_text("built")
+assert Path("node_modules/artifact.txt").read_text() == "built"
 while True:
     try:
         assert (inside / "secret").read_text() == "inside"
@@ -109,6 +112,7 @@ try:
     wait_for(lambda: (project / "revoked-ok").exists())
     (project / "finish").touch()
     assert proc.wait(timeout=15) == 0
+    assert not (project / "node_modules/artifact.txt").exists(), "overlay leaked into project"
 
     # Learn mode permits the operation in Syd, but cannot widen Landlock.
     probe = project / "probe.py"
@@ -131,7 +135,7 @@ print("probe passed")
     if learned.exists():
         assert str(outside) not in learned.read_text(), "kernel-denied operations became learned grants"
     passed = True
-    print("PASS: opt-in ceiling, blocked outside grant, live read/write, same-PID revocation/restart, learn-mode kernel enforcement, explicit disable")
+    print("PASS: opt-in ceiling, blocked outside grant, live read/write, same-PID revocation/restart, build overlays, learn-mode kernel enforcement, explicit disable")
 finally:
     if proc.poll() is None:
         os.killpg(proc.pid, signal.SIGKILL)
