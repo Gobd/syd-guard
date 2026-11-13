@@ -420,6 +420,10 @@ func CompileProfile(in ProfileInput) (string, error) {
 		// Agents run from ~/.local/bin, ~/.pi, pnpm (group-writable dirs system.Under
 		// Ubuntu's umask, symlink-heavy) and use JITs (node, bun).
 		"sandbox/tpe:off", "trace/allow_unsafe_symlinks:1", "trace/allow_unsafe_exec_nopie:1", "trace/allow_unsafe_exec_memory:1",
+		// Ubuntu's umask makes files group-writable; Syd's "trusted file creation"
+		// would then refuse `> existing-file`. That guards shared multi-user
+		// directories, not a single-user VM.
+		"trace/allow_unsafe_create:1",
 		"passenv+*_PROXY", "passenv+*_proxy",
 		"allow/create+!*", "allow/net/bind+!unnamed",
 		"allow/net/bind+127.0.0.1!0-65535", "allow/net/bind+::1!0-65535",

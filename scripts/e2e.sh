@@ -55,9 +55,9 @@ else
 fi
 
 echo "3. web by host name; private/local addresses"
-sydguard -- sh -c 'curl -s -m 20 -o /dev/null -w "%{http_code}\n" https://example.com; curl -s -m 5 -o /dev/null -w "%{http_code}\n" --noproxy "*" https://example.com; curl -s -m 5 --noproxy "" -o /dev/null -w "%{http_code}\n" http://127.0.0.1:22/ ; curl -s -m 5 -o /dev/null -w "%{http_code}\n" https://localhost.localdomain/' > out3 2>&1
+sydguard -- sh -c 'curl -s -m 20 -o /dev/null -w "%{http_code}\n" https://example.com; curl -s -m 5 -o /dev/null -w "%{http_code}\n" --noproxy "*" https://example.org; curl -s -m 5 --noproxy "" -o /dev/null -w "%{http_code}\n" http://127.0.0.1:22/ ; curl -s -m 5 -o /dev/null -w "%{http_code}\n" https://localhost.localdomain/' > out3 2>&1
 check "approved host works through proxy" "sed -n 2p out3 | grep -q 200"
-check "direct connection (no proxy) fails" "sed -n 3p out3 | grep -q 000"
+check "direct connection (no proxy) to an unapproved host fails" "sed -n 3p out3 | grep -q 000"
 check "loopback via proxy refused" "sed -n 4p out3 | grep -q 403"
 sydguard -- sh -c 'curl -s -m 30 -o /dev/null -w "%{http_code}\n" https://github.com' > out3b 2>&1 &
 sleep 2
