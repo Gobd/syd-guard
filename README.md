@@ -62,24 +62,63 @@ over the config.
   "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
   "localPorts": [5173],
   "env": { "GH_TOKEN": "file:~/.config/sydguard/secrets/github-agent-token" },
-  "overlays": ["node_modules", ".venv", "target"]
+  "keepOnVM": ["node_modules", ".venv", "target"]
 }
 ```
 
 `env` values are passed to every agent; `file:` values are read from files the
-sandbox can't see. With a VM, the needed parts (resolved) are copied into the VM's
+sandbox can't see. `keepOnVM` lists folders that live on the VM's own disk instead
+of in your project folder (default `node_modules`, `.venv`, `target`): installs and
+builds inside the VM never write Linux binaries or install-script output into the
+host's copy of the project, which just sees an empty folder. With a VM, the needed parts (resolved) are copied into the VM's
 own protected config dir before each run.
 
-## GitHub, CI and other services
+## Host commands (git push, PRs, CI status, …)
 
-Agents use their normal CLIs (`gh`, `git`, `circleci`, `curl`) through the proxy;
-approve the hosts once. Give them **their own least-privilege credentials** via
-`env`, not yours: e.g. a fine-grained GitHub token limited to specific repos with
-contents/pull requests/issues read+write and actions read — enough to clone, commit,
-push, comment, read comments and check GitHub Actions — and GitHub enforces the
-limits even for `gh api`. `examples/config.json` also shows the `GIT_CONFIG_*`
-entries that make `git push` use `gh`'s credential helper. Your own `~/.config/gh`
-and `~/.ssh` stay unreadable to agents.
+Some things need your credentials: pushing, opening PRs, commenting, checking CI.
+Instead of giving agents tokens, define **commands** they may ask sydguard to run
+**on the host** (outside the sandbox and the VM, in the project folder, with your
+normal `git`/`gh`/`circleci` logins):
+
+```json
+"commands": {
+  "push":      { "run": ["git", "push", "-u", "origin", "{branch}"], "args": { "branch": "agent/[A-Za-z0-9._/-]+" } },
+  "pr-create": { "run": ["gh", "pr", "create", "--head", "{branch}", "--title", "{title}", "--body-file", "-"],
+                 "args": { "branch": "agent/[A-Za-z0-9._/-]+", "title": "[^\\n]{1,200}" }, "stdin": true },
+  "runs":      { "run": ["gh", "run", "list", "--limit", "20"], "mode": "allow" }
+}
+```
+
+Inside the sandbox:
+
+```sh
+sydguard cmd --list                                   # what's available
+sydguard cmd push branch=agent/fix-login              # run one
+sydguard cmd pr-create branch=agent/fix-login title="Fix login" < body.md
+sydguard cmd --propose --why "need issue labels" -- gh issue edit 12 --add-label bug
+```
+
+- **Where**: global commands in `~/.config/sydguard/config.json`; per-project ones in
+  the rules file (`"commands"`, committable — approved once per definition on the
+  host before they run). There are none by default; `examples/config.json` suggests a
+  set (push `agent/*` branches, PR create/view/comment/checks, issues, Actions runs,
+  CircleCI) and `examples/AGENTS-snippet.md` tells agents how to use them.
+- **mode**: `"ask"` (default — a card shows the exact command, you click Run) or
+  `"allow"` (runs right away).
+- **Proposals** show up as cards: **Run once**, **Save as command** (edit the
+  template, turn words into `{placeholders}` with a regex each, pick this project /
+  all projects and ask / allow), or **Deny**.
+- **Safety**: argv is fixed — the agent only fills `{placeholders}`, each matched
+  against its regex as a whole; values can't start with `-` or contain newlines; no
+  shell. git (directly or via `gh`) runs with hooks and fsmonitor disabled. The host
+  checks every request itself, so a compromised VM can't make it run anything you
+  haven't defined or approved. Beyond that, what you allow is up to you: a command
+  like `pnpm run build` runs project code on your host.
+- The `sydguard` binary inside the sandbox is just a client; it has no more power
+  than any other program there.
+
+You can still give agents their own scoped tokens via `env` (e.g. a fine-grained
+`GH_TOKEN`) if you prefer them calling APIs directly.
 
 ## Rules
 
@@ -114,7 +153,7 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 - **Integrity**: only rules content sydguard wrote or you trusted is used. A file
   changed elsewhere (editor, `git pull`, clone, a hard link) is shown in the UI /
   terminal and ignored until trusted; files with extra hard links are refused.
-- **Build folders stay in the VM**: `node_modules` next to every `package.json`,
+- **Build folders stay in the VM** (`keepOnVM` in the config): `node_modules` next to every `package.json`,
   `.venv` (Python) and `target` (Rust) are bind-mounted from the VM's disk, so
   `npm install` and friends never write Linux binaries or install scripts' output
   into your host's project tree (the host sees an empty folder).

@@ -3,6 +3,7 @@ package policy
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -30,6 +31,9 @@ type Rules struct {
 	Hosts   []string `json:"hosts,omitempty"`
 	Connect []string `json:"connect,omitempty"`
 	Ignore  []string `json:"ignore,omitempty"`
+	// Commands this project's agents may ask sydguard to run on the host
+	// (`sydguard cmd NAME`). Approved once per definition on the host.
+	Commands map[string]Command `json:"commands,omitempty"`
 }
 
 var Kinds = []string{"read", "write", "hosts", "connect", "ignore"}
@@ -54,6 +58,14 @@ func (r Rules) Clone() Rules {
 	c := Rules{}
 	for _, k := range Kinds {
 		*c.List(k) = slices.Clone(*r.List(k))
+	}
+	if r.Commands != nil {
+		c.Commands = map[string]Command{}
+		for name, cmd := range r.Commands {
+			cmd.Run = slices.Clone(cmd.Run)
+			cmd.Args = maps.Clone(cmd.Args)
+			c.Commands[name] = cmd
+		}
 	}
 	return c
 }

@@ -2,12 +2,66 @@
   "vm": "ai-sandbox",
   "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
   "localPorts": [],
-  "env": {
-    "GH_TOKEN": "file:~/.config/sydguard/secrets/github-agent-token",
-    "CIRCLECI_TOKEN": "file:~/.config/sydguard/secrets/circleci-token",
-    "GIT_CONFIG_COUNT": "1",
-    "GIT_CONFIG_KEY_0": "credential.https://github.com.helper",
-    "GIT_CONFIG_VALUE_0": "!gh auth git-credential"
-  },
-  "overlays": ["node_modules", ".venv", "target"]
+  "env": {},
+  "keepOnVM": ["node_modules", ".venv", "target"],
+  "commands": {
+    "push": {
+      "run": ["git", "push", "-u", "origin", "{branch}"],
+      "args": { "branch": "agent/[A-Za-z0-9._/-]+" },
+      "description": "push an agent/* branch (never main)"
+    },
+    "pr-create": {
+      "run": ["gh", "pr", "create", "--head", "{branch}", "--title", "{title}", "--body-file", "-"],
+      "args": { "branch": "agent/[A-Za-z0-9._/-]+", "title": "[^\\n]{1,200}" },
+      "stdin": true,
+      "description": "open a PR from an agent/* branch; body on stdin"
+    },
+    "pr-view": {
+      "run": ["gh", "pr", "view", "{pr}", "--comments"],
+      "args": { "pr": "[0-9]+" },
+      "mode": "allow",
+      "description": "read a PR and its comments"
+    },
+    "pr-comment": {
+      "run": ["gh", "pr", "comment", "{pr}", "--body-file", "-"],
+      "args": { "pr": "[0-9]+" },
+      "stdin": true,
+      "description": "comment on a PR; body on stdin"
+    },
+    "pr-checks": {
+      "run": ["gh", "pr", "checks", "{pr}"],
+      "args": { "pr": "[0-9]+" },
+      "mode": "allow",
+      "description": "CI checks for a PR"
+    },
+    "issue-view": {
+      "run": ["gh", "issue", "view", "{issue}", "--comments"],
+      "args": { "issue": "[0-9]+" },
+      "mode": "allow",
+      "description": "read an issue and its comments"
+    },
+    "issue-comment": {
+      "run": ["gh", "issue", "comment", "{issue}", "--body-file", "-"],
+      "args": { "issue": "[0-9]+" },
+      "stdin": true,
+      "description": "comment on an issue; body on stdin"
+    },
+    "runs": {
+      "run": ["gh", "run", "list", "--limit", "20"],
+      "mode": "allow",
+      "description": "recent GitHub Actions runs"
+    },
+    "run-view": {
+      "run": ["gh", "run", "view", "{run}", "--log-failed"],
+      "args": { "run": "[0-9]+" },
+      "mode": "allow",
+      "description": "failed-step logs of a GitHub Actions run"
+    },
+    "circleci-pipelines": {
+      "run": ["circleci", "pipeline", "list", "{project}"],
+      "args": { "project": "(gh|bb)/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+" },
+      "mode": "allow",
+      "description": "recent CircleCI pipelines, e.g. project=gh/org/repo"
+    }
+  }
 }

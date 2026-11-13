@@ -67,6 +67,21 @@ func app() *cli.Command {
 				UsageText: "sydguard vm [-- command [args...]]", StopOnNthArg: &one, Action: vmAction,
 			},
 			{Name: "prepare", Usage: "get everything ready (VM, engine, daemon, UI) without running a command", Action: prepareAction},
+			{
+				Name: "cmd", Usage: "(inside the sandbox) run or propose a host command: sydguard cmd --list",
+				UsageText:       "sydguard cmd --list | NAME key=value... | --propose [--why TEXT] -- PROGRAM ARGS...",
+				SkipFlagParsing: true,
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					code, err := guest.RunClient(cmd.Args().Slice(), os.Stdin)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "sydguard:", err)
+					}
+					if code != 0 {
+						return cli.Exit("", code)
+					}
+					return nil
+				},
+			},
 			{Name: "status", Usage: "show the UI, daemons and VMs (running? which build?)", Action: func(context.Context, *cli.Command) error {
 				return ui.Status()
 			}},

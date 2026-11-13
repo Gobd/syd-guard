@@ -364,6 +364,10 @@ func CleanRules(r Rules) (Rules, error) {
 			*out.List(k) = append(*out.List(k), n)
 		}
 	}
+	if err := ValidateCommands(r.Commands); err != nil {
+		return out, err
+	}
+	out.Commands = r.Clone().Commands
 	return out, nil
 }
 

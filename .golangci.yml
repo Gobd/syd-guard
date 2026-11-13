@@ -20,3 +20,4 @@ linters:
         - G306 # same, in tests
         - G404 # math/rand only picks a loopback address, not a secret
         - G702 # same as G204: commands are fixed binaries with argument lists
+        - G703 # paths come from our own config locations or the user

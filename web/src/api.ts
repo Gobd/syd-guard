@@ -70,10 +70,38 @@ export interface Machine {
   version?: string;
 }
 
+export interface CommandCard {
+  id: string;
+  vm: string;
+  project: string;
+  rulesFile: string;
+  agent: string;
+  kind: "run" | "propose";
+  name?: string;
+  scope?: string;
+  argv: string[];
+  stdin?: string;
+  reason?: string;
+  note?: string;
+}
+
+export interface CommandDecision {
+  id: string;
+  action: "run" | "deny" | "save";
+  scope?: "global" | "project";
+  name?: string;
+  run?: string[];
+  args?: Record<string, string>;
+  mode?: "allow" | "ask";
+  stdin?: boolean;
+  description?: string;
+}
+
 export interface State {
   version: string;
   vms: VM[];
   machines: Machine[];
+  commands: CommandCard[];
   ownsGlobal: boolean;
   global?: RuleFile;
 }
@@ -115,6 +143,8 @@ export const getState = () => call<State>("/api/state");
 export type Op = "allow" | "remove" | "dismiss" | "trust" | "forget";
 export const edit = (op: Op, req: EditRequest) =>
   call<EditResult>(`/api/${op}`, req);
+export const decideCommand = (d: CommandDecision) =>
+  call<object>("/api/command", d);
 export const vmAction = (name: string, action: "start" | "stop") =>
   call<object>("/api/vm", { name, action });
 

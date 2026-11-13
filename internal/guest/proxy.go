@@ -33,6 +33,10 @@ func (d *Daemon) startProxy(s *Session) error {
 var hopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authorization", "Proxy-Authenticate", "Te", "Trailer", "Transfer-Encoding", "Upgrade"}
 
 func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect && r.URL.Host == brokerHost {
+		d.serveBroker(s, w, r) // `sydguard cmd` from inside the sandbox
+		return
+	}
 	scheme, hostport := "http", r.Host
 	if r.Method == http.MethodConnect {
 		scheme = ""

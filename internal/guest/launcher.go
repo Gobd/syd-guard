@@ -186,9 +186,13 @@ func Run(o RunOptions) (int, error) {
 		DNS       bool
 		Overlays  []string
 	}
+	launch := launchPaths(argv[0])
+	if exe, err := os.Executable(); err == nil {
+		launch = append(launch, exe) // so the agent can run `sydguard cmd`
+	}
 	s := Session{
 		Project: project, RulesFile: rulesFile, Cwd: cwd, Cmd: o.Args, Learn: o.Learn, PID: os.Getpid(),
-		Launch: launchPaths(argv[0]), LocalPorts: localPorts, OverlayNames: cfg.OverlayNames(),
+		Launch: launch, LocalPorts: localPorts, OverlayNames: cfg.OverlayNames(),
 	}
 	for k := range env {
 		s.EnvNames = append(s.EnvNames, k)

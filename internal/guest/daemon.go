@@ -89,6 +89,7 @@ type Daemon struct {
 	cards    map[string]*Card // key: rulesFile|kind|target
 	store    *policy.Store
 	events   *api.Broadcaster
+	jobs     map[string]*Job // brokered command requests waiting for the host
 }
 
 func sessionsDir() string { return filepath.Join(system.StateDir(), "sessions") }
@@ -172,6 +173,7 @@ func (d *Daemon) routes() http.Handler {
 	api.Handle(mux, "GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
 	api.Handle(mux, "GET /api/state", func(*http.Request) (any, error) { return d.state(), nil })
 	mux.HandleFunc("GET /api/events", d.events.Serve)
+	d.jobRoutes(mux)
 	edit := func(pattern string, fn func(api.EditReq) (any, error)) {
 		api.Handle(mux, pattern, func(r *http.Request) (any, error) {
 			var req api.EditReq

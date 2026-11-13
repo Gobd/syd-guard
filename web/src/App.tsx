@@ -2,6 +2,8 @@ import { useEffect, useState } from "preact/hooks";
 import {
   base,
   type Card,
+  type CommandCard,
+  decideCommand,
   describe,
   edit,
   type EditRequest,
@@ -75,7 +77,8 @@ export function App() {
   const idle = files.filter(([, f]) => f.sessions.length === 0);
   const pending = cards.filter(([, c]) => !c.learned);
   const learned = cards.filter(([, c]) => c.learned);
-  document.title = `${pending.length ? `(${pending.length}) ` : ""}sydguard`;
+  const waiting = pending.length + (state?.commands.length ?? 0);
+  document.title = `${waiting ? `(${waiting}) ` : ""}sydguard`;
   const connected = state?.vms.filter((v) => v.ok).map((v) => v.name) ?? [];
 
   return (
@@ -95,15 +98,15 @@ export function App() {
         </div>
 
         <h2 class={s.section}>
-          Waiting for you {pending.length > 0 && `(${pending.length})`}
+          Waiting for you {waiting > 0 && `(${waiting})`}
         </h2>
-        {pending.length ? (
-          pending.map(([vm, c]) => (
-            <CardView key={c.id} vm={vm} card={c} act={act} />
-          ))
-        ) : (
-          <div class={s.empty}>Nothing blocked right now.</div>
-        )}
+        {(state?.commands ?? []).map((c) => (
+          <CommandView key={c.id} card={c} onDone={refresh} />
+        ))}
+        {pending.map(([vm, c]) => (
+          <CardView key={c.id} vm={vm} card={c} act={act} />
+        ))}
+        {waiting === 0 && <div class={s.empty}>Nothing blocked right now.</div>}
 
         <h2 class={s.section}>
           Learning now{" "}
@@ -256,6 +259,142 @@ function Machines({
         </div>
       ))}
     </>
+  );
+}
+
+// A host command the agent asked to run (or proposed).
+function CommandView({
+  card: c,
+  onDone,
+}: {
+  card: CommandCard;
+  onDone: () => void;
+}) {
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState(
+    c.argv
+      .slice(0, 2)
+      .join("-")
+      .replace(/[^a-z0-9_-]/gi, "")
+      .toLowerCase(),
+  );
+  const [template, setTemplate] = useState(c.argv.join(" "));
+  const [scope, setScope] = useState<"project" | "global">("project");
+  const [mode, setMode] = useState<"ask" | "allow">("ask");
+  const [regexes, setRegexes] = useState<Record<string, string>>({});
+  const placeholders = [...template.matchAll(/\{([a-z][a-z0-9_]*)\}/g)].map(
+    (m) => m[1] ?? "",
+  );
+  const send = (action: "run" | "deny" | "save") => {
+    setError("");
+    const args: Record<string, string> = {};
+    for (const p of placeholders) args[p] = regexes[p] ?? "[A-Za-z0-9._/-]+";
+    decideCommand({
+      id: c.id,
+      action,
+      ...(action === "save"
+        ? {
+            scope,
+            name,
+            run: template.split(" ").filter(Boolean),
+            args,
+            mode,
+            stdin: !!c.stdin,
+          }
+        : {}),
+    })
+      .then(onDone)
+      .catch((e: Error) => setError(e.message));
+  };
+  return (
+    <div class={s.card}>
+      <div class={s.row}>
+        <span class={s.pill.warn}>
+          {c.kind === "run" ? "command" : "new command?"}
+        </span>
+        <span class={s.target}>{c.argv.join(" ")}</span>
+      </div>
+      <div class={s.mute}>
+        {c.vm} › {short(c.project)}
+        {c.kind === "run" &&
+          ` · ${c.name} (${c.scope === "global" ? "all projects" : "this project"})`}
+        {c.agent && ` · ${c.agent}`} · runs on this machine with your
+        credentials (git hooks off)
+      </div>
+      {c.reason && <div class={s.mute}>why: {c.reason}</div>}
+      {c.note && <div class={s.warn}>{c.note}</div>}
+      {c.stdin && <pre class={s.pre}>{c.stdin}</pre>}
+      {error && <div class={s.warn}>{error}</div>}
+      <div class={s.row}>
+        <button type="button" class={s.primary} onClick={() => send("run")}>
+          {c.kind === "run" ? "Run" : "Run once"}
+        </button>
+        {c.kind === "propose" && (
+          <button type="button" onClick={() => setSaving(!saving)}>
+            Save as command…
+          </button>
+        )}
+        <button type="button" onClick={() => send("deny")}>
+          Deny
+        </button>
+      </div>
+      {saving && (
+        <div class={s.card}>
+          <div class={s.mute}>
+            Replace words with {"{placeholders}"} the agent may fill in, each
+            checked against a regex.
+          </div>
+          <div class={s.row}>
+            <input
+              value={name}
+              onInput={(e) => setName(e.currentTarget.value)}
+              placeholder="name"
+            />
+            <select
+              value={scope}
+              onChange={(e) =>
+                setScope(e.currentTarget.value as "project" | "global")
+              }
+            >
+              <option value="project">this project</option>
+              <option value="global">all projects</option>
+            </select>
+            <select
+              value={mode}
+              onChange={(e) =>
+                setMode(e.currentTarget.value as "ask" | "allow")
+              }
+            >
+              <option value="ask">ask each time</option>
+              <option value="allow">always allow</option>
+            </select>
+          </div>
+          <div class={s.row}>
+            <input
+              class={s.grow}
+              value={template}
+              onInput={(e) => setTemplate(e.currentTarget.value)}
+            />
+          </div>
+          {placeholders.map((p) => (
+            <div key={p} class={s.row}>
+              <span class={s.target}>{`{${p}}`} must match</span>
+              <input
+                class={s.grow}
+                value={regexes[p] ?? "[A-Za-z0-9._/-]+"}
+                onInput={(e) =>
+                  setRegexes({ ...regexes, [p]: e.currentTarget.value })
+                }
+              />
+            </div>
+          ))}
+          <button type="button" class={s.primary} onClick={() => send("save")}>
+            Save and run
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

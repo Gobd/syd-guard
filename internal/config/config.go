@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Gobd/syd-guard/internal/policy"
 	"github.com/Gobd/syd-guard/internal/system"
 )
 
@@ -20,7 +21,10 @@ type Config struct {
 	Lima       string            `json:"lima,omitempty"`       // Lima file to create it from (macOS)
 	LocalPorts []int             `json:"localPorts,omitempty"` // like --local-port, for every run
 	Env        map[string]string `json:"env,omitempty"`        // NAME: "value" or "file:PATH" (secret file)
-	Overlays   []string          `json:"overlays,omitempty"`   // build folders kept on the VM disk
+	Overlays   []string          `json:"keepOnVM,omitempty"`   // folders kept on the VM disk, not the project (node_modules…)
+	// Commands agents may ask to run on this machine (`sydguard cmd NAME`),
+	// for every project. Per-project ones live in rules files.
+	Commands map[string]policy.Command `json:"commands,omitempty"`
 }
 
 // DefaultOverlays: node_modules next to every package.json, .venv for Python,
@@ -59,9 +63,12 @@ func (c Config) validate() error {
 			return fmt.Errorf("%s: bad env name %q", Path(), k)
 		}
 	}
+	if err := policy.ValidateCommands(c.Commands); err != nil {
+		return fmt.Errorf("%s: %w", Path(), err)
+	}
 	for _, o := range c.Overlays {
 		if o == "" || strings.ContainsAny(o, "/:") || o == "." || o == ".." || o == ".git" {
-			return fmt.Errorf("%s: overlay must be a plain folder name, got %q", Path(), o)
+			return fmt.Errorf("%s: keepOnVM entries must be plain folder names, got %q", Path(), o)
 		}
 	}
 	return nil
@@ -92,6 +99,22 @@ func (c Config) ResolvedEnv() (map[string]string, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+// Save writes the config back (used when you save a proposed command).
+func Save(c Config) error {
+	if err := c.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o700); err != nil {
+		return err
+	}
+	data, _ := json.MarshalIndent(c, "", "  ")
+	tmp := Path() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, Path())
 }
 
 // ForGuest is what a VM needs from the host's config, with secrets resolved

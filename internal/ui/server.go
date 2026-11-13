@@ -62,11 +62,12 @@ type uiServer struct {
 	store    *policy.Store // global rules (Mac only)
 	ownsGlob bool
 	events   *api.Broadcaster
+	broker   *broker
 }
 
 // RunServer serves the UI until killed.
 func RunServer() error {
-	u := &uiServer{backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: true, events: api.NewBroadcaster()}
+	u := &uiServer{backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: true, events: api.NewBroadcaster(), broker: newBroker()}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", uiPort()))
 	if err != nil {
 		return err
@@ -101,6 +102,9 @@ func (u *uiServer) discover() {
 		u.mu.Unlock()
 		for _, b := range list {
 			u.check(b)
+			if b.ok {
+				u.pollJobs(b)
+			}
 		}
 		time.Sleep(3 * time.Second)
 	}
@@ -209,7 +213,10 @@ func (u *uiServer) check(b *backend) {
 		go func() {
 			// Relay the VM's change events to browsers (instant cards).
 			stream := api.UnixClient(b.sock, 0)
-			_ = api.WatchEvents(context.Background(), stream, "/api/events", u.events.Notify)
+			_ = api.WatchEvents(context.Background(), stream, "/api/events", func() {
+				u.events.Notify()
+				go u.pollJobs(b) // pick up `sydguard cmd` requests right away
+			})
 			u.mu.Lock()
 			b.watch = false
 			u.mu.Unlock()
@@ -251,6 +258,7 @@ func (u *uiServer) routes() http.Handler {
 	mux.Handle("GET /assets/", http.FileServerFS(sub(dist, "dist")))
 	handle("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
 	handle("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
+	u.brokerRoutes(handle)
 	handle("POST /api/vm", func(r *http.Request) (any, error) {
 		var req struct{ Name, Action string }
 		if err := api.Decode(r, &req); err != nil {
@@ -367,7 +375,7 @@ func (u *uiServer) state() map[string]any {
 	}
 	wg.Wait()
 	sort.Slice(vms, func(i, j int) bool { return vms[i]["name"].(string) < vms[j]["name"].(string) })
-	out := map[string]any{"version": system.Version(), "vms": vms, "ownsGlobal": u.ownsGlob, "machines": machines(vms)}
+	out := map[string]any{"version": system.Version(), "vms": vms, "ownsGlobal": u.ownsGlob, "machines": machines(vms), "commands": u.commandCards()}
 	if u.ownsGlob {
 		out["global"] = u.store.View(system.GlobalRulesPath())
 	}

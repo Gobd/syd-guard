@@ -24,7 +24,7 @@ func TestLoadAndSecrets(t *testing.T) {
 	}
 	secret := filepath.Join(dir, "tok")
 	_ = os.WriteFile(secret, []byte("ghp_x\n"), 0o600)
-	write(t, `{"vm":"dev","localPorts":[5173],"env":{"GH_TOKEN":"file:`+secret+`","PLAIN":"v"},"overlays":["node_modules"]}`)
+	write(t, `{"vm":"dev","localPorts":[5173],"env":{"GH_TOKEN":"file:`+secret+`","PLAIN":"v"},"keepOnVM":["node_modules"]}`)
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -33,10 +33,28 @@ func TestLoadAndSecrets(t *testing.T) {
 	if err != nil || g.Env["GH_TOKEN"] != "ghp_x" || g.Env["PLAIN"] != "v" || g.VM != "" || g.LocalPorts[0] != 5173 {
 		t.Fatalf("guest config: %+v %v", g, err)
 	}
-	for _, bad := range []string{`{"env":{"SYD_LOG":"x"}}`, `{"env":{"A B":"x"}}`, `{"localPorts":[0]}`, `{"overlays":["../x"]}`, `{"unknown":1}`} {
+	for _, bad := range []string{`{"env":{"SYD_LOG":"x"}}`, `{"env":{"A B":"x"}}`, `{"localPorts":[0]}`, `{"keepOnVM":["../x"]}`, `{"unknown":1}`} {
 		write(t, bad)
 		if _, err := Load(); err == nil {
 			t.Errorf("config %s should be rejected", bad)
 		}
+	}
+}
+
+// The shipped example must always be a valid config.
+func TestExampleConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	data, err := os.ReadFile("../../examples/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, string(data))
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("examples/config.json: %v", err)
+	}
+	if len(c.Commands) == 0 {
+		t.Error("example should suggest commands")
 	}
 }
