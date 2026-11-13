@@ -3,6 +3,8 @@
 #   scripts/e2e.sh
 # Uses a scratch project under $E2E_DIR (default ~/.cache/sydguard-e2e).
 set -uo pipefail
+# This suite intentionally exercises the Linux machine it is running on.
+sydguard() { command sydguard --backend native "$@"; }
 SOCK="$HOME/.local/state/sydguard/daemon.sock"
 DIR="${E2E_DIR:-$HOME/.cache/sydguard-e2e}"
 SECRET="$HOME/.cache/sydguard-e2e-secret"

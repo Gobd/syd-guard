@@ -110,6 +110,7 @@ func confirmTrust(file string) error {
 }
 
 type RunOptions struct {
+	Landlock   *bool  // nil uses config; false explicitly disables the ceiling
 	Rules      string // --rules NAME|FILE
 	Learn      bool
 	LocalPorts []int // loopback ports of trusted helpers (e.g. an auth proxy)
@@ -182,8 +183,17 @@ func Run(o RunOptions) (int, error) {
 	if exe, err := os.Executable(); err == nil {
 		launch = append(launch, exe) // so the agent can run `sydguard cmd`
 	}
+	ceiling := cfg.Landlock
+	if o.Landlock != nil {
+		ceiling.Enabled = *o.Landlock
+	}
+	ceiling, err = policy.ResolveLandlock(ceiling, project, launch)
+	if err != nil {
+		return 1, err
+	}
 	s := Session{
-		Project: project, RulesFile: rulesFile, Cwd: cwd, Cmd: o.Args, Learn: o.Learn, PID: os.Getpid(),
+		Landlock: ceiling,
+		Project:  project, RulesFile: rulesFile, Cwd: cwd, Cmd: o.Args, Learn: o.Learn, PID: os.Getpid(),
 		Launch: launch, LocalPorts: localPorts, OverlayNames: cfg.OverlayNames(),
 	}
 	for k := range env {
@@ -197,6 +207,9 @@ func Run(o RunOptions) (int, error) {
 		mode = "LEARNING into " + rulesFile + " (everything allowed; what it uses is saved at exit)"
 	}
 	fmt.Fprintf(os.Stderr, "sydguard: %s — approvals at http://127.0.0.1:7878\n", mode)
+	if ceiling.Enabled {
+		fmt.Fprintln(os.Stderr, "sydguard: Landlock filesystem ceiling enabled; approvals outside it require a new session")
+	}
 	if !reg.DNS {
 		fmt.Fprintln(os.Stderr, "sydguard: note: no private DNS/overlays (namespaces unavailable; run `sydguard setup`)")
 	} else if len(reg.Overlays) > 0 {

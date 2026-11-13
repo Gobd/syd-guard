@@ -1,0 +1,31 @@
+# Paired with ../config-lima-landlock.json. Edit host paths before use.
+# These mounts are VM-wide; the optional Landlock ceiling is session-local.
+vmType: qemu
+mountType: virtiofs # Linux hosts need virtiofsd; 9p works without it, but is slower
+base: template:ubuntu-lts
+cpus: 4
+memory: 8GiB
+disk: 40GiB
+mounts:
+  - location: ~/Developer
+    mountPoint: /work/projects
+    writable: true
+  - location: ~/datasets
+    mountPoint: /work/datasets
+    writable: false
+  - location: ~/reference
+    mountPoint: /work/reference
+    writable: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf iproute2
+  - mode: user
+    script: |
+      #!/bin/sh
+      set -eu
+      sudo mkdir -p /work/cache
+      sudo chown "$(id -u):$(id -g)" /work/cache

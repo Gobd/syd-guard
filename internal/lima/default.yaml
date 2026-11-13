@@ -1,5 +1,5 @@
-# sydguard's built-in Lima VM, used when the VM doesn't exist and no --lima
-# file is given. Generic on purpose; see examples/lima/ for a fuller setup.
+# sydguard's built-in macOS Lima VM, used when the VM doesn't exist and no
+# --lima file is given. Linux hosts use default-linux.yaml. Generic on purpose; see examples/lima/ for a fuller setup.
 # sydguard installs its Syd engine on first use (`sydguard setup`).
 vmType: vz
 mountType: virtiofs
@@ -28,4 +28,4 @@ provision:
       set -eu
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf iproute2

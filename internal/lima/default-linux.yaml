@@ -1,0 +1,26 @@
+# Linux host default: QEMU + virtiofs (macOS uses VZ + virtiofs). virtiofs is
+# much faster than 9p and handles mmap/file watching properly; it needs the
+# host's Rust `virtiofsd` (e.g. `apt install virtiofsd`; QEMU's old C virtiofsd
+# needs root and won't work with rootless Lima) — `sydguard doctor` checks.
+# Guest kernels need CONFIG_VIRTIO_FS (standard on Ubuntu LTS, 5.4+).
+vmType: qemu
+mountType: virtiofs
+base: template:ubuntu-lts
+cpus: 4
+memory: 8GiB
+disk: 60GiB
+mounts:
+  - location: ~/Developer
+    writable: true
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 65535]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 65535]
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf iproute2

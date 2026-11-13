@@ -26,8 +26,9 @@ Only the folder you launch in (plus /tmp) is writable. Rules files:
 ~/.config/sydguard/global.json. The sandbox can never write rules files, and
 changes made outside sydguard must be trusted before they're used.
 
-On Linux (and WSL) the command runs here. Elsewhere, or with --vm/--lima, it
-runs in a Lima VM (started or created as needed) at the same project path.
+Commands run in a Lima VM by default on both Linux and macOS. Native Linux
+execution requires --backend native (or an explicit backend config setting).
+Inside an existing Lima guest, native is the default to avoid nested VMs.
 One UI, on the machine you run sydguard on, covers every VM.`
 
 func main() {
@@ -54,8 +55,10 @@ func app() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "rules", Usage: "rules file: NAME (= .sydguard/NAME.json) or a path; default .sydguard.json"},
 			&cli.BoolFlag{Name: "learn", Usage: "allow everything and save what the command used into the rules file"},
+			&cli.BoolFlag{Name: "landlock", Usage: "enable a fixed filesystem ceiling (config landlock.read/write); --landlock=false disables it"},
 			&cli.IntSliceFlag{Name: "local-port", Usage: "let the agent reach 127.0.0.1:`PORT` (a trusted helper you started, e.g. an auth proxy)"},
-			&cli.StringFlag{Name: "vm", Usage: "run in this Lima VM (default when this OS can't run Syd: $SYDGUARD_VM, config, or " + lima.DefaultVM + ")"},
+			&cli.StringFlag{Name: "backend", Usage: "lima (default) or native (explicit Linux opt-in); $SYDGUARD_BACKEND or config"},
+			&cli.StringFlag{Name: "vm", Usage: "Lima VM name ($SYDGUARD_VM, config, or " + lima.DefaultVM + ")"},
 			&cli.StringFlag{Name: "lima", Usage: "Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, or built in)"},
 		},
 		Action: runAction,
@@ -109,7 +112,7 @@ func app() *cli.Command {
 			{Name: "status", Usage: "overview: UI, this host and every VM (running? builds? agents?)", Action: func(context.Context, *cli.Command) error {
 				return ui.Status()
 			}},
-			{Name: "doctor", Usage: "check the Syd engine, namespaces and daemon", Action: doctorAction},
+			{Name: "doctor", Usage: "check what's needed to run agents (host + VM, or this machine with --backend native)", Action: doctorAction},
 			{Name: "setup", Usage: "install the pinned Syd engine (here, or in the VM)", Action: setupAction},
 			{
 				Name: "cmd", Usage: "(inside the sandbox) run or propose a host command: sydguard cmd --list",
@@ -189,10 +192,18 @@ func childExit(err error) error {
 	return err
 }
 
+func landlockOverride(cmd *cli.Command) *bool {
+	if !cmd.IsSet("landlock") {
+		return nil
+	}
+	v := cmd.Bool("landlock")
+	return &v
+}
+
 func limaOptions(cmd *cli.Command) lima.Options {
 	return lima.Options{
-		VM: cmd.String("vm"), LimaFile: cmd.String("lima"), Rules: cmd.String("rules"),
-		Learn: cmd.Bool("learn"), LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(),
+		Backend: cmd.String("backend"), VM: cmd.String("vm"), LimaFile: cmd.String("lima"), Rules: cmd.String("rules"),
+		Landlock: landlockOverride(cmd), Learn: cmd.Bool("learn"), LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(),
 	}
 }
 
@@ -200,11 +211,15 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	if cmd.Args().Len() == 0 {
 		return cli.ShowAppHelp(cmd)
 	}
-	if lima.Use(limaOptions(cmd)) {
+	useVM, err := lima.Use(limaOptions(cmd))
+	if err != nil {
+		return err
+	}
+	if useVM {
 		return lima.Run(limaOptions(cmd))
 	}
 	code, err := guest.Run(guest.RunOptions{
-		Rules: cmd.String("rules"), Learn: cmd.Bool("learn"),
+		Landlock: landlockOverride(cmd), Rules: cmd.String("rules"), Learn: cmd.Bool("learn"),
 		LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(), OnReady: func() {
 			if system.InLima() {
 				return // the machine hosting the VM runs the UI
@@ -229,7 +244,11 @@ func uiAction(_ context.Context, cmd *cli.Command) error {
 	if system.InLima() {
 		return errors.New("the UI runs on the machine hosting this VM: run `sydguard ui` there")
 	}
-	if system.RunsSyd() {
+	useVM, err := lima.Use(limaOptions(cmd.Root()))
+	if err != nil {
+		return err
+	}
+	if !useVM {
 		if _, err := guest.EnsureDaemon(); err != nil {
 			return err
 		}
@@ -243,8 +262,20 @@ func uiAction(_ context.Context, cmd *cli.Command) error {
 }
 
 func doctorAction(_ context.Context, cmd *cli.Command) error {
-	if lima.Use(limaOptions(cmd.Root())) {
-		return lima.Shell(limaOptions(cmd.Root()), "doctor")
+	useVM, err := lima.Use(limaOptions(cmd.Root()))
+	if err != nil {
+		return err
+	}
+	if useVM {
+		ui.UIStatus()
+		ok, err := lima.Doctor(limaOptions(cmd.Root()))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return cli.Exit("", 1)
+		}
+		return nil
 	}
 	if !guest.Doctor() {
 		return cli.Exit("", 1)
@@ -254,14 +285,22 @@ func doctorAction(_ context.Context, cmd *cli.Command) error {
 
 func vmAction(_ context.Context, cmd *cli.Command) error {
 	o := limaOptions(cmd.Root())
-	if !lima.Use(o) {
-		return errors.New("no VM in use here: this machine runs agents directly (pass --vm to use one)")
+	useVM, err := lima.Use(o)
+	if err != nil {
+		return err
+	}
+	if !useVM {
+		return errors.New("native backend selected; use --backend lima or --vm NAME for a VM shell")
 	}
 	return lima.Outside(o, cmd.Args().Slice())
 }
 
 func setupAction(_ context.Context, cmd *cli.Command) error {
-	if lima.Use(limaOptions(cmd.Root())) {
+	useVM, err := lima.Use(limaOptions(cmd.Root()))
+	if err != nil {
+		return err
+	}
+	if useVM {
 		_, err := lima.Prepare(limaOptions(cmd.Root())) // installs the engine if missing
 		return err
 	}

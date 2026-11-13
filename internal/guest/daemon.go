@@ -31,27 +31,29 @@ import (
 )
 
 const (
-	statusApplied  = "applied"
-	statusUpdating = "updating"
-	statusUnknown  = "unknown" // a live update failed or timed out; edits stop
+	statusApplied         = "applied"
+	statusUpdating        = "updating"
+	statusUnknown         = "unknown"          // a live update failed or timed out; edits stop
+	statusRestartRequired = "restart-required" // saved policy exceeds immutable ceiling
 )
 
 type Session struct {
-	ID          string       `json:"id"`
-	Project     string       `json:"project"`
-	RulesFile   string       `json:"rulesFile"`
-	Cwd         string       `json:"cwd"`
-	Cmd         []string     `json:"cmd"`
-	Learn       bool         `json:"learn"`
-	PID         int          `json:"pid"`
-	IPC         string       `json:"ipc"`
-	ProxyPort   int          `json:"proxyPort"` // legacy wire name; command broker only
-	DNSAddr     string       `json:"dnsAddr,omitempty"`
-	Network     bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
-	Connections []Connection `json:"connections,omitempty"`
-	Ports       []PortView   `json:"ports,omitempty"` // dev servers mirrored onto the VM's loopback
-	LocalPorts  []int        `json:"localPorts,omitempty"`
-	Overlays    []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
+	Landlock    policy.Landlock `json:"landlock,omitempty"`
+	ID          string          `json:"id"`
+	Project     string          `json:"project"`
+	RulesFile   string          `json:"rulesFile"`
+	Cwd         string          `json:"cwd"`
+	Cmd         []string        `json:"cmd"`
+	Learn       bool            `json:"learn"`
+	PID         int             `json:"pid"`
+	IPC         string          `json:"ipc"`
+	ProxyPort   int             `json:"proxyPort"` // legacy wire name; command broker only
+	DNSAddr     string          `json:"dnsAddr,omitempty"`
+	Network     bool            `json:"network,omitempty"` // isolated TUN/gVisor namespace
+	Connections []Connection    `json:"connections,omitempty"`
+	LocalPorts  []int           `json:"localPorts,omitempty"`
+	Overlays    []string        `json:"overlays,omitempty"` // build dirs kept on the VM disk
+	Ports       []PortView      `json:"ports,omitempty"`    // dev servers mirrored onto the VM's loopback
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
@@ -155,6 +157,15 @@ func (d *Daemon) adoptSessions() {
 			continue
 		}
 		s.Status = statusApplied
+		for _, rules := range []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)} {
+			for _, kind := range []string{"read", "write"} {
+				for _, p := range *rules.List(kind) {
+					if err := s.Landlock.Check(kind, p); err != nil {
+						s.Status, s.LastError = statusRestartRequired, err.Error()
+					}
+				}
+			}
+		}
 		d.startQueue(&s)
 		d.sessions[s.ID] = &s
 		log.Printf("adopted session %s (%s)", s.ID, s.Project)
@@ -361,6 +372,14 @@ func (d *Daemon) register(s *Session) (any, error) {
 	if !namespacesOK() {
 		return nil, errors.New("isolated networking requires user/mount/net namespaces; run `sydguard setup`")
 	}
+	if s.Landlock.Enabled {
+		if err := s.Landlock.Validate(); err != nil {
+			return nil, err
+		}
+		if err := checkLandlock(); err != nil {
+			return nil, err
+		}
+	}
 	s.ID = system.NewID()
 	s.Network = true
 	s.IPC = "@sydguard-" + s.ID + "-" + system.NewID()
@@ -395,10 +414,18 @@ func (d *Daemon) register(s *Session) (any, error) {
 			return nil, err
 		}
 		in.DNS, in.ResolvConf = s.DNSAddr, resolv
+		if s.Landlock.Enabled {
+			s.Landlock.Read = append(s.Landlock.Read, resolv)
+		}
 	}
 	for _, o := range s.Overlays {
-		in.Overlays = append(in.Overlays, policy.Overlay{Source: overlaySource(s.Project, o), Target: filepath.Join(s.Project, o)})
+		source := overlaySource(s.Project, o)
+		in.Overlays = append(in.Overlays, policy.Overlay{Source: source, Target: filepath.Join(s.Project, o)})
+		if s.Landlock.Enabled {
+			s.Landlock.Write = append(s.Landlock.Write, source)
+		}
 	}
+	in.Landlock = s.Landlock
 	profile, err := policy.CompileProfile(in)
 	if err != nil {
 		d.stopServers(s)
@@ -473,10 +500,14 @@ func (d *Daemon) startQueue(s *Session) {
 		for op := range s.queue {
 			d.mu.Lock()
 			status := s.Status
-			if status != statusUnknown {
+			if status != statusUnknown && status != statusRestartRequired {
 				s.Status = statusUpdating
 			}
 			d.mu.Unlock()
+			if status == statusRestartRequired {
+				op.done <- errors.New("saved policy exceeds this session's Landlock ceiling; start a new session")
+				continue
+			}
 			if status == statusUnknown {
 				op.done <- errors.New("session policy state unknown after an earlier failed update; restart the agent to resync")
 				continue
@@ -667,6 +698,13 @@ func (d *Daemon) allow(req api.EditReq) (any, error) {
 	if err := prot.Check(req.Kind, pattern); err != nil {
 		return nil, err
 	}
+	// Do not save a grant while presenting it as effective in a live session
+	// whose immutable kernel ceiling prevents it.
+	for _, s := range d.sessionsFor(scopeFile(req, file)) {
+		if err := s.Landlock.Check(req.Kind, pattern); err != nil {
+			return nil, err
+		}
+	}
 	before, after, err := d.store.Edit(file, policy.AddRule(req.Kind, pattern))
 	if err != nil {
 		return nil, err
@@ -705,6 +743,18 @@ func (d *Daemon) applyChange(rulesFile string, before, after policy.Rules) []app
 			cmds := policy.DiffCommands(before, after)
 			if s.network != nil && networkRulesRemoved(before, after) {
 				s.network.revoke()
+			}
+			for _, kind := range []string{"read", "write"} {
+				for _, p := range *after.List(kind) {
+					if err := s.Landlock.Check(kind, p); err != nil {
+						d.mu.Lock()
+						s.Status, s.LastError = statusRestartRequired, err.Error()
+						d.mu.Unlock()
+						results[i] = applyResult{Session: s.ID, Error: err.Error()}
+						d.events.Notify()
+						return
+					}
+				}
 			}
 			if len(cmds) == 0 {
 				results[i] = applyResult{Session: s.ID, Applied: true}
@@ -758,6 +808,9 @@ func (d *Daemon) resolveAdded(before, after policy.Rules, rulesFile string) {
 			}
 			for k, c := range d.cards {
 				if (rulesFile == "" || c.RulesFile == rulesFile) && covers(kind, p, c) {
+					if s := d.sessions[c.Session]; s != nil && (s.Status == statusRestartRequired || s.Landlock.Check(kind, p) != nil) {
+						continue
+					}
 					d.resolveLocked(k, kind != "ignore")
 				}
 			}
@@ -875,8 +928,14 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 		}
 		learned := e.Act == "warn"
 		dir := e.Type == "dir"
+		if err := s.Landlock.Check(kind, target); err != nil {
+			learned, note = false, err.Error() // a kernel-blocked attempt is not a learned grant
+		}
 		if learned && (kind == "read" || kind == "write") {
-			target, dir = policy.LearnRoot(target), true
+			root := policy.LearnRoot(target)
+			if s.Landlock.Check(kind, root+"/***") == nil {
+				target, dir = root, true
+			}
 		}
 		d.addCardLocked(s, kind, target, e.Cmd, learned, dir, note)
 		changed = true

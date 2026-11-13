@@ -1,0 +1,11 @@
+{
+  "backend": "lima",
+  "vm": "agent-ceiling",
+  "lima": "~/Developer/syd-guard/examples/lima/landlock.yaml",
+  "landlock": {
+    "enabled": true,
+    "read": ["/work/datasets", "/work/reference"],
+    "write": ["/work/projects", "/work/cache"]
+  },
+  "keepOnVM": ["node_modules", ".venv", "target"]
+}
