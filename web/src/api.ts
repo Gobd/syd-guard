@@ -43,8 +43,9 @@ export interface Session {
   learn: boolean;
   pid: number;
   started: string;
-  status: "applied" | "updating" | "unknown" | "restart-required";
+  status: "applied" | "updating" | "unknown";
   landlock?: { enabled: boolean; read?: string[]; write?: string[] };
+  outsideCeiling?: string[];
   lastError?: string;
   dnsAddr?: string;
   overlays?: string[];
@@ -140,6 +141,7 @@ interface ApplyResult {
   session: string;
   applied: boolean;
   error?: string;
+  note?: string;
 }
 
 export interface EditResult {
@@ -184,7 +186,7 @@ export function describe(res: EditResult): string {
     list?.forEach((s) =>
       lines.push(
         s.applied
-          ? `✓ applied live to ${vm}session ${s.session.slice(0, 6)}`
+          ? `✓ applied live to ${vm}session ${s.session.slice(0, 6)}${s.note ? ` (${s.note})` : ""}`
           : `✗ NOT applied to ${vm}session ${s.session.slice(0, 6)}: ${s.error}`,
       ),
     );

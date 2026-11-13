@@ -92,8 +92,13 @@ try:
     def edit(op, kind, pattern, expected=200):
         return api("/api/" + op, {"scope": "rules", "file": rules, "kind": kind, "pattern": pattern}, expected)
 
-    result = edit("allow", "read", str(outside) + "/***", 400)
-    assert "Landlock ceiling" in result["error"], result
+    # Outside the ceiling: saved (it applies to new sessions with a wider
+    # ceiling), not applied to this one, listed on the session, and the
+    # session keeps accepting other live edits below.
+    result = edit("allow", "read", str(outside) + "/***")
+    assert all("outside this session's Landlock ceiling" in s.get("note", "") for s in result["sessions"]), result
+    assert any(str(outside) in r for r in api("/api/state")["sessions"][0].get("outsideCeiling", [])), "not listed on the session"
+    assert (project / ".sydguard.json").read_text().count(str(outside)) == 1, "outside grant not saved"
     for kind, marker in [("read", "read-ok"), ("write", "write-ok")]:
         result = edit("allow", kind, str(inside) + "/***")
         assert all(s["applied"] for s in result["sessions"]), result
@@ -135,7 +140,7 @@ print("probe passed")
     if learned.exists():
         assert str(outside) not in learned.read_text(), "kernel-denied operations became learned grants"
     passed = True
-    print("PASS: opt-in ceiling, blocked outside grant, live read/write, same-PID revocation/restart, build overlays, learn-mode kernel enforcement, explicit disable")
+    print("PASS: opt-in ceiling, outside grant saved-not-applied, live read/write, same-PID revocation/restart, build overlays, learn-mode kernel enforcement, explicit disable")
 finally:
     if proc.poll() is None:
         os.killpg(proc.pid, signal.SIGKILL)

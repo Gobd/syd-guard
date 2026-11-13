@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
 func TestLandlockCeiling(t *testing.T) {
@@ -83,5 +85,29 @@ func TestLandlockRootValidation(t *testing.T) {
 	}
 	if err := ceiling.Check("write", project+"/***"); err != nil {
 		t.Fatal("project baseline not inside ceiling", err)
+	}
+}
+
+// A saved rule outside the ceiling is skipped for the session, not fatal.
+func TestCompileSkipsRulesOutsideCeiling(t *testing.T) {
+	project := t.TempDir()
+	inside := t.TempDir()
+	in := ProfileInput{
+		Project: project, IPC: "@x", ProxyPort: 4000, Protect: ProtectedFor(project),
+		Landlock: Landlock{Enabled: true, Read: []string{inside}},
+		// Home isn't in the baseline (unlike /opt, /tmp): outside the ceiling.
+		Rules: []Rules{{Read: []string{inside + "/***", system.Home() + "/.sydguard-outside-test/***"}}},
+	}
+	resolved, err := ResolveLandlock(in.Landlock, project, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Landlock = resolved
+	prof, err := CompileProfile(in)
+	if err != nil {
+		t.Fatalf("session must still start: %v", err)
+	}
+	if !strings.Contains(prof, inside+"/***") || strings.Contains(prof, ".sydguard-outside-test") {
+		t.Errorf("inside rule must be applied, outside rule skipped:\n%s", prof)
 	}
 }

@@ -561,8 +561,7 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
                     ? "warn"
                     : x.status === "applied"
                       ? "ok"
-                      : x.status === "unknown" ||
-                          x.status === "restart-required"
+                      : x.status === "unknown"
                         ? "warn"
                         : "plain"
                 ]
@@ -630,11 +629,17 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
             </details>
           )}
           {x.network && <Connections connections={x.connections ?? []} />}
+          {(x.outsideCeiling ?? []).length > 0 && (
+            <div class={s.warn}>
+              Saved, but outside this session's Landlock ceiling (they apply to
+              new sessions with a wider ceiling):{" "}
+              {(x.outsideCeiling ?? []).map(short).join(", ")}
+            </div>
+          )}
           {x.lastError && (
             <div class={s.warn}>
-              {x.status === "restart-required"
-                ? `New session required: ${x.lastError}`
-                : `last update failed: ${x.lastError} — policy state unknown; restart this agent`}
+              last update failed: {x.lastError} — policy state unknown; restart
+              this agent
             </div>
           )}
         </div>

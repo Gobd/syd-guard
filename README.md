@@ -106,9 +106,12 @@ without restarting. To opt in, add this to your **machine config**:
 - Paths refer to the **execution machine**. With Lima, use Linux guest paths
   (and `~` is the guest home). See the [paired Lima example](examples/README.md#lima-landlock-example)
   for host-to-guest mounts and multiple read/write roots.
-- Approvals and revocations inside the ceiling remain live. Requests outside
-  it are rejected with a new-session explanation; changing config or restarting
-  the daemon cannot widen an existing session. The Sessions UI shows its roots.
+- Approvals and revocations inside the ceiling remain live. A rule outside a
+  session's ceiling is still saved, so new sessions with a wide enough ceiling
+  use it, but it isn't applied to that session, which lists it in the UI and
+  keeps accepting other live edits. Sessions start even when saved rules exceed
+  their ceiling (those rules are skipped and listed). Changing config or
+  restarting the daemon cannot widen an existing session. The UI shows its roots.
 - `--landlock` enables it for one run; `--landlock=false` explicitly disables it.
   Learn mode cannot bypass an enabled ceiling or learn grants for blocked paths.
 - Requires Landlock ABI 3+; unsupported kernels fail closed when it is requested.

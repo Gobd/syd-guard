@@ -31,29 +31,31 @@ import (
 )
 
 const (
-	statusApplied         = "applied"
-	statusUpdating        = "updating"
-	statusUnknown         = "unknown"          // a live update failed or timed out; edits stop
-	statusRestartRequired = "restart-required" // saved policy exceeds immutable ceiling
+	statusApplied  = "applied"
+	statusUpdating = "updating"
+	statusUnknown  = "unknown" // a live update failed or timed out; edits stop
 )
 
 type Session struct {
-	Landlock    policy.Landlock `json:"landlock,omitempty"`
-	ID          string          `json:"id"`
-	Project     string          `json:"project"`
-	RulesFile   string          `json:"rulesFile"`
-	Cwd         string          `json:"cwd"`
-	Cmd         []string        `json:"cmd"`
-	Learn       bool            `json:"learn"`
-	PID         int             `json:"pid"`
-	IPC         string          `json:"ipc"`
-	ProxyPort   int             `json:"proxyPort"` // legacy wire name; command broker only
-	DNSAddr     string          `json:"dnsAddr,omitempty"`
-	Network     bool            `json:"network,omitempty"` // isolated TUN/gVisor namespace
-	Connections []Connection    `json:"connections,omitempty"`
-	LocalPorts  []int           `json:"localPorts,omitempty"`
-	Overlays    []string        `json:"overlays,omitempty"` // build dirs kept on the VM disk
-	Ports       []PortView      `json:"ports,omitempty"`    // dev servers mirrored onto the VM's loopback
+	Landlock policy.Landlock `json:"landlock,omitempty"`
+	// Saved rules this session can't use: outside its fixed Landlock ceiling.
+	// They apply to new sessions with a wide enough ceiling.
+	OutsideCeiling []string     `json:"outsideCeiling,omitempty"`
+	ID             string       `json:"id"`
+	Project        string       `json:"project"`
+	RulesFile      string       `json:"rulesFile"`
+	Cwd            string       `json:"cwd"`
+	Cmd            []string     `json:"cmd"`
+	Learn          bool         `json:"learn"`
+	PID            int          `json:"pid"`
+	IPC            string       `json:"ipc"`
+	ProxyPort      int          `json:"proxyPort"` // legacy wire name; command broker only
+	DNSAddr        string       `json:"dnsAddr,omitempty"`
+	Network        bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
+	Connections    []Connection `json:"connections,omitempty"`
+	LocalPorts     []int        `json:"localPorts,omitempty"`
+	Overlays       []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
+	Ports          []PortView   `json:"ports,omitempty"`    // dev servers mirrored onto the VM's loopback
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
@@ -157,15 +159,7 @@ func (d *Daemon) adoptSessions() {
 			continue
 		}
 		s.Status = statusApplied
-		for _, rules := range []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)} {
-			for _, kind := range []string{"read", "write"} {
-				for _, p := range *rules.List(kind) {
-					if err := s.Landlock.Check(kind, p); err != nil {
-						s.Status, s.LastError = statusRestartRequired, err.Error()
-					}
-				}
-			}
-		}
+		s.OutsideCeiling = outsideCeiling(s.Landlock, d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile))
 		d.startQueue(&s)
 		d.sessions[s.ID] = &s
 		log.Printf("adopted session %s (%s)", s.ID, s.Project)
@@ -426,6 +420,7 @@ func (d *Daemon) register(s *Session) (any, error) {
 		}
 	}
 	in.Landlock = s.Landlock
+	s.OutsideCeiling = outsideCeiling(s.Landlock, in.Rules...)
 	profile, err := policy.CompileProfile(in)
 	if err != nil {
 		d.stopServers(s)
@@ -500,14 +495,10 @@ func (d *Daemon) startQueue(s *Session) {
 		for op := range s.queue {
 			d.mu.Lock()
 			status := s.Status
-			if status != statusUnknown && status != statusRestartRequired {
+			if status != statusUnknown {
 				s.Status = statusUpdating
 			}
 			d.mu.Unlock()
-			if status == statusRestartRequired {
-				op.done <- errors.New("saved policy exceeds this session's Landlock ceiling; start a new session")
-				continue
-			}
 			if status == statusUnknown {
 				op.done <- errors.New("session policy state unknown after an earlier failed update; restart the agent to resync")
 				continue
@@ -530,6 +521,37 @@ type applyResult struct {
 	Session string `json:"session"`
 	Applied bool   `json:"applied"`
 	Error   string `json:"error,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+// withinCeiling drops path rules a session's Landlock ceiling can't allow.
+func withinCeiling(l policy.Landlock, r policy.Rules) policy.Rules {
+	if !l.Enabled {
+		return r
+	}
+	out := r.Clone()
+	for _, kind := range []string{"read", "write"} {
+		*out.List(kind) = slices.DeleteFunc(*out.List(kind), func(p string) bool { return l.Check(kind, p) != nil })
+	}
+	return out
+}
+
+// outsideCeiling lists saved path rules that a session's ceiling excludes.
+func outsideCeiling(l policy.Landlock, rules ...policy.Rules) []string {
+	if !l.Enabled {
+		return nil
+	}
+	var out []string
+	for _, r := range rules {
+		for _, kind := range []string{"read", "write"} {
+			for _, p := range *r.List(kind) {
+				if l.Check(kind, p) != nil {
+					out = append(out, kind+" "+p)
+				}
+			}
+		}
+	}
+	return slices.Compact(slices.Sorted(slices.Values(out)))
 }
 
 // pushOne applies Syd commands to one session, followed by its protection
@@ -698,13 +720,6 @@ func (d *Daemon) allow(req api.EditReq) (any, error) {
 	if err := prot.Check(req.Kind, pattern); err != nil {
 		return nil, err
 	}
-	// Do not save a grant while presenting it as effective in a live session
-	// whose immutable kernel ceiling prevents it.
-	for _, s := range d.sessionsFor(scopeFile(req, file)) {
-		if err := s.Landlock.Check(req.Kind, pattern); err != nil {
-			return nil, err
-		}
-	}
 	before, after, err := d.store.Edit(file, policy.AddRule(req.Kind, pattern))
 	if err != nil {
 		return nil, err
@@ -740,21 +755,25 @@ func (d *Daemon) applyChange(rulesFile string, before, after policy.Rules) []app
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cmds := policy.DiffCommands(before, after)
+			// Only what fits inside this session's Landlock ceiling reaches Syd;
+			// the rest stays saved and is listed on the session.
+			cmds := policy.DiffCommands(withinCeiling(s.Landlock, before), withinCeiling(s.Landlock, after))
 			if s.network != nil && networkRulesRemoved(before, after) {
 				s.network.revoke()
 			}
+			note := ""
+			d.mu.Lock()
+			s.OutsideCeiling = outsideCeiling(s.Landlock, d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile))
 			for _, kind := range []string{"read", "write"} {
 				for _, p := range *after.List(kind) {
-					if err := s.Landlock.Check(kind, p); err != nil {
-						d.mu.Lock()
-						s.Status, s.LastError = statusRestartRequired, err.Error()
-						d.mu.Unlock()
-						results[i] = applyResult{Session: s.ID, Error: err.Error()}
-						d.events.Notify()
-						return
+					if !slices.Contains(*before.List(kind), p) && s.Landlock.Check(kind, p) != nil {
+						note = "saved, but outside this session's Landlock ceiling: it applies to new sessions with a wide enough ceiling"
 					}
 				}
+			}
+			d.mu.Unlock()
+			if note != "" {
+				defer func() { results[i].Note = note }()
 			}
 			if len(cmds) == 0 {
 				results[i] = applyResult{Session: s.ID, Applied: true}
@@ -808,7 +827,7 @@ func (d *Daemon) resolveAdded(before, after policy.Rules, rulesFile string) {
 			}
 			for k, c := range d.cards {
 				if (rulesFile == "" || c.RulesFile == rulesFile) && covers(kind, p, c) {
-					if s := d.sessions[c.Session]; s != nil && (s.Status == statusRestartRequired || s.Landlock.Check(kind, p) != nil) {
+					if s := d.sessions[c.Session]; s != nil && s.Landlock.Check(kind, p) != nil {
 						continue
 					}
 					d.resolveLocked(k, kind != "ignore")

@@ -502,8 +502,8 @@ func CompileProfile(in ProfileInput) (string, error) {
 				if err != nil || in.Protect.Check(k, norm) != nil {
 					continue // invalid or unsafe rules never reach Syd
 				}
-				if err := in.Landlock.Check(k, norm); err != nil {
-					return "", err
+				if in.Landlock.Check(k, norm) != nil {
+					continue // outside this session's ceiling: listed on the session instead
 				}
 				lines = append(lines, SydCommands(k, norm, "+")...)
 			}

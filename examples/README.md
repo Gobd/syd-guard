@@ -68,9 +68,9 @@ read. Paths are resolved at session startup, including symlinks.
 starts with its usual narrow permissions. Approving a read/write inside the
 ceiling works live, as does revocation of Syd grants. A wider ceiling requires
 changing config and starting a **new session**; daemon restart does not widen it.
-Outside-ceiling live approvals are rejected rather than saved as applied.
-Trusted rules-file changes that exceed the ceiling mark the session
-`restart-required`.
+Approvals (and trusted rules-file changes) outside a session's ceiling are
+saved but not applied to that session: it lists them as outside its ceiling and
+keeps working; new sessions with a wide enough ceiling use them.
 
 The ceiling automatically includes the existing Syd baseline: system/runtime
 reads, the current project and temporary directories for read/write, launch
