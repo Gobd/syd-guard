@@ -61,6 +61,51 @@ approval. Parent independently rehashed candidate and ran existing ordinary-user
 TestEngineStaticSydMetadataIntegration against it: PASS with UNCHANGED validator.
 No runtime mutation/enabling or Root engine replacement occurred.
 
+Latest source state (unmerged isolated worktrees):
+- Bank compiler745ce315 adds internal/syd/live_bank.go/tests at4819fb2, explicit
+  abort digest/startup banks/lock:ipc/typed inventory and exact receipt ledger.
+  No launcher/IPC/UI/ceilings activated. Review217b4302 BLOCKED startup chdir/readlink
+  missing, unknown ACK not quarantined and 108-byte socket grammar bound. Repair
+  154b9e41 addressed all three + stronger source models; rereviewd2886d2d accepted
+  repaired WORKTREE source, not older staged snapshots. Actual generated-batch
+  ordinary candidate-only qualification ab558025 PASSED: engine261336/same shell
+  PID261337, default deny -> generated fullA/fullB actual read/write/create/rename/
+  unlink/lookup -> exact read-only A -> empty B revoke -> intentional failed prefix
+  (155 genuine generated commands beforefinalmove) returnedEINVAL and defaultdeny;
+  ledgerquarantined. dummy.env/.ssh chdir/readlink/privatecontrol read/connect denied
+  everyphase with71KB engine denial evidence hash. LostACK separate modelonly.
+  Fixture-only owned startup LLceiling, no production widening/auth/fullflow proof.
+  Reviewed repaired compiler/tests + opt-in runtimefixture now applied main tree;
+  parent native race/vet PASS. Handwritten prior fixture NOTcounted as compilerproof.
+- Parent NFT review7f123c05 BLOCKED first transport: dependency FD0 sentinel,
+  socket v0.5 callback swallowed creation errors, cancellation/origin correlation,
+  malformed zero-length attributes. Parent replaced namespace dial with owned
+  positive FD and disposable locked thread, raw bounded context-poll unix socket,
+  real sender PID0 + exact headerPID/sequence and raw attribute framing checks.
+  Codec/origin/cancel tests actual ordinary Linux PASS; reviewda8daf25 accepted these
+  NFT source repairs, still requires real-kernel exchange tests. It BLOCKED route SDK:
+  restore failure ignored/thread contamination, init FD ownership/finalizer bugs and
+  percall timeout/cancel mismatch. Parent copied pristine vishvananda1.3.1 to local
+  third_party/netlink (global cache untouched) and go.mod replace; narrow documented
+  Go-library repair + owned/disposable/context-aware route wrapper active ed3e74c4/task1.
+  This is NOT a Syd enforcement-source fork. Parent pauses network worktree writes
+  while that sole repair writer runs. Repairfd2b420e completed owned/disposable
+  current-namespace constructor, transaction-wide cancellation, safe private closed-
+  socket retention/no fallback, init ownership fixes + PATCHES.md. Parent executed
+  ordinary Linux ALL helper and selected safe nested SDK failure/finalizer/closed
+  scope tests: PASS. Rereviewbb1040a7 accepted source repairs withP2 testdeadline
+  weakness; parent fixedassert againstORIGINAL deadline+200ms (not1.5ssecondcall)
+  andactualordinaryLinux testpassed3times at~1.0s. New library tests have NOT
+  established real Root namespace/veth/kernel behavior.
+- Parent network_links_linux.go now has real anonymous netns creation and DOWN
+  veth creation across pinned namespace FDs, scoped index/MAC/peer verification and
+  deletion by index. SOURCE ONLY; no privileged call exercised, firewall/activation/
+  watchdog namespace ACK/broker/heartbeat/Syd/CLI still missing. Reviewed files are
+  frozen during current read-only review. Neither source slice is ready to install.
+- Parent ordinary helper test binary/temp owned fixture is recorded at guest
+  ~/.sydguard-network-unpriv-parent-path; no Root/static-engine install there.
+
+
 Unintended guest global rustup nightly install occurred during an intended read-only
 `target list --toolchain nightly` probe. Worker stopped/reported, stable default is
 unchanged. Retain identity for parent-reviewed cleanup: guest ~/.rustup/toolchains/
