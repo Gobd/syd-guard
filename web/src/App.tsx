@@ -466,67 +466,89 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
         {c.cmd && ` · ${c.cmd}`}
       </div>
       {c.note && <div class={s.mute}>{c.note}</div>}
-      <div class={s.opts}>
-        {c.options.map((o) => (
+      {c.overlay && (
+        <div class={s.row}>
           <button
             type="button"
-            key={o}
-            class={o === pattern ? s.optSelected : s.opt}
-            onClick={() => setPattern(o)}
+            class={s.primary}
+            title="Mount VM-local storage over this folder in every session of this project, now and later. Any host copy is hidden, not deleted."
+            onClick={() => act("overlay", { vm, scope: "rules", card: c.id })}
           >
-            {short(o)}
+            Keep on VM
           </button>
-        ))}
-      </div>
-      <div class={s.row}>
-        <input
-          class={s.grow}
-          value={pattern}
-          onInput={(e) => setPattern(e.currentTarget.value)}
-        />
-        {(c.kind === "read" || c.kind === "write") && (
-          <Toggle
-            value={kind}
-            onChange={setKind}
-            options={[
-              ["read", "Read"],
-              ["write", "Read + write"],
-            ]}
-          />
-        )}
-        <Toggle
-          value={scope}
-          onChange={setScope}
-          options={[
-            ["rules", "This project"],
-            ["global", "All projects"],
-          ]}
-          title={`this project = ${base(c.rulesFile)}`}
-        />
-        <button
-          type="button"
-          class={s.primary}
-          onClick={() => act("allow", { ...req, kind, pattern })}
-        >
-          Allow
-        </button>
-        <button
-          type="button"
-          onClick={() => act("dismiss", { vm, scope: "rules", card: c.id })}
-        >
-          {c.learned ? "Skip" : "Deny"}
-        </button>
-        <button
-          type="button"
-          class={s.link}
-          title="deny and never ask again"
-          onClick={() =>
-            act("allow", { ...req, kind: "ignore", pattern: denyPattern })
-          }
-        >
-          deny always
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => act("dismiss", { vm, scope: "rules", card: c.id })}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {!c.overlay && (
+        <>
+          <div class={s.opts}>
+            {c.options.map((o) => (
+              <button
+                type="button"
+                key={o}
+                class={o === pattern ? s.optSelected : s.opt}
+                onClick={() => setPattern(o)}
+              >
+                {short(o)}
+              </button>
+            ))}
+          </div>
+          <div class={s.row}>
+            <input
+              class={s.grow}
+              value={pattern}
+              onInput={(e) => setPattern(e.currentTarget.value)}
+            />
+            {(c.kind === "read" || c.kind === "write") && (
+              <Toggle
+                value={kind}
+                onChange={setKind}
+                options={[
+                  ["read", "Read"],
+                  ["write", "Read + write"],
+                ]}
+              />
+            )}
+            <Toggle
+              value={scope}
+              onChange={setScope}
+              options={[
+                ["rules", "This project"],
+                ["global", "All projects"],
+              ]}
+              title={`this project = ${base(c.rulesFile)}`}
+            />
+            <button
+              type="button"
+              class={s.primary}
+              onClick={() => act("allow", { ...req, kind, pattern })}
+            >
+              Allow
+            </button>
+            <button
+              type="button"
+              onClick={() => act("dismiss", { vm, scope: "rules", card: c.id })}
+            >
+              {c.learned ? "Skip" : "Deny"}
+            </button>
+            <button
+              type="button"
+              class={s.link}
+              title="deny and never ask again"
+              onClick={() =>
+                act("allow", { ...req, kind: "ignore", pattern: denyPattern })
+              }
+            >
+              deny always
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

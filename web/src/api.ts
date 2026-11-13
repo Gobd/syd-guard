@@ -15,6 +15,7 @@ export interface Card {
   waiting: number;
   options: string[];
   note?: string;
+  overlay?: string;
 }
 
 export interface Connection {
@@ -163,7 +164,8 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const getState = () => call<State>("/api/state");
-export type Op = "allow" | "remove" | "dismiss" | "trust" | "forget";
+export type Op =
+  "allow" | "remove" | "dismiss" | "trust" | "forget" | "overlay";
 export const edit = (op: Op, req: EditRequest) =>
   call<EditResult>(`/api/${op}`, req);
 export const decideCommand = (d: CommandDecision) =>

@@ -408,15 +408,18 @@ type ProfileInput struct {
 	DNS        string // session resolver address
 	ResolvConf string // file bind-mounted over /etc/resolv.conf
 	Overlays   []Overlay
-	LocalPorts []int    // loopback ports of trusted helpers the agent may use
-	PassEnv    []string // env var names to keep (Syd strips some by default)
-	Project    string
-	Rules      []Rules
-	Launch     []string
-	Protect    Protection
-	ProxyPort  int
-	IPC        string
-	Learn      bool
+	// keepOnVM names: read-only below OverlayRoots unless one of Overlays backs them.
+	OverlayNames []string
+	OverlayRoots []string
+	LocalPorts   []int    // loopback ports of trusted helpers the agent may use
+	PassEnv      []string // env var names to keep (Syd strips some by default)
+	Project      string
+	Rules        []Rules
+	Launch       []string
+	Protect      Protection
+	ProxyPort    int
+	IPC          string
+	Learn        bool
 }
 
 // CompileProfile builds the Syd profile for one session.
@@ -517,6 +520,11 @@ func CompileProfile(in ProfileInput) (string, error) {
 		return "", err
 	}
 	lines = append(lines, lockCommands...)
+	var mounted []string
+	for _, o := range in.Overlays {
+		mounted = append(mounted, o.Target)
+	}
+	lines = append(lines, OverlayGuards(in.OverlayRoots, in.OverlayNames, mounted)...)
 	lines = append(lines, in.Protect.Commands()...)
 	lines = append(lines, "ipc:"+in.IPC, "lock:ipc")
 	return strings.Join(lines, "\n") + "\n", nil

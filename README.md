@@ -216,7 +216,13 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 - **Build folders stay in the VM** (`keepOnVM` in the config): `node_modules` next to every `package.json`,
   `.venv` (Python) and `target` (Rust) are bind-mounted from the VM's disk, so
   `npm install` and friends never write Linux binaries or install scripts' output
-  into your host's project tree (the host sees an empty folder).
+  into your host's project tree (the host sees an empty folder). Anywhere on a
+  host share (e.g. `~/Developer`, whichever grant made it writable), a keepOnVM
+  folder can't be created or changed until VM storage backs it: the write fails,
+  the UI shows **Keep on VM**, and after one click the retried command works —
+  live, in every running session that can write there, and in all later ones.
+  The VM's own disk (`~/.npm`, `/tmp`) is unaffected. Best effort: it keeps
+  ordinary installs off the host, not a determined agent that moves folders.
 
 ## How it works
 
@@ -284,6 +290,7 @@ never starts or creates a VM. With `--backend native` it checks this machine.
 make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
 scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
+scripts/overlay-e2e.sh     # inside the VM: live keepOnVM overlays on the host share
 python3 scripts/network-e2e.py /path/to/sydguard # Linux: real TLS, TCP/UDP, restart + live IPC
 E2E_LANDLOCK=1 python3 scripts/network-e2e.py /path/to/sydguard # same with ceiling enabled
 python3 scripts/landlock-e2e.py /path/to/sydguard # Linux: live grants, revocation, kernel enforcement
