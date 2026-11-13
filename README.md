@@ -56,6 +56,8 @@ sydguard vm stop [NAME...]        shut down VMs (all running by default; --force
 sydguard status                   overview of all of the above
 sydguard doctor | setup           check / install the pinned Syd engine
 sydguard cmd ...                  (inside the sandbox) host commands, see below
+sydguard overlay add PATH         (inside the sandbox) prepare a build-folder overlay
+sydguard overlay add --session ID PATH  operator, on the execution machine
 ```
 
 Background processes: the **UI server** runs on the machine where you type
@@ -80,11 +82,14 @@ over the config.
 ```
 
 `env` values are passed to every agent; `file:` values are read from files the
-sandbox can't see. `keepOnVM` lists folders that live on the VM's own disk instead
-of in your project folder (default `node_modules`, `.venv`, `target`): installs and
-builds inside the VM never write Linux binaries or install-script output into the
-host's copy of the project, which just sees an empty folder. With a VM, the needed parts (resolved) are copied into the VM's
-own protected config dir before each run.
+sandbox can't see. `keepOnVM` is machine-wide only (no per-project rules-file setting or CLI
+override). It lists build/dependency folders to overlay with
+VM-local storage (default `node_modules`, `.venv`, `target`). Writes inside those
+overlays do not reach the host's copy; existing host contents are hidden, not
+removed. This is not isolation for install scripts: they can still write elsewhere
+in the writable project. See the discovery limits under [Rules](#rules).
+With a VM, the needed config parts (resolved) are copied into the VM's own
+protected config dir before each run.
 
 ## Optional Landlock filesystem ceiling
 
@@ -213,10 +218,49 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 - **Integrity**: only rules content sydguard wrote or you trusted is used. A file
   changed elsewhere (editor, `git pull`, clone, a hard link) is shown in the UI /
   terminal and ignored until trusted; files with extra hard links are refused.
-- **Build folders stay in the VM** (`keepOnVM` in the config): `node_modules` next to every `package.json`,
-  `.venv` (Python) and `target` (Rust) are bind-mounted from the VM's disk, so
-  `npm install` and friends never write Linux binaries or install scripts' output
-  into your host's project tree (the host sees an empty folder).
+- **Deny-first build folders** (`keepOnVM`): configured names are reserved. Syd
+  denies access (including creation, symlinks and `O_PATH` handles) until the
+  directory is backed by a verified overlay. The daemon handles the denial,
+  locks the path against renames, installs the mount, then releases access through
+  Syd's IPC. The first operation fails: **retry after preparation completes**.
+  New packages under an already-writable directory are covered too; no new write
+  approval is needed. A failed mount leaves access denied, never falling back to
+  host storage. Sessions predating these guards must be restarted.
+- **Discovery and manifests:** existing build folders are prepared at startup
+  and before live write grants. Manifests also prepare missing `node_modules`
+  (`package.json`) and `.venv` (Python manifests). Automatic `target` preparation
+  requires `Cargo.toml` or a previous explicit overlay request. An ordinary
+  folder named `target` no longer silently bypasses protection: force an overlay
+  or remove `target` from the machine's `keepOnVM` list and start a new session.
+  Existing symlinks/files at reserved names are refused. Scans skip `.git` and
+  build folders, with a 20,000-entry bound and 256 mounts per session; exceeding
+  either limit fails visibly. Rules outside Landlock's ceiling stay skipped.
+- **Force preparation:** click **Create overlay** on a denial card, or run
+  `sydguard overlay add ./node_modules` (also `.venv`, `target`, other configured
+  names). This works without a manifest, waits for verification, and does not
+  grant permissions: a literal recursive write grant for that folder or an
+  ancestor is required. Operators can use
+  `sydguard overlay add --session ID /absolute/path` on the execution machine,
+  including via `sydguard vm -- ...`. Forced overlays are reused on later runs.
+  Mounts survive daemon restarts; revocation withdraws access without unmounting
+  them or revealing old host contents. This session cannot rename/delete mounted
+  folders or their ancestors, to prevent stale-path exemptions.
+- **Installed toolchains:** authorized read/execute access to existing agent
+  installations inside `node_modules` remains available without hiding them
+  behind empty mounts. Once exposed read-only, that tree stays non-writable for
+  the session; converting it to a writable overlay requires a new session, so
+  old directory handles cannot bypass mounting. The Sessions UI lists these roots.
+- **Scope and limits:** this protects configured output paths inside new guarded
+  sessions, not every host file. Scripts can still write other approved paths,
+  including through links into writable source directories. Other host processes
+  or sandboxes can change shared paths outside a session's enforcement; avoid
+  concurrent external moves of mounted ancestors. Existing host contents are
+  hidden, not copied or deleted. Mounts cannot redirect pre-existing handles;
+  deny-first guards prevent acquiring those handles before preparation in new
+  sessions. For no direct host-tree writes, use a VM-local checkout and explicitly
+  export changes. Native overlays are local storage, not a VM boundary. Mounting
+  uses a Go-only helper and Linux `open_tree`/`move_mount` (5.2+), without a Python
+  runtime dependency or host-root mount privileges.
 
 ## How it works
 
@@ -280,6 +324,10 @@ never starts or creates a VM. With `--backend native` it checks this machine.
 
 ## Development
 
+Use **Bun canary** (`bun upgrade --canary`): native `bun lint`, `bun fmt` and
+`bun check` are not available in stable 1.4.4. CI uses canary too; the check script
+rejects stable Bun before its package scripts can recurse.
+
 ```sh
 make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
@@ -287,6 +335,8 @@ scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
 python3 scripts/network-e2e.py /path/to/sydguard # Linux: real TLS, TCP/UDP, restart + live IPC
 E2E_LANDLOCK=1 python3 scripts/network-e2e.py /path/to/sydguard # same with ceiling enabled
 python3 scripts/landlock-e2e.py /path/to/sydguard # Linux: live grants, revocation, kernel enforcement
+python3 scripts/dynamic-overlay-e2e.py /path/to/sydguard # live mounts, broker, restart, failed grants
+E2E_LANDLOCK=1 python3 scripts/dynamic-overlay-e2e.py /path/to/sydguard
 ```
 
 Layout: `cmd/sydguard` (CLI, urfave/cli v3); `internal/policy` (rules, trust,

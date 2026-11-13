@@ -15,6 +15,7 @@ export interface Card {
   waiting: number;
   options: string[];
   note?: string;
+  overlayPath?: string;
 }
 
 export interface Connection {
@@ -49,6 +50,9 @@ export interface Session {
   lastError?: string;
   dnsAddr?: string;
   overlays?: string[];
+  dynamicOverlays?: string[];
+  overlayGuarded?: boolean;
+  overlayReadOnly?: string[];
   ports?: { port: number; exposed: boolean; error?: string }[];
   network?: boolean;
   connections?: Connection[];
@@ -133,6 +137,8 @@ export interface EditRequest {
   card?: string;
   scope: "rules" | "global";
   file?: string;
+  session?: string;
+  path?: string;
   kind?: Kind;
   pattern?: string;
 }
@@ -163,7 +169,8 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const getState = () => call<State>("/api/state");
-export type Op = "allow" | "remove" | "dismiss" | "trust" | "forget";
+export type Op =
+  "allow" | "remove" | "dismiss" | "trust" | "forget" | "overlay";
 export const edit = (op: Op, req: EditRequest) =>
   call<EditResult>(`/api/${op}`, req);
 export const decideCommand = (d: CommandDecision) =>

@@ -75,7 +75,7 @@ func (c Config) validate() error {
 		return fmt.Errorf("%s: %w", Path(), err)
 	}
 	for _, o := range c.Overlays {
-		if o == "" || strings.ContainsAny(o, "/:") || o == "." || o == ".." || o == ".git" {
+		if !policy.ValidOverlayName(o) {
 			return fmt.Errorf("%s: keepOnVM entries must be plain folder names, got %q", Path(), o)
 		}
 	}

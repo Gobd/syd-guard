@@ -466,6 +466,26 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
         {c.cmd && ` · ${c.cmd}`}
       </div>
       {c.note && <div class={s.mute}>{c.note}</div>}
+      {c.overlayPath && (
+        <div class={s.row}>
+          <button
+            type="button"
+            class={s.primary}
+            title="Force a verified overlay, even without a manifest. Existing contents are hidden; this does not grant write access."
+            onClick={() =>
+              act("overlay", {
+                vm,
+                scope: "rules",
+                session: c.session,
+                path: c.overlayPath,
+              })
+            }
+          >
+            Create overlay
+          </button>
+          <span class={s.mute}>{short(c.overlayPath)} — then retry</span>
+        </div>
+      )}
       <div class={s.opts}>
         {c.options.map((o) => (
           <button
@@ -575,6 +595,13 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
               since {new Date(x.started).toLocaleTimeString()}
               {x.overlays?.length
                 ? ` · VM-local: ${x.overlays.join(", ")}`
+                : ""}
+              {x.dynamicOverlays?.length
+                ? ` · live overlays: ${x.dynamicOverlays.map(short).join(", ")}`
+                : ""}
+              {x.overlayGuarded ? " · deny-first overlays" : ""}
+              {x.overlayReadOnly?.length
+                ? ` · read-only toolchains: ${x.overlayReadOnly.map(short).join(", ")}`
                 : ""}
             </span>
           </div>

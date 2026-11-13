@@ -102,7 +102,7 @@ func (u *uiServer) discover() {
 		u.mu.Unlock()
 		for _, b := range list {
 			u.check(b)
-			if b.ok {
+			if u.snapshotBackend(b).ok {
 				u.pollJobs(b)
 			}
 		}
@@ -259,6 +259,27 @@ func (u *uiServer) routes() http.Handler {
 	handle("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
 	handle("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
 	u.brokerRoutes(handle)
+	handle("POST /api/overlay", func(r *http.Request) (any, error) {
+		var req struct{ VM, Session, Path string }
+		if err := api.Decode(r, &req); err != nil {
+			return nil, err
+		}
+		b := u.backend(req.VM)
+		if b == nil {
+			return nil, fmt.Errorf("VM %q isn't connected", req.VM)
+		}
+		var result struct {
+			Exit          int
+			Stdout, Error string
+		}
+		if err := api.Call(b.client, "POST", "/api/overlay", map[string]string{"Session": req.Session, "Path": req.Path}, &result); err != nil {
+			return nil, err
+		}
+		if result.Exit != 0 {
+			return nil, errors.New(result.Error)
+		}
+		return map[string]any{"note": strings.TrimSpace(result.Stdout)}, nil
+	})
 	handle("POST /api/vm", func(r *http.Request) (any, error) {
 		var req struct{ Name, Action string }
 		if err := api.Decode(r, &req); err != nil {
@@ -344,6 +365,14 @@ func (u *uiServer) editGlobal(op string, req api.EditReq) (any, error) {
 	return map[string]any{"saved": system.GlobalRulesPath(), "vms": results}, nil
 }
 
+// snapshotBackend copies mutable discovery state under the same lock used by
+// check and forward. Network requests must not hold that lock.
+func (u *uiServer) snapshotBackend(b *backend) backend {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return *b
+}
+
 func (u *uiServer) state() map[string]any {
 	u.mu.Lock()
 	list := make([]*backend, 0, len(u.backends))
@@ -359,10 +388,11 @@ func (u *uiServer) state() map[string]any {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v := map[string]any{"name": b.name, "ok": b.ok, "error": b.err}
-			if b.ok {
+			snapshot := u.snapshotBackend(b)
+			v := map[string]any{"name": snapshot.name, "ok": snapshot.ok, "error": snapshot.err}
+			if snapshot.ok {
 				var st map[string]any
-				if err := api.Call(b.client, "GET", "/api/state", nil, &st); err == nil {
+				if err := api.Call(snapshot.client, "GET", "/api/state", nil, &st); err == nil {
 					v["state"] = st
 				} else {
 					v["ok"], v["error"] = false, err.Error()

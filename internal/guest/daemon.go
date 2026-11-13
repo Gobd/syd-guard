@@ -40,22 +40,26 @@ type Session struct {
 	Landlock policy.Landlock `json:"landlock,omitempty"`
 	// Saved rules this session can't use: outside its fixed Landlock ceiling.
 	// They apply to new sessions with a wide enough ceiling.
-	OutsideCeiling []string     `json:"outsideCeiling,omitempty"`
-	ID             string       `json:"id"`
-	Project        string       `json:"project"`
-	RulesFile      string       `json:"rulesFile"`
-	Cwd            string       `json:"cwd"`
-	Cmd            []string     `json:"cmd"`
-	Learn          bool         `json:"learn"`
-	PID            int          `json:"pid"`
-	IPC            string       `json:"ipc"`
-	ProxyPort      int          `json:"proxyPort"` // legacy wire name; command broker only
-	DNSAddr        string       `json:"dnsAddr,omitempty"`
-	Network        bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
-	Connections    []Connection `json:"connections,omitempty"`
-	LocalPorts     []int        `json:"localPorts,omitempty"`
-	Overlays       []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
-	Ports          []PortView   `json:"ports,omitempty"`    // dev servers mirrored onto the VM's loopback
+	OutsideCeiling  []string     `json:"outsideCeiling,omitempty"`
+	ID              string       `json:"id"`
+	Project         string       `json:"project"`
+	RulesFile       string       `json:"rulesFile"`
+	Cwd             string       `json:"cwd"`
+	Cmd             []string     `json:"cmd"`
+	Learn           bool         `json:"learn"`
+	PID             int          `json:"pid"`
+	IPC             string       `json:"ipc"`
+	ProxyPort       int          `json:"proxyPort"` // legacy wire name; command broker only
+	DNSAddr         string       `json:"dnsAddr,omitempty"`
+	Network         bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
+	Connections     []Connection `json:"connections,omitempty"`
+	LocalPorts      []int        `json:"localPorts,omitempty"`
+	Overlays        []string     `json:"overlays,omitempty"`        // build dirs kept on the VM disk
+	Ports           []PortView   `json:"ports,omitempty"`           // dev servers mirrored onto the VM's loopback
+	DynamicOverlays []string     `json:"dynamicOverlays,omitempty"` // absolute live mount targets
+	OverlayGuarded  bool         `json:"overlayGuarded,omitempty"`
+	OverlayReadOnly []string     `json:"overlayReadOnly,omitempty"`
+	pendingOverlays map[string]bool
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
@@ -72,25 +76,28 @@ type Session struct {
 }
 
 type applyOp struct {
-	lines []string
-	done  chan error
+	lines       []string
+	overlay     string // explicit request, serialized with live policy updates
+	readOverlay string // existing toolchain: read-only for this session
+	done        chan error
 }
 
 type Card struct {
-	ID        string    `json:"id"`
-	Session   string    `json:"session"`
-	Project   string    `json:"project"`
-	RulesFile string    `json:"rulesFile"`
-	Kind      string    `json:"kind"` // read, write, connect, hosts
-	Target    string    `json:"target"`
-	Cmd       string    `json:"cmd"`
-	Count     int       `json:"count"`
-	Last      time.Time `json:"last"`
-	Learned   bool      `json:"learned"`
-	Waiting   int       `json:"waiting"` // requests/lookups paused on this card
-	Options   []string  `json:"options"`
-	Note      string    `json:"note,omitempty"`
-	waiters   []chan bool
+	ID          string    `json:"id"`
+	Session     string    `json:"session"`
+	Project     string    `json:"project"`
+	RulesFile   string    `json:"rulesFile"`
+	Kind        string    `json:"kind"` // read, write, connect, hosts
+	Target      string    `json:"target"`
+	Cmd         string    `json:"cmd"`
+	Count       int       `json:"count"`
+	Last        time.Time `json:"last"`
+	Learned     bool      `json:"learned"`
+	Waiting     int       `json:"waiting"` // requests/lookups paused on this card
+	Options     []string  `json:"options"`
+	Note        string    `json:"note,omitempty"`
+	OverlayPath string    `json:"overlayPath,omitempty"`
+	waiters     []chan bool
 }
 
 type Daemon struct {
@@ -376,6 +383,7 @@ func (d *Daemon) register(s *Session) (any, error) {
 	}
 	s.ID = system.NewID()
 	s.Network = true
+	s.OverlayGuarded = true
 	s.IPC = "@sydguard-" + s.ID + "-" + system.NewID()
 	s.Started = time.Now()
 	s.Status = statusApplied
@@ -395,9 +403,13 @@ func (d *Daemon) register(s *Session) (any, error) {
 	if err := d.startNetwork(s); err != nil {
 		return nil, err
 	}
-	s.Overlays = overlayDirs(s.Project, s.OverlayNames)
+	rules := []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)}
+	if err := initializeOverlays(s, rules); err != nil {
+		return nil, err
+	}
 	in := policy.ProfileInput{
-		Project: s.Project, Rules: []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)},
+		Project: s.Project, Rules: rules,
+		OverlayNames: s.OverlayNames, OverlayReadOnly: s.OverlayReadOnly,
 		Launch: s.Launch, Protect: policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()), ProxyPort: s.ProxyPort,
 		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts, PassEnv: s.EnvNames, Network: true,
 	}
@@ -414,10 +426,26 @@ func (d *Daemon) register(s *Session) (any, error) {
 	}
 	for _, o := range s.Overlays {
 		source := overlaySource(s.Project, o)
+		if err := ensureOverlayDir(source, false); err != nil {
+			return nil, err
+		}
 		in.Overlays = append(in.Overlays, policy.Overlay{Source: source, Target: filepath.Join(s.Project, o)})
 		if s.Landlock.Enabled {
 			s.Landlock.Write = append(s.Landlock.Write, source)
 		}
+	}
+	for _, target := range s.DynamicOverlays {
+		source := filepath.Join(dynamicOverlayRoot(), system.HashBytes([]byte(target)))
+		if err := os.MkdirAll(source, 0o700); err != nil {
+			return nil, err
+		}
+		in.Overlays = append(in.Overlays, policy.Overlay{Source: source, Target: target})
+	}
+	if s.Landlock.Enabled {
+		if err := os.MkdirAll(dynamicOverlayRoot(), 0o700); err != nil {
+			return nil, err
+		}
+		s.Landlock.Write = append(s.Landlock.Write, dynamicOverlayRoot())
 	}
 	in.Landlock = s.Landlock
 	s.OutsideCeiling = outsideCeiling(s.Landlock, in.Rules...)
@@ -503,7 +531,27 @@ func (d *Daemon) startQueue(s *Session) {
 				op.done <- errors.New("session policy state unknown after an earlier failed update; restart the agent to resync")
 				continue
 			}
-			err := sydLoad(s, op.lines)
+			var err error
+			switch {
+			case op.readOverlay != "":
+				err = d.prepareReadOverlay(s, op.readOverlay)
+			case op.overlay != "":
+				err = d.checkOverlayRequest(s, op.overlay)
+				if err == nil {
+					err = d.installOverlay(s, op.overlay)
+				}
+			default:
+				err = d.prepareWriteOverlays(s, op.lines)
+			}
+			if err == nil {
+				var guards []string
+				guards, err = d.overlayGuards(s)
+				if err == nil {
+					lines := append(slices.Clone(op.lines), guards...)
+					lines = append(lines, policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
+					err = sydLoad(s, lines)
+				}
+			}
 			d.mu.Lock()
 			if err != nil {
 				s.Status, s.LastError = statusUnknown, err.Error()
@@ -557,24 +605,33 @@ func outsideCeiling(l policy.Landlock, rules ...policy.Rules) []string {
 // pushOne applies Syd commands to one session, followed by its protection
 // denies, as one atomic batch. Never called with d.mu held.
 func (d *Daemon) pushOne(s *Session, cmds []string) applyResult {
-	lines := append(slices.Clone(cmds), policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
+	return d.enqueueUpdate(s, applyOp{lines: slices.Clone(cmds)})
+}
+
+func (d *Daemon) enqueueUpdate(s *Session, op applyOp) applyResult {
 	done := make(chan error, 1)
+	op.done = done
 	res := applyResult{Session: s.ID}
-	func() {
-		defer func() {
-			if recover() != nil { // queue closed: session ended
-				done <- errors.New("session ended")
-			}
-		}()
-		s.queue <- applyOp{lines: lines, done: done}
-	}()
+	// endLocked closes this channel under the same lock. Never race a send
+	// against close, and never block discovery while a queue is full.
+	d.mu.Lock()
+	if d.sessions[s.ID] != s || s.queue == nil {
+		done <- errors.New("session ended or not ready")
+	} else {
+		select {
+		case s.queue <- op:
+		default:
+			done <- errors.New("session update queue full; retry later")
+		}
+	}
+	d.mu.Unlock()
 	select {
 	case err := <-done:
 		res.Applied = err == nil
 		if err != nil {
 			res.Error = err.Error()
 		}
-	case <-time.After(8 * time.Second):
+	case <-time.After(30 * time.Second):
 		res.Error = "timed out; state unknown"
 	}
 	return res
@@ -827,7 +884,7 @@ func (d *Daemon) resolveAdded(before, after policy.Rules, rulesFile string) {
 			}
 			for k, c := range d.cards {
 				if (rulesFile == "" || c.RulesFile == rulesFile) && covers(kind, p, c) {
-					if s := d.sessions[c.Session]; s != nil && s.Landlock.Check(kind, p) != nil {
+					if s := d.sessions[c.Session]; s != nil && (s.Status != statusApplied || s.Landlock.Check(kind, p) != nil) {
 						continue
 					}
 					d.resolveLocked(k, kind != "ignore")
@@ -945,6 +1002,12 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 		if policy.Ignored(rules, kind, target) {
 			continue
 		}
+		if kind == "read" || kind == "write" {
+			if root := policy.OverlayTarget(s.OverlayNames, target); root != "" && s.OverlayGuarded {
+				note = "reserved build folder: waiting for a verified overlay; retry after it is ready"
+				d.queueAutomaticOverlayLocked(s, root, kind)
+			}
+		}
 		learned := e.Act == "warn"
 		dir := e.Type == "dir"
 		if err := s.Landlock.Check(kind, target); err != nil {
@@ -956,7 +1019,10 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 				target, dir = root, true
 			}
 		}
-		d.addCardLocked(s, kind, target, e.Cmd, learned, dir, note)
+		card := d.addCardLocked(s, kind, target, e.Cmd, learned, dir, note)
+		if card != nil && s.OverlayGuarded && (kind == "read" || kind == "write") {
+			card.OverlayPath = policy.OverlayTarget(s.OverlayNames, target)
+		}
 		changed = true
 	}
 	return changed

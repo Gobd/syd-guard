@@ -403,20 +403,22 @@ func Baseline(project string) []BaseRule {
 type Overlay struct{ Source, Target string }
 
 type ProfileInput struct {
-	Landlock   Landlock
-	Network    bool   // private user/mount/net namespace with daemon-owned TUN
-	DNS        string // session resolver address
-	ResolvConf string // file bind-mounted over /etc/resolv.conf
-	Overlays   []Overlay
-	LocalPorts []int    // loopback ports of trusted helpers the agent may use
-	PassEnv    []string // env var names to keep (Syd strips some by default)
-	Project    string
-	Rules      []Rules
-	Launch     []string
-	Protect    Protection
-	ProxyPort  int
-	IPC        string
-	Learn      bool
+	Landlock        Landlock
+	Network         bool   // private user/mount/net namespace with daemon-owned TUN
+	DNS             string // session resolver address
+	ResolvConf      string // file bind-mounted over /etc/resolv.conf
+	Overlays        []Overlay
+	OverlayNames    []string // reserved build-folder names, released only after mounting
+	OverlayReadOnly []string // installed toolchains; never writable this session
+	LocalPorts      []int    // loopback ports of trusted helpers the agent may use
+	PassEnv         []string // env var names to keep (Syd strips some by default)
+	Project         string
+	Rules           []Rules
+	Launch          []string
+	Protect         Protection
+	ProxyPort       int
+	IPC             string
+	Learn           bool
 }
 
 // CompileProfile builds the Syd profile for one session.
@@ -517,6 +519,57 @@ func CompileProfile(in ProfileInput) (string, error) {
 		return "", err
 	}
 	lines = append(lines, lockCommands...)
+	if len(in.OverlayNames) > 0 {
+		// O_PATH may be checked as metadata access: keep stat generally allowed,
+		// but enable enforcement so reserved directories cannot leak handles.
+		lines = append(lines, "sandbox/stat:on", "allow/stat+/***")
+		var mounted, writes []string
+		for _, o := range in.Overlays {
+			mounted = append(mounted, o.Target)
+		}
+		for _, b := range Baseline(in.Project) {
+			if b.Kind == "write" {
+				writes = append(writes, b.Pattern)
+			}
+		}
+		for _, r := range in.Rules {
+			for _, p := range r.Write {
+				if in.Landlock.Check("write", p) == nil {
+					writes = append(writes, p)
+				}
+			}
+		}
+		if in.Learn {
+			writes = append(writes, "/***")
+		}
+		guards, err := OverlayGuards(in.OverlayNames, mounted, writes)
+		if err != nil {
+			return "", err
+		}
+		lines = append(lines, guards...)
+		reads := slices.Clone(in.Launch)
+		for _, b := range Baseline(in.Project) {
+			reads = append(reads, b.Pattern)
+		}
+		for _, r := range in.Rules {
+			for _, p := range r.Read {
+				if in.Landlock.Check("read", p) == nil {
+					reads = append(reads, p)
+				}
+			}
+			for _, p := range r.Write {
+				if in.Landlock.Check("write", p) == nil {
+					reads = append(reads, p)
+				}
+			}
+		}
+		if in.Learn {
+			reads = append(reads, "/***")
+		}
+		for _, root := range in.OverlayReadOnly {
+			lines = append(lines, OverlayReadGuards(root, reads)...)
+		}
+	}
 	lines = append(lines, in.Protect.Commands()...)
 	lines = append(lines, "ipc:"+in.IPC, "lock:ipc")
 	return strings.Join(lines, "\n") + "\n", nil

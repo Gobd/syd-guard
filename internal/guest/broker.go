@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -67,6 +68,25 @@ const jobTimeout = 15 * time.Minute
 // serveBroker handles requests to the session's SG_BROKER endpoint.
 func (d *Daemon) serveBroker(s *Session, w http.ResponseWriter, r *http.Request) {
 	op := strings.Trim(r.URL.Path, "/")
+	if op == "overlay" {
+		var req CmdRequest
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := d.requestOverlay(s, req.Name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
+		return
+	}
 	if op != "list" && op != "run" && op != "propose" {
 		http.Error(w, "unknown broker operation", http.StatusNotFound)
 		return
@@ -112,6 +132,19 @@ func (d *Daemon) serveBroker(s *Session, w http.ResponseWriter, r *http.Request)
 
 // jobRoutes are used by the UI server.
 func (d *Daemon) jobRoutes(mux *http.ServeMux) {
+	api.Handle(mux, "POST /api/overlay", func(r *http.Request) (any, error) {
+		var req struct{ Session, Path string }
+		if err := api.Decode(r, &req); err != nil {
+			return nil, err
+		}
+		d.mu.Lock()
+		s := d.sessions[req.Session]
+		d.mu.Unlock()
+		if s == nil {
+			return nil, errors.New("no such session")
+		}
+		return d.requestOverlay(s, req.Path)
+	})
 	api.Handle(mux, "GET /api/jobs", func(*http.Request) (any, error) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -218,6 +251,15 @@ func RunClient(args []string, stdin io.Reader) (int, error) {
 	}
 	var res CmdResult
 	switch args[0] {
+	case "--overlay":
+		if len(args) != 2 {
+			return 2, errors.New("usage: sydguard overlay add PATH")
+		}
+		path, pathErr := filepath.Abs(args[1])
+		if pathErr != nil {
+			return 2, pathErr
+		}
+		res, err = post("overlay", CmdRequest{Name: path})
 	case "--list", "-l", "list":
 		if res, err = post("list", CmdRequest{}); err != nil {
 			return 1, err

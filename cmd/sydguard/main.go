@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"github.com/urfave/cli/v3"
 
@@ -129,6 +130,36 @@ func app() *cli.Command {
 					return nil
 				},
 			},
+			{Name: "overlay", Usage: "best-effort build-folder isolation for a running session", Commands: []*cli.Command{
+				{Name: "add", Usage: "mount VM-local storage before installing dependencies: sydguard overlay add PATH", Flags: []cli.Flag{
+					&cli.StringFlag{Name: "session", Usage: "session ID (operator on the execution machine; agents omit this)"},
+				}, Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 1 {
+						return errors.New("usage: sydguard overlay add [--session ID] PATH")
+					}
+					if id := cmd.String("session"); id != "" {
+						return guest.AddOverlay(id, cmd.Args().First())
+					}
+					code, err := guest.RunClient([]string{"--overlay", cmd.Args().First()}, os.Stdin)
+					if err != nil {
+						return err
+					}
+					if code != 0 {
+						return cli.Exit("overlay not installed", code)
+					}
+					return nil
+				}},
+			}},
+			{Name: "overlay-mount", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
+				if cmd.Args().Len() != 3 && (cmd.Args().Len() != 4 || cmd.Args().Get(3) != "check") {
+					return errors.New("invalid mount helper arguments")
+				}
+				pid, err := strconv.Atoi(cmd.Args().Get(0))
+				if err != nil || pid <= 0 {
+					return errors.New("invalid sandbox PID")
+				}
+				return guest.OverlayMount(pid, cmd.Args().Get(1), cmd.Args().Get(2), cmd.Args().Get(3) == "check")
+			}},
 			{Name: "version", Usage: "print the build hash", Action: func(context.Context, *cli.Command) error {
 				fmt.Println(system.Version())
 				return nil

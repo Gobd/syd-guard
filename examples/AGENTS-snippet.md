@@ -18,6 +18,26 @@ What you can write: only the folder you were started in (plus `/tmp`). Your
 sandbox rules file (`.sydguard.json`, `.sydguard/`) and `.git/hooks`, `.git/config`
 are read-only to you.
 
+Build/dependency output: host project files may be shared writable. Configured
+build-folder names are denied until backed by a verified overlay. A first access
+can fail while sydguard automatically prepares it; **retry the operation**.
+`target` needs a neighboring `Cargo.toml` for automatic preparation. You can also
+prepare a folder explicitly before installing (even without a manifest):
+
+```sh
+sydguard overlay add ./node_modules   # before npm/pnpm/bun install
+sydguard overlay add ./.venv          # before creating the Python environment
+sydguard overlay add ./target         # before cargo build
+```
+
+Wait for success before installing. If preparation fails, ask the user; they can
+click **Create overlay** on the UI card. Do not choose another directory or a
+symlink to bypass it. A recursive write grant is required, and the folder name
+must be enabled in `keepOnVM`. Existing contents become hidden, not migrated.
+Mounted folders and their ancestors cannot be renamed/deleted by this session.
+This protects configured output directories, not arbitrary host files elsewhere:
+install scripts still run with the project's other approved write permissions.
+
 Network: use normal tools; nothing needs configuring. Every connection is
 checked by host name, protocol and port. Servers you start (e.g. a dev server on
 port 3000) are reachable by the user at `localhost:3000`.
