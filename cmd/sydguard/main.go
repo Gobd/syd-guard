@@ -112,7 +112,7 @@ func app() *cli.Command {
 			{Name: "status", Usage: "overview: UI, this host and every VM (running? builds? agents?)", Action: func(context.Context, *cli.Command) error {
 				return ui.Status()
 			}},
-			{Name: "doctor", Usage: "check the Syd engine, namespaces and daemon", Action: doctorAction},
+			{Name: "doctor", Usage: "check what's needed to run agents (host + VM, or this machine with --backend native)", Action: doctorAction},
 			{Name: "setup", Usage: "install the pinned Syd engine (here, or in the VM)", Action: setupAction},
 			{
 				Name: "cmd", Usage: "(inside the sandbox) run or propose a host command: sydguard cmd --list",
@@ -267,7 +267,15 @@ func doctorAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 	if useVM {
-		return lima.Shell(limaOptions(cmd.Root()), "doctor")
+		ui.UIStatus()
+		ok, err := lima.Doctor(limaOptions(cmd.Root()))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return cli.Exit("", 1)
+		}
+		return nil
 	}
 	if !guest.Doctor() {
 		return cli.Exit("", 1)

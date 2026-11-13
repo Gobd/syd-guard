@@ -35,8 +35,10 @@ sydguard --backend native -- pi          # explicit Linux host execution
 sydguard --backend native setup          # install the native engine/helper
 ```
 
-The built-in macOS VM uses VZ/virtiofs; the Linux default uses QEMU/9p and
-requires the corresponding Lima/QEMU dependencies. Both share `~/Developer`
+The built-in macOS VM uses VZ/virtiofs; the Linux default uses QEMU/virtiofs and
+requires the corresponding Lima/QEMU dependencies plus the host's Rust `virtiofsd` (QEMU's older C
+virtiofsd needs root and doesn't work with rootless Lima); guest kernels need
+`CONFIG_VIRTIO_FS`, standard on current Ubuntu images. Both share `~/Developer`
 writable. Narrow the YAML mounts if you want less host data exposed.
 
 ## Optional Landlock: multiple roots, one fixed ceiling
@@ -102,8 +104,8 @@ the host's `~/Developer`. A `~` in Landlock config refers to the guest user's
 home when using Lima. This differs from the `lima` filename and `env` secret
 files, which are read on the host.
 
-The portable example YAML uses QEMU/9p. On macOS you may choose VZ/virtiofs
-instead. A read-only VM share cannot become writable through a Syd approval or
+The portable example YAML uses QEMU/virtiofs (Linux hosts need the Rust `virtiofsd`). On
+macOS you may choose VZ instead. A read-only VM share cannot become writable through a Syd approval or
 Landlock config. Likewise, a file not shared into the VM remains unavailable.
 
 ## Other examples

@@ -1,6 +1,10 @@
-# Linux host default: QEMU/9p instead of macOS Virtualization.framework.
+# Linux host default: QEMU + virtiofs (macOS uses VZ + virtiofs). virtiofs is
+# much faster than 9p and handles mmap/file watching properly; it needs the
+# host's Rust `virtiofsd` (e.g. `apt install virtiofsd`; QEMU's old C virtiofsd
+# needs root and won't work with rootless Lima) — `sydguard doctor` checks.
+# Guest kernels need CONFIG_VIRTIO_FS (standard on Ubuntu LTS, 5.4+).
 vmType: qemu
-mountType: 9p
+mountType: virtiofs
 base: template:ubuntu-lts
 cpus: 4
 memory: 8GiB

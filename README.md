@@ -19,8 +19,9 @@ Where it runs:
 
 - **Linux and macOS default to Lima**, with project paths mapped through the
   VM's shares. Sydguard starts/creates the VM as needed and installs the matching
-  Linux binary, Syd engine, and namespace helper. Linux uses QEMU/9p by default;
-  macOS uses VZ/virtiofs. Install Lima and its platform dependencies first.
+  Linux binary, Syd engine, and namespace helper. Linux uses QEMU/virtiofs by default
+  (needs the host's Rust `virtiofsd`; QEMU's old C one needs root and won't work); macOS uses VZ/virtiofs. Install Lima (0.17+) and its platform dependencies first: on Linux, QEMU 4.2+
+and the Rust `virtiofsd`. `sydguard doctor` checks them.
 - **Native Linux/WSL2** requires `--backend native`, `SYDGUARD_BACKEND=native`,
   or `"backend": "native"` in the machine config. There is **no silent fallback**
   if Lima is unavailable. Inside an existing Lima guest, execution defaults to
@@ -258,7 +259,10 @@ lets the engine and root-owned `/usr/local/libexec/sydguard/net-helper` create
 user namespaces (Ubuntu blocks this by default). Neither binary is setuid.
 The helper must match the sydguard build: with a VM, sydguard reinstalls it
 automatically after upgrades; on plain Linux/WSL run `sydguard setup` after upgrading.
-`sydguard doctor` checks engine, helper version, namespaces and daemon.
+`sydguard doctor` checks everything needed to run agents. On the Lima backend:
+the host (limactl, `virtiofsd` on Linux, config, the UI, the VM's state and
+sydguard build), then inside the VM (engine, helper, namespaces, daemon) — it
+never starts or creates a VM. With `--backend native` it checks this machine.
 
 ## Lima
 

@@ -8,7 +8,7 @@ import (
 )
 
 func TestDefaultVMPlatform(t *testing.T) {
-	if !strings.Contains(string(defaultConfig(true)), "vmType: qemu") || !strings.Contains(string(defaultConfig(true)), "mountType: 9p") {
+	if !strings.Contains(string(defaultConfig(true)), "vmType: qemu") || !strings.Contains(string(defaultConfig(true)), "mountType: virtiofs") {
 		t.Fatal("Linux default must not require macOS virtualization")
 	}
 	if !strings.Contains(string(defaultConfig(false)), "vmType: vz") {
@@ -56,5 +56,16 @@ func TestBackendSelection(t *testing.T) {
 	t.Setenv("SYDGUARD_BACKEND", "native")
 	if vm, err := selectBackend(Options{}, config.Config{}, true, false); err != nil || vm {
 		t.Fatalf("explicit environment opt-in: %v %v", vm, err)
+	}
+}
+
+func TestVersionAtLeast(t *testing.T) {
+	for in, want := range map[string]bool{
+		"limactl version 2.3.0": true, "limactl version 0.17.0": true, "limactl version 0.16.2": false,
+		"QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1)": true, "QEMU emulator version 4.1.1": false, "garbage": false,
+	} {
+		if got := versionAtLeast(in, map[bool]int{true: 4, false: 0}[strings.HasPrefix(in, "QEMU")], map[bool]int{true: 2, false: 17}[strings.HasPrefix(in, "QEMU")]); got != want {
+			t.Errorf("versionAtLeast(%q) = %v, want %v", in, got, want)
+		}
 	}
 }

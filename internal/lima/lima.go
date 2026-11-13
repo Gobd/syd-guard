@@ -11,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -284,17 +287,24 @@ func run(name string, args ...string) error {
 
 // ensureGuestBinary copies sydguard-linux-<arch> (built next to this binary)
 // into the VM when the guest copy differs.
-func ensureGuestBinary(vm string) error {
+// guestBinary returns the Linux build this sydguard installs into vm, and
+// whether the VM already has exactly that build.
+func guestBinary(vm string) (local string, current bool, err error) {
 	arch, _ := exec.Command("limactl", "list", "--format", "{{.Arch}}", vm).Output()
 	goarch := map[string]string{"aarch64": "arm64", "x86_64": "amd64"}[strings.TrimSpace(string(arch))]
 	exe, _ := os.Executable()
-	local := filepath.Join(filepath.Dir(exe), "sydguard-linux-"+goarch)
+	local = filepath.Join(filepath.Dir(exe), "sydguard-linux-"+goarch)
 	if _, err := os.Stat(local); err != nil {
-		return fmt.Errorf("missing %s (run make)", local)
+		return "", false, fmt.Errorf("missing %s (run make)", local)
 	}
 	got, _ := exec.Command("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard version 2>/dev/null").Output()
-	if strings.TrimSpace(string(got)) == system.FileHash(local) {
-		return nil
+	return local, strings.TrimSpace(string(got)) == system.FileHash(local), nil
+}
+
+func ensureGuestBinary(vm string) error {
+	local, current, err := guestBinary(vm)
+	if err != nil || current {
+		return err
 	}
 	fmt.Fprintln(os.Stderr, "sydguard: installing sydguard into", vm)
 	if err := run("limactl", "copy", local, vm+":/tmp/sydguard.new"); err != nil {
@@ -342,4 +352,119 @@ func OpenUI(always bool) error {
 		ui.OpenBrowser(ui.URL())
 	}
 	return nil
+}
+
+// Doctor checks the host side of the Lima backend (without starting or
+// creating anything), then runs the VM's own checks if the VM is running.
+func Doctor(o Options) (bool, error) {
+	ok := true
+	out, err := exec.Command("limactl", "--version").Output()
+	if err != nil {
+		fmt.Println("✗ limactl: not found — install Lima (https://lima-vm.io/docs/installation/)")
+		return false, nil
+	}
+	if v := strings.TrimSpace(string(out)); versionAtLeast(v, 0, 17) {
+		fmt.Println("✓ limactl:", v)
+	} else {
+		fmt.Println("✗ limactl:", v, "— Lima 0.17+ is required")
+		ok = false
+	}
+	if system.RunsSyd() { // a Linux host: the default VM is QEMU + virtiofs
+		fmt.Println(checkQEMU())
+		fmt.Println(checkVirtiofsd())
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Println("✗ config:", err)
+		return false, nil
+	}
+	fmt.Println("✓ config:", config.Path())
+	o = o.WithDefaults(cfg)
+	vm, err := o.VMName()
+	if err != nil {
+		return false, err
+	}
+	status, _ := exec.Command("limactl", "list", "--format", "{{.Status}}", vm).Output()
+	switch s := strings.TrimSpace(string(status)); s {
+	case "Running":
+		fmt.Printf("✓ VM %s: running\n", vm)
+	case "":
+		from := "the built-in default"
+		if o.LimaFile != "" {
+			from = o.LimaFile
+		}
+		fmt.Printf("! VM %s: doesn't exist yet; the first run creates it from %s\n", vm, from)
+		return ok, nil
+	default:
+		fmt.Printf("! VM %s: %s — start it with `sydguard vm start`\n", vm, strings.ToLower(s))
+		return ok, nil
+	}
+	if _, current, err := guestBinary(vm); err != nil {
+		fmt.Println("✗ sydguard build:", err)
+		return false, nil
+	} else if !current {
+		fmt.Printf("! sydguard in %s is a different build — `sydguard vm start` updates it (and the engine/helper)\n", vm)
+		return ok, nil
+	}
+	fmt.Printf("--- inside %s:\n", vm)
+	cmd := exec.Command("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard --backend native doctor")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		ok = false
+		fmt.Println("  (`sydguard vm start` updates sydguard in the VM and installs the engine if needed)")
+	}
+	return ok, nil
+}
+
+// checkVirtiofsd looks for the Rust virtiofsd that rootless Lima needs on a
+// Linux host. QEMU's older C virtiofsd requires root and does not work.
+func checkVirtiofsd() string {
+	var found []string
+	if p, err := exec.LookPath("virtiofsd"); err == nil {
+		found = append(found, p)
+	}
+	for _, p := range []string{"/usr/libexec/virtiofsd", "/usr/lib/qemu/virtiofsd"} {
+		if _, err := os.Stat(p); err == nil && !slices.Contains(found, p) {
+			found = append(found, p)
+		}
+	}
+	for _, p := range found {
+		out, _ := exec.Command(p, "--version").CombinedOutput()
+		// The Rust implementation reports "virtiofsd 1.x"; QEMU's C one doesn't.
+		if strings.HasPrefix(strings.TrimSpace(string(out)), "virtiofsd 1.") {
+			return "✓ virtiofsd (Rust): " + p
+		}
+	}
+	if len(found) > 0 {
+		return "! virtiofsd: only QEMU's C version found (" + strings.Join(found, ", ") +
+			"), which needs root; install the Rust virtiofsd (Debian/Ubuntu: `apt install virtiofsd`) or set mountType: 9p"
+	}
+	return "! virtiofsd: not found — the default VM's virtiofs mounts need the Rust virtiofsd (Debian/Ubuntu: `apt install virtiofsd`), or set mountType: 9p"
+}
+
+var versionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// versionAtLeast finds the first "X.Y" in s and compares it to major.minor.
+func versionAtLeast(s string, major, minor int) bool {
+	m := versionRe.FindStringSubmatch(s)
+	if m == nil {
+		return false
+	}
+	x, _ := strconv.Atoi(m[1])
+	y, _ := strconv.Atoi(m[2])
+	return x > major || (x == major && y >= minor)
+}
+
+// checkQEMU: the Linux default VM type needs QEMU 4.2+ for this architecture.
+func checkQEMU() string {
+	bin := map[string]string{"amd64": "qemu-system-x86_64", "arm64": "qemu-system-aarch64"}[runtime.GOARCH]
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil {
+		return "! " + bin + ": not found — the default Linux VM needs QEMU 4.2+"
+	}
+	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	if !versionAtLeast(first, 4, 2) {
+		return "! " + first + " — QEMU 4.2+ is required"
+	}
+	return "✓ " + first
 }

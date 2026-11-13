@@ -1,7 +1,7 @@
 # Paired with ../config-lima-landlock.json. Edit host paths before use.
 # These mounts are VM-wide; the optional Landlock ceiling is session-local.
 vmType: qemu
-mountType: 9p
+mountType: virtiofs # Linux hosts need virtiofsd; 9p works without it, but is slower
 base: template:ubuntu-lts
 cpus: 4
 memory: 8GiB
