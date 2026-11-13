@@ -369,24 +369,22 @@ function CommandView({
               onInput={(e) => setName(e.currentTarget.value)}
               placeholder="name"
             />
-            <select
+            <Toggle
               value={scope}
-              onChange={(e) =>
-                setScope(e.currentTarget.value as "project" | "global")
-              }
-            >
-              <option value="project">this project</option>
-              <option value="global">all projects</option>
-            </select>
-            <select
+              onChange={setScope}
+              options={[
+                ["project", "This project"],
+                ["global", "All projects"],
+              ]}
+            />
+            <Toggle
               value={mode}
-              onChange={(e) =>
-                setMode(e.currentTarget.value as "ask" | "allow")
-              }
-            >
-              <option value="ask">ask each time</option>
-              <option value="allow">always allow</option>
-            </select>
+              onChange={setMode}
+              options={[
+                ["ask", "Ask each time"],
+                ["allow", "Always allow"],
+              ]}
+            />
           </div>
           <div class={s.row}>
             <input
@@ -413,6 +411,29 @@ function CommandView({
         </div>
       )}
     </div>
+  );
+}
+
+// A row of buttons, one selected (instead of a dropdown).
+function Toggle<T extends string>(props: {
+  value: T;
+  onChange: (v: T) => void;
+  options: [T, string][];
+  title?: string;
+}) {
+  return (
+    <span class={s.segment} title={props.title}>
+      {props.options.map(([v, label]) => (
+        <button
+          type="button"
+          key={v}
+          class={v === props.value ? s.segmentOn : s.segmentBtn}
+          onClick={() => props.onChange(v)}
+        >
+          {label}
+        </button>
+      ))}
+    </span>
   );
 }
 
@@ -463,23 +484,24 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
           onInput={(e) => setPattern(e.currentTarget.value)}
         />
         {(c.kind === "read" || c.kind === "write") && (
-          <select
+          <Toggle
             value={kind}
-            onChange={(e) => setKind(e.currentTarget.value as Kind)}
-          >
-            <option value="read">read</option>
-            <option value="write">read+write</option>
-          </select>
+            onChange={setKind}
+            options={[
+              ["read", "Read"],
+              ["write", "Read + write"],
+            ]}
+          />
         )}
-        <select
+        <Toggle
           value={scope}
-          onChange={(e) =>
-            setScope(e.currentTarget.value as "rules" | "global")
-          }
-        >
-          <option value="rules">this rules file ({base(c.rulesFile)})</option>
-          <option value="global">all projects</option>
-        </select>
+          onChange={setScope}
+          options={[
+            ["rules", "This project"],
+            ["global", "All projects"],
+          ]}
+          title={`this project = ${base(c.rulesFile)}`}
+        />
         <button
           type="button"
           class={s.primary}

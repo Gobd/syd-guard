@@ -194,3 +194,21 @@ export const summary = style({
   fontSize: 12,
   marginTop: 6,
 });
+
+// Segmented toggle (a row of buttons, one selected).
+export const segment = style({
+  display: "inline-flex",
+  border: `1px solid ${vars.line}`,
+  borderRadius: 6,
+  overflow: "hidden",
+});
+export const segmentBtn = style({
+  border: "none",
+  borderRadius: 0,
+  padding: "5px 10px",
+  background: vars.card,
+});
+export const segmentOn = style([
+  segmentBtn,
+  { background: vars.accent, color: "#fff" },
+]);
