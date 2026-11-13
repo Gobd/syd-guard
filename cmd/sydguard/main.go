@@ -71,12 +71,18 @@ func app() *cli.Command {
 				return ui.Status()
 			}},
 			{
-				Name: "stop", Usage: "stop the UI and daemons (refuses while agents run)",
+				Name: "stop", Usage: "stop the UI and daemons, or the named VMs (refuses while agents run)",
+				UsageText: "sydguard stop            UI + daemons\nsydguard stop VM...      shut down those Lima VMs\nsydguard stop --all      UI, daemons and every VM",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "force", Usage: "stop even with agents running"},
-					&cli.BoolFlag{Name: "vm", Usage: "also shut down the Lima VMs"},
+					&cli.BoolFlag{Name: "all", Usage: "also shut down every Lima VM"},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error { return ui.Stop(cmd.Bool("force"), cmd.Bool("vm")) },
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() > 0 {
+						return ui.StopVMs(cmd.Args().Slice(), cmd.Bool("force"))
+					}
+					return ui.Stop(cmd.Bool("force"), cmd.Bool("all"))
+				},
 			},
 			{Name: "restart", Usage: "restart the UI and daemons with this build (agents keep running)", Action: func(context.Context, *cli.Command) error {
 				return ui.Restart()

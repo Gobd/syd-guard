@@ -140,6 +140,26 @@ func Stop(force, vms bool) error {
 	return nil
 }
 
+// StopVMs shuts down the named Lima VMs (refusing ones with agents unless force).
+func StopVMs(names []string, force bool) error {
+	ms, _ := runningMachines()
+	agents := map[string]int{}
+	for _, m := range ms {
+		agents[m.Name] = m.Agents
+	}
+	for _, n := range names {
+		count := agents[n]
+		if force {
+			count = 0
+		}
+		if err := vmAction(n, "stop", count); err != nil {
+			return err
+		}
+		fmt.Println("stopped VM", n)
+	}
+	return nil
+}
+
 // Restart replaces the UI server and daemons with this build. Running agents
 // keep going (daemons re-adopt them; proxied connections reconnect).
 func Restart() error {

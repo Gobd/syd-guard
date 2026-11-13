@@ -36,11 +36,19 @@ sydguard [flags] [--] command [args...]
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
   --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
   --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
-sydguard ui        open the approvals UI
-sydguard doctor    check engine, namespaces, daemon
-sydguard setup     install the pinned Syd engine
-sydguard prepare   get VM/engine/daemon/UI ready without running anything (for wrappers)
+sydguard ui                open (and start) the approvals UI
+sydguard status            UI server, daemons and VMs: running? which build? agents?
+sydguard stop [--force]    stop the UI server and daemons (refuses while agents run)
+sydguard stop VM...        shut down those Lima VMs;  --all: UI, daemons and every VM
+sydguard restart           restart the UI server and daemons with this build
+sydguard vm [-- cmd]       a shell (or command) in the VM, outside the sandbox
+sydguard doctor | setup    check / install the pinned Syd engine
+sydguard prepare           VM, engine, daemon and UI ready without running anything
 ```
+
+Background processes: the **UI server** runs on the machine where you type
+`sydguard` (started on demand); each machine that runs agents has a **daemon**
+(per VM, started on demand). Both restart themselves when the binary changes.
 
 ## Config
 
