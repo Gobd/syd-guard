@@ -1,12 +1,16 @@
-package main
+// Package ui is the approvals UI server. On a Mac it runs locally and reaches
+// every running Lima VM's daemon over SSH-forwarded Unix sockets.
+package ui
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -17,10 +21,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Gobd/syd-guard/internal/api"
+	"github.com/Gobd/syd-guard/internal/policy"
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
-//go:embed ui.html
-var uiFS embed.FS
+//go:embed dist
+var dist embed.FS
 
 // The UI server runs on your Mac (or on the Linux machine when there's no Mac).
 // It is the only TCP listener, needs a token, and talks to each VM's daemon
@@ -35,13 +43,14 @@ func uiPort() int {
 	return 7878
 }
 
-func uiTokenPath() string { return filepath.Join(stateDir(), "ui-token") }
+func uiTokenPath() string { return filepath.Join(system.StateDir(), "ui-token") }
 
-func uiToken() (string, error) {
+// Token is the secret the browser needs (kept in the state dir).
+func Token() (string, error) {
 	if b, err := os.ReadFile(uiTokenPath()); err == nil && len(strings.TrimSpace(string(b))) >= 32 {
 		return strings.TrimSpace(string(b)), nil
 	}
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(system.StateDir(), 0o700); err != nil {
 		return "", err
 	}
 	b := make([]byte, 24)
@@ -50,7 +59,8 @@ func uiToken() (string, error) {
 	return t, os.WriteFile(uiTokenPath(), []byte(t+"\n"), 0o600)
 }
 
-func uiURL(token string) string { return fmt.Sprintf("http://127.0.0.1:%d/#%s", uiPort(), token) }
+// URL is the UI address including the token.
+func URL(token string) string { return fmt.Sprintf("http://127.0.0.1:%d/#%s", uiPort(), token) }
 
 type backend struct {
 	name    string
@@ -60,6 +70,7 @@ type backend struct {
 	ok      bool
 	err     string
 	synced  bool // global rules pushed since (re)connect
+	watch   bool // an event watcher is running
 	guestOK bool
 }
 
@@ -67,36 +78,38 @@ type uiServer struct {
 	mu       sync.Mutex
 	token    string
 	backends map[string]*backend
-	store    *ruleStore // global rules (Mac only)
+	store    *policy.Store // global rules (Mac only)
 	ownsGlob bool
+	events   *api.Broadcaster
 }
 
-func runUIServer() error {
-	token, err := uiToken()
+// RunServer serves the UI until killed.
+func RunServer() error {
+	token, err := Token()
 	if err != nil {
 		return err
 	}
-	u := &uiServer{token: token, backends: map[string]*backend{}, store: newRuleStore(), ownsGlob: isMac()}
+	u := &uiServer{token: token, backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: system.IsMac(), events: api.NewBroadcaster()}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", uiPort()))
 	if err != nil {
 		return err
 	}
-	_ = os.WriteFile(filepath.Join(stateDir(), "ui.pid"), []byte(fmt.Sprint(os.Getpid())), 0o600)
+	_ = os.WriteFile(filepath.Join(system.StateDir(), "ui.pid"), []byte(fmt.Sprint(os.Getpid())), 0o600)
 	go u.discover()
-	log.Printf("sydguard UI %s on %s", selfVersion(), ln.Addr())
+	log.Printf("sydguard UI %s on %s", system.Version(), ln.Addr())
 	return (&http.Server{Handler: u.routes(), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 }
 
 // discover keeps one backend per running VM (Mac) or the local daemon (Linux).
 func (u *uiServer) discover() {
 	for {
-		if isMac() {
+		if system.IsMac() {
 			u.discoverLima()
 		} else {
 			u.mu.Lock()
 			if _, ok := u.backends["local"]; !ok {
 				host, _ := os.Hostname()
-				u.backends["local"] = &backend{name: host, sock: daemonSocket(), client: unixClient(daemonSocket(), 15*time.Second), guestOK: true}
+				u.backends["local"] = &backend{name: host, sock: system.DaemonSocket(), client: api.UnixClient(system.DaemonSocket(), 15*time.Second), guestOK: true}
 			}
 			u.mu.Unlock()
 		}
@@ -151,8 +164,8 @@ func (u *uiServer) discoverLima() {
 	for name, li := range running {
 		b, ok := u.backends[name]
 		if !ok {
-			sock := filepath.Join(stateDir(), "fwd", name+".sock")
-			b = &backend{name: name, sock: sock, client: unixClient(sock, 15*time.Second)}
+			sock := filepath.Join(system.StateDir(), "fwd", name+".sock")
+			b = &backend{name: name, sock: sock, client: api.UnixClient(sock, 15*time.Second)}
 			u.backends[name] = b
 		}
 		if !b.fwding {
@@ -180,7 +193,7 @@ func (u *uiServer) forward(b *backend, li limaInstance) {
 		return
 	}
 	guestHome := strings.TrimSpace(string(out))
-	if safePath(guestHome) != nil {
+	if system.SafePath(guestHome) != nil {
 		fail("bad guest home")
 		return
 	}
@@ -198,7 +211,7 @@ func (u *uiServer) forward(b *backend, li limaInstance) {
 
 func (u *uiServer) check(b *backend) {
 	var ping struct{ Version string }
-	err := callAt(b.client, "GET", "/api/ping", nil, &ping)
+	err := api.Call(b.client, "GET", "/api/ping", nil, &ping)
 	u.mu.Lock()
 	b.ok = err == nil
 	if err != nil && b.guestOK {
@@ -207,7 +220,21 @@ func (u *uiServer) check(b *backend) {
 		b.err = ""
 	}
 	needSync := b.ok && !b.synced && u.ownsGlob
+	startWatch := b.ok && !b.watch
+	if startWatch {
+		b.watch = true
+	}
 	u.mu.Unlock()
+	if startWatch {
+		go func() {
+			// Relay the VM's change events to browsers (instant cards).
+			stream := api.UnixClient(b.sock, 0)
+			_ = api.WatchEvents(context.Background(), stream, "/api/events", u.events.Notify)
+			u.mu.Lock()
+			b.watch = false
+			u.mu.Unlock()
+		}()
+	}
 	if needSync {
 		if err := u.syncGlobal(b); err == nil {
 			u.mu.Lock()
@@ -220,39 +247,47 @@ func (u *uiServer) check(b *backend) {
 // syncGlobal mirrors the Mac's global rules into a VM. If the Mac has none
 // yet, it adopts the first VM's.
 func (u *uiServer) syncGlobal(b *backend) error {
-	if _, err := os.Stat(globalRulesPath()); errors.Is(err, os.ErrNotExist) {
-		var st struct{ Global ruleFile }
-		if err := callAt(b.client, "GET", "/api/state", nil, &st); err == nil {
-			if _, _, err := u.store.replace(globalRulesPath(), st.Global.Rules); err != nil {
+	if _, err := os.Stat(system.GlobalRulesPath()); errors.Is(err, os.ErrNotExist) {
+		var st struct{ Global policy.RuleFile }
+		if err := api.Call(b.client, "GET", "/api/state", nil, &st); err == nil {
+			if _, _, err := u.store.Replace(system.GlobalRulesPath(), st.Global.Rules); err != nil {
 				return err
 			}
 		}
 	}
-	return callAt(b.client, "POST", "/api/global", map[string]any{"Rules": u.store.get(globalRulesPath())}, nil)
+	return api.Call(b.client, "POST", "/api/global", map[string]any{"Rules": u.store.Get(system.GlobalRulesPath())}, nil)
 }
 
 func (u *uiServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := uiFS.ReadFile("ui.html")
+		data, _ := dist.ReadFile("dist/index.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
 		_, _ = w.Write(data)
 	})
-	api := func(pattern string, h apiFunc) {
-		jsonAPI(mux, pattern, func(r *http.Request) (any, error) {
+	handle := func(pattern string, h api.Func) {
+		api.Handle(mux, pattern, func(r *http.Request) (any, error) {
 			if r.Header.Get("Authorization") != "Bearer "+u.token {
-				return nil, errors.New("unauthorized: open the link from `sydguard ui`")
+				return nil, api.ErrUnauthorized
 			}
 			return h(r)
 		})
 	}
-	api("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": selfVersion()}, nil })
-	api("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != u.token { // EventSource can't send headers
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		u.events.Serve(w, r)
+	})
+	mux.Handle("GET /assets/", http.FileServerFS(sub(dist, "dist")))
+	handle("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
+	handle("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
 	for _, op := range []string{"allow", "remove", "dismiss", "trust"} {
-		api("POST /api/"+op, func(r *http.Request) (any, error) {
-			var req editReq
-			if err := decode(r, &req); err != nil {
+		handle("POST /api/"+op, func(r *http.Request) (any, error) {
+			var req api.EditReq
+			if err := api.Decode(r, &req); err != nil {
 				return nil, err
 			}
 			if req.Scope == "global" && u.ownsGlob && op != "dismiss" {
@@ -263,7 +298,7 @@ func (u *uiServer) routes() http.Handler {
 				return nil, fmt.Errorf("VM %q isn't connected", req.VM)
 			}
 			var out map[string]any
-			return out, callAt(b.client, "POST", "/api/"+op, req, &out)
+			return out, api.Call(b.client, "POST", "/api/"+op, req, &out)
 		})
 	}
 	// Reject DNS rebinding: only literal loopback hosts.
@@ -290,28 +325,28 @@ func (u *uiServer) backend(name string) *backend {
 
 // editGlobal changes the Mac's global rules, then mirrors them to every VM
 // (each VM applies the difference live) and reports per-VM results.
-func (u *uiServer) editGlobal(op string, req editReq) (any, error) {
-	var fn func(*Rules) error
+func (u *uiServer) editGlobal(op string, req api.EditReq) (any, error) {
+	var fn func(*policy.Rules) error
 	switch op {
 	case "allow":
-		pattern, err := normalize(req.Kind, req.Pattern)
+		pattern, err := policy.Normalize(req.Kind, req.Pattern)
 		if err != nil {
 			return nil, err
 		}
-		if err := protectedFor("").check(req.Kind, pattern); err != nil {
+		if err := policy.ProtectedFor("").Check(req.Kind, pattern); err != nil {
 			return nil, err
 		}
-		fn = addRule(req.Kind, pattern)
+		fn = policy.AddRule(req.Kind, pattern)
 	case "remove":
-		fn = removeRule(req.Kind, req.Pattern)
+		fn = policy.RemoveRule(req.Kind, req.Pattern)
 	case "trust":
-		if _, _, err := u.store.trustCurrent(globalRulesPath()); err != nil {
+		if _, _, err := u.store.TrustCurrent(system.GlobalRulesPath()); err != nil {
 			return nil, err
 		}
-		fn = func(*Rules) error { return nil }
+		fn = func(*policy.Rules) error { return nil }
 	}
 	if op != "trust" {
-		if _, _, err := u.store.edit(globalRulesPath(), fn); err != nil {
+		if _, _, err := u.store.Edit(system.GlobalRulesPath(), fn); err != nil {
 			return nil, err
 		}
 	}
@@ -326,13 +361,13 @@ func (u *uiServer) editGlobal(op string, req editReq) (any, error) {
 	u.mu.Unlock()
 	for _, b := range list {
 		var out map[string]any
-		if err := callAt(b.client, "POST", "/api/global", map[string]any{"Rules": u.store.get(globalRulesPath())}, &out); err != nil {
+		if err := api.Call(b.client, "POST", "/api/global", map[string]any{"Rules": u.store.Get(system.GlobalRulesPath())}, &out); err != nil {
 			results[b.name] = map[string]string{"error": err.Error()}
 			continue
 		}
 		results[b.name] = out // each VM releases cards the new rules cover
 	}
-	return map[string]any{"saved": globalRulesPath(), "vms": results}, nil
+	return map[string]any{"saved": system.GlobalRulesPath(), "vms": results}, nil
 }
 
 func (u *uiServer) state() map[string]any {
@@ -353,7 +388,7 @@ func (u *uiServer) state() map[string]any {
 			v := map[string]any{"name": b.name, "ok": b.ok, "error": b.err}
 			if b.ok {
 				var st map[string]any
-				if err := callAt(b.client, "GET", "/api/state", nil, &st); err == nil {
+				if err := api.Call(b.client, "GET", "/api/state", nil, &st); err == nil {
 					v["state"] = st
 				} else {
 					v["ok"], v["error"] = false, err.Error()
@@ -366,17 +401,18 @@ func (u *uiServer) state() map[string]any {
 	}
 	wg.Wait()
 	sort.Slice(vms, func(i, j int) bool { return vms[i]["name"].(string) < vms[j]["name"].(string) })
-	out := map[string]any{"version": selfVersion(), "vms": vms, "ownsGlobal": u.ownsGlob}
+	out := map[string]any{"version": system.Version(), "vms": vms, "ownsGlobal": u.ownsGlob}
 	if u.ownsGlob {
-		out["global"] = u.store.view(globalRulesPath())
+		out["global"] = u.store.View(system.GlobalRulesPath())
 	}
 	return out
 }
 
 // ensureUIServer starts the UI server in the background if needed. Returns
 // true when it was (re)started.
-func ensureUIServer() (bool, error) {
-	token, err := uiToken()
+// EnsureServer starts the UI server in the background if needed.
+func EnsureServer() (bool, error) {
+	token, err := Token()
 	if err != nil {
 		return false, err
 	}
@@ -396,7 +432,7 @@ func ensureUIServer() (bool, error) {
 		return p.Version
 	}
 	switch v := ping(); v {
-	case selfVersion():
+	case system.Version():
 		return false, nil
 	case "":
 	default:
@@ -405,21 +441,21 @@ func ensureUIServer() (bool, error) {
 		}
 		_ = killUIServer()
 	}
-	if err := spawnDetached(filepath.Join(stateDir(), "ui.log"), "ui-server"); err != nil {
+	if err := system.SpawnDetached(filepath.Join(system.StateDir(), "ui.log"), "ui-server"); err != nil {
 		return false, err
 	}
 	for range 50 {
 		time.Sleep(100 * time.Millisecond)
-		if ping() == selfVersion() {
+		if ping() == system.Version() {
 			return true, nil
 		}
 	}
-	return false, errors.New("UI server did not start; see " + filepath.Join(stateDir(), "ui.log"))
+	return false, errors.New("UI server did not start; see " + filepath.Join(system.StateDir(), "ui.log"))
 }
 
 // killUIServer stops an older UI server (recorded by pid file).
 func killUIServer() error {
-	b, err := os.ReadFile(filepath.Join(stateDir(), "ui.pid"))
+	b, err := os.ReadFile(filepath.Join(system.StateDir(), "ui.pid"))
 	if err != nil {
 		return err
 	}
@@ -436,10 +472,13 @@ func killUIServer() error {
 	return nil
 }
 
-func openBrowser(url string) {
-	if isMac() {
+// OpenBrowser opens url on this machine.
+func OpenBrowser(url string) {
+	if system.IsMac() {
 		_ = exec.Command("open", url).Run()
 	} else if p, err := exec.LookPath("xdg-open"); err == nil {
 		_ = exec.Command(p, url).Start()
 	}
 }
+
+func sub(f embed.FS, dir string) fs.FS { s, _ := fs.Sub(f, dir); return s }

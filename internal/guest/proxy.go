@@ -1,4 +1,4 @@
-package main
+package guest
 
 import (
 	"context"
@@ -9,6 +9,9 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/Gobd/syd-guard/internal/policy"
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
 const approvalTimeout = 10 * time.Minute
@@ -46,7 +49,7 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
 	if scheme == "" {
-		scheme = connectScheme(port)
+		scheme = policy.ConnectScheme(port)
 	}
 	addr, err := d.decide(r.Context(), s, scheme, host, port)
 	if err != nil {
@@ -71,7 +74,7 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 		}
 		_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		if n := buf.Reader.Buffered(); n > 0 {
-			b, _ := buf.Reader.Peek(n)
+			b, _ := buf.Peek(n)
 			_, _ = up.Write(b)
 		}
 		go func() { _, _ = io.Copy(up, client); _ = up.Close() }()
@@ -128,12 +131,12 @@ var resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
 // decide returns the vetted ip:port to dial, asking the user when no rule
 // matches (the request waits). Learn mode allows and records.
 func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port string) (string, error) {
-	if _, err := parseHostRule(host); err != nil {
+	if _, err := policy.ParseHostRule(host); err != nil {
 		return "", fmt.Errorf("bad host %q", host)
 	}
 	target := scheme + "://" + net.JoinHostPort(host, port)
-	rules := []Rules{d.store.get(globalRulesPath()), d.store.get(s.RulesFile)}
-	if ignored(rules, "hosts", target) {
+	rules := []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)}
+	if policy.Ignored(rules, "hosts", target) {
 		return "", fmt.Errorf("%s is always denied", target)
 	}
 	addrs, err := resolve(ctx, host)
@@ -150,9 +153,9 @@ func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port stri
 		}
 	}
 	allowed := func() bool {
-		for _, r := range []Rules{d.store.get(globalRulesPath()), d.store.get(s.RulesFile)} {
+		for _, r := range []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)} {
 			for _, p := range r.Hosts {
-				if h, err := parseHostRule(p); err == nil && h.match(scheme, host, port) && (class == "public" || h.exact()) {
+				if h, err := policy.ParseHostRule(p); err == nil && h.Match(scheme, host, port) && (class == "public" || h.Exact()) {
 					return true
 				}
 			}
@@ -181,25 +184,8 @@ func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port stri
 		d.mu.Unlock()
 		return addr, nil
 	}
-	ch := make(chan bool, 1)
-	c.waiters = append(c.waiters, ch)
-	d.mu.Unlock()
-	select {
-	case ok := <-ch:
-		if ok && allowed() {
-			return addr, nil
-		}
-		return "", fmt.Errorf("%s was not approved", target)
-	case <-ctx.Done():
-	case <-time.After(approvalTimeout):
+	if d.waitCard(ctx, c, approvalTimeout) && allowed() {
+		return addr, nil
 	}
-	d.mu.Lock()
-	for i, w := range c.waiters {
-		if w == ch {
-			c.waiters = append(c.waiters[:i], c.waiters[i+1:]...)
-			break
-		}
-	}
-	d.mu.Unlock()
-	return "", fmt.Errorf("%s: no decision", target)
+	return "", fmt.Errorf("%s was not approved", target)
 }

@@ -1,29 +1,30 @@
-package main
+package policy
 
 import (
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
 func TestNormalizePaths(t *testing.T) {
-	h := home()
+	h := system.Home()
 	cases := map[string]string{
 		"~/.cache/go/**": h + "/.cache/go/***",
 		"/opt/x/":        "/opt/x",
 		"/opt/*/bin":     "/opt/*/bin",
 	}
 	for in, want := range cases {
-		got, err := normalize("read", in)
+		got, err := Normalize("read", in)
 		if err != nil || got != want {
-			t.Errorf("normalize(%q) = %q, %v; want %q", in, got, err, want)
+			t.Errorf("Normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
 	for _, bad := range []string{"relative/path", "/a/../etc", "/a\nallow/all+/***", "/a\x00b", "", "/a//b"} {
-		if _, err := normalize("write", bad); err == nil {
-			t.Errorf("normalize(%q) should fail", bad)
+		if _, err := Normalize("write", bad); err == nil {
+			t.Errorf("Normalize(%q) should fail", bad)
 		}
 	}
 }
@@ -48,23 +49,23 @@ func TestHostRules(t *testing.T) {
 		{"tcp://db.example.com:5432", "http", "db.example.com", "5432", false},
 		{"github.com:443", "https", "GitHub.com.", "443", true},
 	} {
-		h, err := parseHostRule(tc.rule)
+		h, err := ParseHostRule(tc.rule)
 		if err != nil {
 			t.Fatalf("parse %q: %v", tc.rule, err)
 		}
-		if got := h.match(tc.scheme, tc.host, tc.port); got != tc.want {
+		if got := h.Match(tc.scheme, tc.host, tc.port); got != tc.want {
 			t.Errorf("%q match %s://%s:%s = %v, want %v", tc.rule, tc.scheme, tc.host, tc.port, got, tc.want)
 		}
 	}
 	for _, bad := range []string{"https://github.com/path", "ftp://x.com", "user@x.com", "x.com:0", "x.com:99999", "a b", "x.\ncom"} {
-		if _, err := normalize("hosts", bad); err == nil {
+		if _, err := Normalize("hosts", bad); err == nil {
 			t.Errorf("host rule %q should be rejected", bad)
 		}
 	}
-	if h, _ := parseHostRule("*.x.com:443"); h.exact() {
+	if h, _ := ParseHostRule("*.x.com:443"); h.Exact() {
 		t.Error("wildcard must not be exact")
 	}
-	if h, _ := parseHostRule("https://db.lan"); !h.exact() {
+	if h, _ := ParseHostRule("https://db.lan"); !h.Exact() {
 		t.Error("https://host should be exact")
 	}
 }
@@ -82,15 +83,15 @@ func TestGlob(t *testing.T) {
 		{"/a/**/x", "/a/b/c/x", true},
 		{"/a.b", "/aXb", false},
 	} {
-		if got := matchPath(tc.pat, tc.path); got != tc.want {
-			t.Errorf("matchPath(%q, %q) = %v", tc.pat, tc.path, got)
+		if got := MatchPath(tc.pat, tc.path); got != tc.want {
+			t.Errorf("MatchPath(%q, %q) = %v", tc.pat, tc.path, got)
 		}
 	}
 }
 
 func TestProtection(t *testing.T) {
-	h := home()
-	p := protectedFor("/work/proj", "/work/proj/.sydguard/review.json")
+	h := system.Home()
+	p := ProtectedFor("/work/proj", "/work/proj/.sydguard/review.json")
 	for _, tc := range []struct {
 		kind, pat string
 		ok        bool
@@ -107,7 +108,7 @@ func TestProtection(t *testing.T) {
 		{"write", "/work/proj/.sydguard/review.json", false},
 		{"write", "/***", false},
 	} {
-		err := p.check(tc.kind, tc.pat)
+		err := p.Check(tc.kind, tc.pat)
 		if (err == nil) != tc.ok {
 			t.Errorf("check(%s %s) = %v, want ok=%v", tc.kind, tc.pat, err, tc.ok)
 		}
@@ -115,16 +116,18 @@ func TestProtection(t *testing.T) {
 }
 
 func TestCompileProfile(t *testing.T) {
-	prof, err := compileProfile(profileInput{Project: "/work/proj", ProxyPort: 4000, IPC: "@x",
-		Protect: protectedFor("/work/proj"),
-		Rules:   []Rules{{Read: []string{"/ok/**", "/bad\nallow/all+/***"}, Write: []string{home() + "/.ssh/***"}}}})
+	prof, err := CompileProfile(ProfileInput{
+		Project: "/work/proj", ProxyPort: 4000, IPC: "@x",
+		Protect: ProtectedFor("/work/proj"),
+		Rules:   []Rules{{Read: []string{"/ok/**", "/bad\nallow/all+/***"}, Write: []string{system.Home() + "/.ssh/***"}}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prof, "allow/"+readCaps+"+/ok/***") {
+	if !strings.Contains(prof, "allow/"+ReadCaps+"+/ok/***") {
 		t.Error("valid rule missing")
 	}
-	if strings.Contains(prof, "/bad") || strings.Contains(prof, "allow/"+writeCaps+"+"+home()+"/.ssh") {
+	if strings.Contains(prof, "/bad") || strings.Contains(prof, "allow/"+WriteCaps+"+"+system.Home()+"/.ssh") {
 		t.Error("invalid or protected rule reached the profile")
 	}
 	if strings.Contains(prof, "allow/all") {
@@ -132,15 +135,15 @@ func TestCompileProfile(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(prof), "\n")
 	if lines[len(lines)-1] != "lock:ipc" || !strings.HasPrefix(lines[len(lines)-3], "deny/") {
-		t.Error("protection denies must come last, before ipc/lock")
+		t.Error("Protection denies must come last, before ipc/lock")
 	}
-	if _, err := compileProfile(profileInput{Project: "/work/x\nallow/all+/***", IPC: "@x"}); err == nil {
+	if _, err := CompileProfile(ProfileInput{Project: "/work/x\nallow/all+/***", IPC: "@x"}); err == nil {
 		t.Error("project path with newline must be rejected")
 	}
 }
 
 func TestLearnRoot(t *testing.T) {
-	h := home()
+	h := system.Home()
 	for in, want := range map[string]string{
 		h + "/.pi/agent/install/x.js":                h + "/.pi",
 		h + "/.local/share/pnpm/store/v11/links/a/b": h + "/.local/share/pnpm",
@@ -149,20 +152,8 @@ func TestLearnRoot(t *testing.T) {
 		h + "/notes.txt":                             h,
 		"/workspace/other/src/main.go":               "/workspace/other/src",
 	} {
-		if got := learnRoot(in); got != want {
-			t.Errorf("learnRoot(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestAddrClass(t *testing.T) {
-	for ip, want := range map[string]string{
-		"127.0.0.1": "blocked", "::1": "blocked", "169.254.169.254": "blocked", "0.0.0.0": "blocked",
-		"10.1.2.3": "private", "192.168.5.2": "private", "100.64.1.1": "private", "fd00::1": "private",
-		"93.184.216.34": "public", "2606:4700::1": "public", "::ffff:127.0.0.1": "blocked",
-	} {
-		if got := addrClass(netip.MustParseAddr(ip)); got != want {
-			t.Errorf("addrClass(%s) = %s, want %s", ip, got, want)
+		if got := LearnRoot(in); got != want {
+			t.Errorf("LearnRoot(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -175,12 +166,12 @@ func TestRulesFileFor(t *testing.T) {
 		"./x.json":    "/work/proj/sub/x.json",
 		"/etc/r.json": "/etc/r.json",
 	} {
-		got, err := rulesFileFor(p, p+"/sub", spec)
+		got, err := RulesFileFor(p, p+"/sub", spec)
 		if err != nil || got != want {
-			t.Errorf("rulesFileFor(%q) = %q, %v; want %q", spec, got, err, want)
+			t.Errorf("RulesFileFor(%q) = %q, %v; want %q", spec, got, err, want)
 		}
 	}
-	if _, err := rulesFileFor(p, p, ".."); err == nil {
+	if _, err := RulesFileFor(p, p, ".."); err == nil {
 		t.Error("'..' names must fail")
 	}
 }
@@ -189,33 +180,33 @@ func TestStoreTrustAndHardlinks(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	file := filepath.Join(dir, "proj", ".sydguard.json")
-	s := newRuleStore()
-	if _, _, err := s.edit(file, addRule("hosts", "github.com")); err != nil {
+	s := NewStore()
+	if _, _, err := s.Edit(file, AddRule("hosts", "github.com")); err != nil {
 		t.Fatal(err)
 	}
-	if r := s.get(file); len(r.Hosts) != 1 {
+	if r := s.Get(file); len(r.Hosts) != 1 {
 		t.Fatalf("rules not saved: %+v", r)
 	}
-	// An outside edit is not used until trusted.
+	// An outside edit is not used until Trusted.
 	if err := os.WriteFile(file, []byte(`{"hosts":["*"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.files[file].checked = s.files[file].checked.AddDate(-1, 0, 0)
-	v := s.view(file)
+	v := s.View(file)
 	if v.Pending == "" || len(v.Rules.Hosts) != 1 || v.Rules.Hosts[0] != "github.com" {
 		t.Fatalf("untrusted edit was used: %+v", v)
 	}
-	if _, _, err := s.edit(file, addRule("hosts", "x.com")); err == nil {
+	if _, _, err := s.Edit(file, AddRule("hosts", "x.com")); err == nil {
 		t.Error("editing over untrusted content must fail")
 	}
-	if _, after, err := s.trustCurrent(file); err != nil || after.Hosts[0] != "*" {
-		t.Fatalf("trust: %v %+v", err, after)
+	if _, after, err := s.TrustCurrent(file); err != nil || after.Hosts[0] != "*" {
+		t.Fatalf("Trust: %v %+v", err, after)
 	}
 	// A second hard link makes the file unusable.
 	if err := os.Link(file, filepath.Join(dir, "alias.json")); err != nil {
 		t.Skip("no hard links here")
 	}
-	if _, _, err := readRulesFile(file); err == nil || !strings.Contains(err.Error(), "hard links") {
+	if _, _, err := ReadRulesFile(file); err == nil || !strings.Contains(err.Error(), "hard links") {
 		t.Errorf("hard-linked rules file accepted: %v", err)
 	}
 }
@@ -223,19 +214,8 @@ func TestStoreTrustAndHardlinks(t *testing.T) {
 func TestDiffCommands(t *testing.T) {
 	a := Rules{Read: []string{"/a/***", "/b"}, Hosts: []string{"x.com"}}
 	b := Rules{Read: []string{"/b", "/c"}, Hosts: []string{"y.com"}}
-	got := strings.Join(diffCommands(a, b), "\n")
-	if !strings.Contains(got, "allow/"+readCaps+"-/a/***") || !strings.Contains(got, "allow/"+readCaps+"+/c") || strings.Contains(got, "/b") || strings.Contains(got, ".com") {
+	got := strings.Join(DiffCommands(a, b), "\n")
+	if !strings.Contains(got, "allow/"+ReadCaps+"-/a/***") || !strings.Contains(got, "allow/"+ReadCaps+"+/c") || strings.Contains(got, "/b") || strings.Contains(got, ".com") {
 		t.Errorf("diff:\n%s", got)
-	}
-}
-
-func TestParseArgs(t *testing.T) {
-	o, err := parse([]string{"--rules", "review", "--vm=dev", "--", "lambdap", "pi", "--model", "x"})
-	if err != nil || o.rules != "review" || o.vm != "dev" || strings.Join(o.args, " ") != "lambdap pi --model x" {
-		t.Errorf("parse: %+v %v", o, err)
-	}
-	o, _ = parse([]string{"lambdap", "pi"})
-	if strings.Join(o.args, " ") != "lambdap pi" {
-		t.Errorf("bare command: %+v", o)
 	}
 }

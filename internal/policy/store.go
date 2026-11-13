@@ -1,4 +1,4 @@
-package main
+package policy
 
 import (
 	"crypto/sha256"
@@ -13,40 +13,40 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
 const (
-	defaultRulesName = ".sydguard.json" // <project>/.sydguard.json
-	rulesDirName     = ".sydguard"      // <project>/.sydguard/<name>.json via --rules NAME
+	DefaultRulesName = ".sydguard.json" // <project>/.sydguard.json
+	RulesDirName     = ".sydguard"      // <project>/.sydguard/<name>.json via --rules NAME
 )
 
-// rulesFileFor resolves --rules: "" = default file, NAME = .sydguard/NAME.json,
+// RulesFileFor resolves --rules: "" = default file, NAME = .sydguard/NAME.json,
 // anything with a slash or .json suffix = a path (relative to cwd).
-func rulesFileFor(project, cwd, spec string) (string, error) {
+func RulesFileFor(project, cwd, spec string) (string, error) {
 	switch {
 	case spec == "":
-		return filepath.Join(project, defaultRulesName), nil
+		return filepath.Join(project, DefaultRulesName), nil
 	case !strings.ContainsRune(spec, '/') && !strings.HasSuffix(spec, ".json"):
-		if strings.HasPrefix(spec, ".") || safeText(spec) != nil {
+		if strings.HasPrefix(spec, ".") || system.SafeText(spec) != nil {
 			return "", fmt.Errorf("bad rules name %q", spec)
 		}
-		return filepath.Join(project, rulesDirName, spec+".json"), nil
+		return filepath.Join(project, RulesDirName, spec+".json"), nil
 	}
-	p := expandHome(spec)
+	p := system.ExpandHome(spec)
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(cwd, p)
 	}
 	p = filepath.Clean(p)
-	return p, safePath(p)
+	return p, system.SafePath(p)
 }
 
-func hashOf(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-
-// readRulesFile reads a rules file defensively: regular file, owned by us,
+// ReadRulesFile reads a rules file defensively: regular file, owned by us,
 // one hard link (a second link could let the sandbox edit it), <1 MiB.
-// A missing file is an empty, trusted rule set.
-func readRulesFile(path string) (Rules, []byte, error) {
-	if err := safePath(path); err != nil {
+// A missing file is an empty, Trusted rule set.
+func ReadRulesFile(path string) (Rules, []byte, error) {
+	if err := system.SafePath(path); err != nil {
 		return Rules{}, nil, err
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
@@ -83,7 +83,7 @@ func readRulesFile(path string) (Rules, []byte, error) {
 }
 
 func writeRulesFile(path string, r Rules) ([]byte, error) {
-	if err := safePath(path); err != nil {
+	if err := system.SafePath(path); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -109,33 +109,33 @@ func writeRulesFile(path string, r Rules) ([]byte, error) {
 
 // Trust: the hash of the last content sydguard wrote or you accepted, per file.
 // The sandbox can't write rules files by path, and any change made another way
-// (hard link, editor, git pull, cloned repo) is ignored until trusted again.
+// (hard link, editor, git pull, cloned repo) is Ignored until Trusted again.
 func trustPath(file string) string {
 	sum := sha256.Sum256([]byte(file))
-	return filepath.Join(configDir(), "trusted", hex.EncodeToString(sum[:12]))
+	return filepath.Join(system.ConfigDir(), "Trusted", hex.EncodeToString(sum[:12]))
 }
 
-func trust(file string, data []byte) error {
+func Trust(file string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(trustPath(file)), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(trustPath(file), []byte(file+"\n"+hashOf(data)+"\n"), 0o600)
+	return os.WriteFile(trustPath(file), []byte(file+"\n"+system.HashBytes(data)+"\n"), 0o600)
 }
 
-func trusted(file string, data []byte) bool {
+func Trusted(file string, data []byte) bool {
 	if data == nil {
 		return true
 	}
 	b, err := os.ReadFile(trustPath(file))
-	return err == nil && strings.HasSuffix(strings.TrimSpace(string(b)), hashOf(data))
+	return err == nil && strings.HasSuffix(strings.TrimSpace(string(b)), system.HashBytes(data))
 }
 
-func knownRulesFiles() []string {
-	files, _ := filepath.Glob(filepath.Join(configDir(), "trusted", "*"))
+func KnownRulesFiles() []string {
+	files, _ := filepath.Glob(filepath.Join(system.ConfigDir(), "Trusted", "*"))
 	var out []string
 	for _, f := range files {
 		if b, err := os.ReadFile(f); err == nil {
-			if p, _, ok := strings.Cut(string(b), "\n"); ok && safePath(p) == nil {
+			if p, _, ok := strings.Cut(string(b), "\n"); ok && system.SafePath(p) == nil {
 				out = append(out, p)
 			}
 		}
@@ -143,16 +143,16 @@ func knownRulesFiles() []string {
 	return out
 }
 
-// ruleStore caches trusted rules in memory so the proxy and live updates never
+// Store caches Trusted rules in memory so the proxy and live updates never
 // act on untrusted bytes. All writes go through it.
-type ruleStore struct {
+type Store struct {
 	mu    sync.Mutex
-	files map[string]*ruleFile
+	files map[string]*RuleFile
 }
 
-type ruleFile struct {
+type RuleFile struct {
 	Path     string `json:"path"`
-	Rules    Rules  `json:"rules"`             // last trusted content
+	Rules    Rules  `json:"rules"`             // last Trusted content
 	Pending  string `json:"pending,omitempty"` // untrusted content on disk, if any
 	Error    string `json:"error,omitempty"`
 	checked  time.Time
@@ -161,27 +161,27 @@ type ruleFile struct {
 	loadedOK bool
 }
 
-func newRuleStore() *ruleStore { return &ruleStore{files: map[string]*ruleFile{}} }
+func NewStore() *Store { return &Store{files: map[string]*RuleFile{}} }
 
-// get returns the trusted rules for path, re-checking the disk at most every 500ms.
-func (s *ruleStore) get(path string) Rules {
+// get returns the Trusted rules for path, re-checking the disk at most every 500ms.
+func (s *Store) Get(path string) Rules {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.refreshLocked(path).Rules.clone()
+	return s.refreshLocked(path).Rules.Clone()
 }
 
-func (s *ruleStore) view(path string) ruleFile {
+func (s *Store) View(path string) RuleFile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := *s.refreshLocked(path)
-	f.Rules = f.Rules.clone()
+	f.Rules = f.Rules.Clone()
 	return f
 }
 
-func (s *ruleStore) refreshLocked(path string) *ruleFile {
+func (s *Store) refreshLocked(path string) *RuleFile {
 	f, ok := s.files[path]
 	if !ok {
-		f = &ruleFile{Path: path}
+		f = &RuleFile{Path: path}
 		s.files[path] = f
 	}
 	if time.Since(f.checked) < 500*time.Millisecond {
@@ -193,15 +193,15 @@ func (s *ruleStore) refreshLocked(path string) *ruleFile {
 	} else if err == nil {
 		f.modTime, f.size = fi.ModTime(), fi.Size()
 	}
-	r, data, err := readRulesFile(path)
+	r, data, err := ReadRulesFile(path)
 	f.Error, f.Pending = "", ""
 	switch {
 	case err != nil:
-		f.Error = err.Error() // keep the last trusted rules
-	case trusted(path, data):
+		f.Error = err.Error() // keep the last Trusted rules
+	case Trusted(path, data):
 		f.Rules, f.loadedOK = r, true
 	default:
-		f.Pending = string(data) // changed outside sydguard: keep last trusted rules
+		f.Pending = string(data) // changed outside sydguard: keep last Trusted rules
 		if !f.loadedOK {
 			f.Rules = Rules{}
 		}
@@ -209,20 +209,20 @@ func (s *ruleStore) refreshLocked(path string) *ruleFile {
 	return f
 }
 
-// edit applies fn to the trusted rules and saves them (fails if the file on
+// edit applies fn to the Trusted rules and saves them (fails if the file on
 // disk has untrusted changes, so nothing is silently overwritten).
-func (s *ruleStore) edit(path string, fn func(*Rules) error) (before, after Rules, err error) {
+func (s *Store) Edit(path string, fn func(*Rules) error) (before, after Rules, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.refreshLocked(path)
 	if f.Pending != "" {
-		return before, after, fmt.Errorf("%s changed outside sydguard; trust or revert it first", path)
+		return before, after, fmt.Errorf("%s changed outside sydguard; Trust or revert it first", path)
 	}
 	if f.Error != "" {
 		return before, after, errors.New(f.Error)
 	}
-	before = f.Rules.clone()
-	next := f.Rules.clone()
+	before = f.Rules.Clone()
+	next := f.Rules.Clone()
 	if err := fn(&next); err != nil {
 		return before, after, err
 	}
@@ -230,50 +230,50 @@ func (s *ruleStore) edit(path string, fn func(*Rules) error) (before, after Rule
 	if err != nil {
 		return before, after, err
 	}
-	if err := trust(path, data); err != nil {
+	if err := Trust(path, data); err != nil {
 		return before, after, err
 	}
 	f.Rules, f.loadedOK, f.checked = next, true, time.Time{}
-	return before, next.clone(), nil
+	return before, next.Clone(), nil
 }
 
 // trustCurrent accepts whatever is on disk now.
-func (s *ruleStore) trustCurrent(path string) (before, after Rules, err error) {
+func (s *Store) TrustCurrent(path string) (before, after Rules, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.refreshLocked(path)
-	before = f.Rules.clone()
-	r, data, err := readRulesFile(path)
+	before = f.Rules.Clone()
+	r, data, err := ReadRulesFile(path)
 	if err != nil {
 		return before, before, err
 	}
-	if err := trust(path, data); err != nil {
+	if err := Trust(path, data); err != nil {
 		return before, before, err
 	}
 	f.Rules, f.Pending, f.loadedOK, f.checked = r, "", true, time.Time{}
-	return before, r.clone(), nil
+	return before, r.Clone(), nil
 }
 
 // replace overwrites a file with the given rules (used to mirror global rules).
-func (s *ruleStore) replace(path string, r Rules) (before, after Rules, err error) {
+func (s *Store) Replace(path string, r Rules) (before, after Rules, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.refreshLocked(path)
-	before = f.Rules.clone()
+	before = f.Rules.Clone()
 	data, err := writeRulesFile(path, r)
 	if err != nil {
 		return before, before, err
 	}
-	if err := trust(path, data); err != nil {
+	if err := Trust(path, data); err != nil {
 		return before, before, err
 	}
-	f.Rules, f.Pending, f.Error, f.loadedOK, f.checked = r.clone(), "", "", true, time.Time{}
-	return before, r.clone(), nil
+	f.Rules, f.Pending, f.Error, f.loadedOK, f.checked = r.Clone(), "", "", true, time.Time{}
+	return before, r.Clone(), nil
 }
 
-func addRule(kind, pattern string) func(*Rules) error {
+func AddRule(kind, pattern string) func(*Rules) error {
 	return func(r *Rules) error {
-		l := r.list(kind)
+		l := r.List(kind)
 		if l == nil {
 			return fmt.Errorf("unknown kind %q", kind)
 		}
@@ -287,9 +287,9 @@ func addRule(kind, pattern string) func(*Rules) error {
 	}
 }
 
-func removeRule(kind, pattern string) func(*Rules) error {
+func RemoveRule(kind, pattern string) func(*Rules) error {
 	return func(r *Rules) error {
-		l := r.list(kind)
+		l := r.List(kind)
 		if l == nil {
 			return fmt.Errorf("unknown kind %q", kind)
 		}
@@ -303,31 +303,56 @@ func removeRule(kind, pattern string) func(*Rules) error {
 	}
 }
 
-// diffCommands returns the Syd commands that turn rule set a into b.
-func diffCommands(a, b Rules) []string {
+// DiffCommands returns the Syd commands that turn rule set a into b.
+func DiffCommands(a, b Rules) []string {
 	var out []string
 	for _, k := range []string{"read", "write", "connect"} {
 		old, cur := map[string]bool{}, map[string]bool{}
-		for _, p := range *a.list(k) {
+		for _, p := range *a.List(k) {
 			old[p] = true
 		}
-		for _, p := range *b.list(k) {
+		for _, p := range *b.List(k) {
 			cur[p] = true
 		}
-		for _, p := range *a.list(k) {
+		for _, p := range *a.List(k) {
 			if !cur[p] {
-				if n, err := normalize(k, p); err == nil {
-					out = append(out, sydCommands(k, n, "-")...)
+				if n, err := Normalize(k, p); err == nil {
+					out = append(out, SydCommands(k, n, "-")...)
 				}
 			}
 		}
-		for _, p := range *b.list(k) {
+		for _, p := range *b.List(k) {
 			if !old[p] {
-				if n, err := normalize(k, p); err == nil {
-					out = append(out, sydCommands(k, n, "+")...)
+				if n, err := Normalize(k, p); err == nil {
+					out = append(out, SydCommands(k, n, "+")...)
 				}
 			}
 		}
 	}
 	return out
+}
+
+func CleanRules(r Rules) (Rules, error) {
+	var out Rules
+	for _, k := range Kinds {
+		for _, p := range *r.List(k) {
+			n, err := Normalize(k, p)
+			if err != nil {
+				return out, err
+			}
+			*out.List(k) = append(*out.List(k), n)
+		}
+	}
+	return out, nil
+}
+
+func ProjectOfRulesFile(file string) string {
+	dir := filepath.Dir(file)
+	if filepath.Base(dir) == RulesDirName {
+		return filepath.Dir(dir)
+	}
+	if filepath.Base(file) == DefaultRulesName {
+		return dir
+	}
+	return ""
 }

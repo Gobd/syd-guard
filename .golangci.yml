@@ -1,0 +1,22 @@
+version: "2"
+run:
+  timeout: 3m
+linters:
+  default: standard
+  enable:
+    - gosec
+    - gocritic
+    - misspell
+    - unconvert
+    - nolintlint
+  settings:
+    gosec:
+      excludes:
+        - G204 # we run limactl/syd/git with arguments by design
+        - G304 # reading user-chosen rules files is the point
+        - G115 # int conversions of small, bounded values
+        - G301 # project/build folders are normal 0755 directories
+        - G302 # rules files are meant to be committable (0644)
+        - G306 # same, in tests
+        - G404 # math/rand only picks a loopback address, not a secret
+        - G702 # same as G204: commands are fixed binaries with argument lists

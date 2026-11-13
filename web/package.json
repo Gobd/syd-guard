@@ -1,0 +1,22 @@
+{
+  "name": "sydguard-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "check": "bun check --no-script",
+    "lint": "bun lint --no-script",
+    "fmt": "bun fmt --no-script",
+    "fmt:check": "bun fmt --no-script --check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@vanilla-extract/css": "^1.21.3",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@vanilla-extract/integration": "^8.0.11",
+    "typescript": "^7.0.2"
+  }
+}
