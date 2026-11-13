@@ -392,7 +392,7 @@ func Baseline(project string) []BaseRule {
 	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run/systemd/resolve", "/snap"} {
 		out = append(out, BaseRule{"read", p + "/***", "system"})
 	}
-	out = append(out, BaseRule{"write", project + "/***", "the project (git root)"})
+	out = append(out, BaseRule{"write", project + "/***", "the folder sydguard was launched in"})
 	for _, p := range []string{"/tmp/***", "/var/tmp/***", "/dev/shm/***"} {
 		out = append(out, BaseRule{"write", p, "temporary files"})
 	}

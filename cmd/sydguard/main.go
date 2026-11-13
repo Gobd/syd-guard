@@ -20,8 +20,8 @@ const description = `Runs a command under Syd. Everything it isn't allowed to do
 approvals UI (http://127.0.0.1:7878); approving or removing a rule applies to
 the running agent immediately and is saved to the rules file.
 
-Rules files: <git root>/.sydguard.json by default, --rules NAME for
-<git root>/.sydguard/NAME.json, or any path. "All projects" rules live in
+Only the folder you launch in (plus /tmp) is writable. Rules files:
+./.sydguard.json by default, --rules NAME for ./.sydguard/NAME.json, or any path. "All projects" rules live in
 ~/.config/sydguard/global.json. The sandbox can never write rules files, and
 changes made outside sydguard must be trusted before they're used.
 

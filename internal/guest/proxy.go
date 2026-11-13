@@ -1,9 +1,14 @@
 package guest
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -55,7 +60,7 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 	if scheme == "" {
 		scheme = policy.ConnectScheme(port)
 	}
-	addr, err := d.decide(r.Context(), s, scheme, host, port)
+	addr, rules, err := d.decide(r.Context(), s, scheme, host, port)
 	if err != nil {
 		http.Error(w, "sydguard: "+err.Error(), http.StatusForbidden)
 		return
@@ -77,11 +82,23 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		var pending []byte
 		if n := buf.Reader.Buffered(); n > 0 {
-			b, _ := buf.Peek(n)
-			_, _ = up.Write(b)
+			pending, _ = buf.Peek(n)
 		}
-		go func() { _, _ = io.Copy(up, client); _ = up.Close() }()
+		in := bufio.NewReaderSize(io.MultiReader(bytes.NewReader(pending), client), 5+16<<10) // a full TLS record
+		if !s.Learn {
+			_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
+			err := checkTunnel(in, host, rules)
+			_ = client.SetReadDeadline(time.Time{})
+			if err != nil {
+				log.Printf("session %s: refused tunnel to %q: %q", s.ID, host, err.Error()) //nolint:gosec // agent-controlled values are %q-quoted
+				_ = client.Close()
+				_ = up.Close()
+				return
+			}
+		}
+		go func() { _, _ = io.Copy(up, in); _ = up.Close() }()
 		_, _ = io.Copy(client, up)
 		_ = client.Close()
 		return
@@ -137,9 +154,9 @@ var resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
 // agent can't leak data through DNS lookups of names nobody approved. Only
 // then is it resolved and the addresses checked (local never, private only
 // with an exact rule). Learn mode allows and records.
-func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port string) (string, error) {
+func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port string) (string, []policy.HostRule, error) {
 	if _, err := policy.ParseHostRule(host); err != nil {
-		return "", fmt.Errorf("bad host %q", host)
+		return "", nil, fmt.Errorf("bad host %q", host)
 	}
 	target := scheme + "://" + net.JoinHostPort(host, port)
 	matching := func() []policy.HostRule {
@@ -154,39 +171,39 @@ func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port stri
 		return out
 	}
 	if policy.Ignored([]policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)}, "hosts", target) {
-		return "", fmt.Errorf("%s is always denied", target)
+		return "", nil, fmt.Errorf("%s is always denied", target)
 	}
 	// A literal IP needs no lookup: refuse local ones right away.
 	if ip, err := netip.ParseAddr(host); err == nil && addrClass(ip) == "blocked" {
-		return "", fmt.Errorf("%s is a local address (never proxied)", host)
+		return "", nil, fmt.Errorf("%s is a local address (never proxied)", host)
 	}
 	rules := matching()
 	if len(rules) == 0 {
 		d.mu.Lock()
 		if _, live := d.sessions[s.ID]; !live {
 			d.mu.Unlock()
-			return "", fmt.Errorf("session ended")
+			return "", nil, fmt.Errorf("session ended")
 		}
 		c := d.addCardLocked(s, "hosts", target, "", s.Learn, false, "")
 		switch {
 		case c == nil:
 			d.mu.Unlock()
-			return "", fmt.Errorf("too many pending approvals")
+			return "", nil, fmt.Errorf("too many pending approvals")
 		case s.Learn:
 			d.mu.Unlock()
 			d.events.Notify()
 		case !d.waitCard(ctx, c, approvalTimeout):
-			return "", fmt.Errorf("%s was not approved", target)
+			return "", nil, fmt.Errorf("%s was not approved", target)
 		default:
 			if rules = matching(); len(rules) == 0 {
-				return "", fmt.Errorf("%s was not approved", target)
+				return "", nil, fmt.Errorf("%s was not approved", target)
 			}
 		}
 	}
 	// Approved by name: now resolve and vet the addresses.
 	addrs, err := resolve(ctx, host)
 	if err != nil || len(addrs) == 0 {
-		return "", fmt.Errorf("cannot resolve %s", host)
+		return "", nil, fmt.Errorf("cannot resolve %s", host)
 	}
 	exact := false
 	for _, h := range rules {
@@ -195,12 +212,85 @@ func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port stri
 	for _, a := range addrs {
 		switch addrClass(a) {
 		case "blocked":
-			return "", fmt.Errorf("%s resolves to %s (local addresses are never proxied)", host, a)
+			return "", nil, fmt.Errorf("%s resolves to %s (local addresses are never proxied)", host, a)
 		case "private":
 			if !exact {
-				return "", fmt.Errorf("%s resolves to a private address (%s); allow it with an exact rule like %s://%s", host, a, scheme, net.JoinHostPort(host, port))
+				return "", nil, fmt.Errorf("%s resolves to a private address (%s); allow it with an exact rule like %s://%s", host, a, scheme, net.JoinHostPort(host, port))
 			}
 		}
 	}
-	return net.JoinHostPort(addrs[0].Unmap().String(), port), nil
+	return net.JoinHostPort(addrs[0].Unmap().String(), port), rules, nil
 }
+
+// checkTunnel stops domain fronting: an HTTPS tunnel approved for host must
+// actually be TLS to host. It reads the TLS ClientHello (the bytes stay in
+// in, to be forwarded) and compares its server name. Non-TLS tunnels, or TLS
+// without a name, are only allowed by an explicit tcp:// rule (or to an IP).
+func checkTunnel(in *bufio.Reader, host string, rules []policy.HostRule) error {
+	raw := false
+	for _, h := range rules {
+		raw = raw || h.Scheme == "tcp"
+	}
+	first, err := in.Peek(1)
+	if err != nil {
+		return err
+	}
+	if first[0] != 0x16 { // not a TLS handshake record
+		if raw {
+			return nil
+		}
+		return errors.New("not TLS (allow raw traffic with a tcp:// rule)")
+	}
+	name, err := peekServerName(in)
+	if err != nil {
+		return err
+	}
+	_, isIP := netip.ParseAddr(host)
+	switch {
+	case name == "" && (raw || isIP == nil):
+		return nil
+	case name == "":
+		return errors.New("TLS without a server name")
+	case !strings.EqualFold(strings.TrimSuffix(name, "."), host):
+		return fmt.Errorf("TLS server name %q doesn't match the approved host", name)
+	}
+	return nil
+}
+
+// peekServerName parses the ClientHello with Go's TLS stack without
+// consuming it from in.
+func peekServerName(in *bufio.Reader) (string, error) {
+	header, err := in.Peek(5)
+	if err != nil {
+		return "", err
+	}
+	size := 5 + (int(header[3])<<8 | int(header[4]))
+	if size > in.Size() {
+		return "", errors.New("ClientHello too large")
+	}
+	record, err := in.Peek(size)
+	if err != nil {
+		return "", err
+	}
+	var name string
+	errSeen := errors.New("seen")
+	_ = tls.Server(helloConn{bytes.NewReader(record)}, &tls.Config{
+		GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+			name = h.ServerName
+			return nil, errSeen
+		},
+	}).Handshake()
+	return name, nil
+}
+
+// helloConn feeds recorded bytes to tls.Server and swallows its replies.
+type helloConn struct{ r io.Reader }
+
+func (c helloConn) Read(p []byte) (int, error)     { return c.r.Read(p) }
+func (helloConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (helloConn) Close() error                     { return nil }
+func (helloConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (helloConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (helloConn) SetDeadline(time.Time) error      { return nil }
+func (helloConn) SetReadDeadline(time.Time) error  { return nil }
+func (helloConn) SetWriteDeadline(time.Time) error { return nil }

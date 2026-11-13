@@ -30,7 +30,7 @@ plus every running Lima VM.
 
 ```
 sydguard [flags] [--] command [args...]
-  --rules NAME|FILE   rules file; default <git root>/.sydguard.json, NAME = .sydguard/NAME.json
+  --rules NAME|FILE   rules file; default ./.sydguard.json, NAME = ./.sydguard/NAME.json
                       (two agents in one folder can use different rules)
   --learn             allow everything; save what the command used into the rules file
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
@@ -125,7 +125,7 @@ You can still give agents their own scoped tokens via `env` (e.g. a fine-grained
 
 ## Rules
 
-`<git root>/.sydguard.json` (committable) or `--rules`, plus "all projects" rules
+`.sydguard.json` in the folder you launch in (committable) or `--rules`, plus "all projects" rules
 in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 
 ```json
@@ -138,16 +138,21 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 }
 ```
 
-- **Built in** (shown in the UI): system dirs read-only; the project and `/tmp`
-  read+write. `write` = read + create/modify/delete/rename.
-- **hosts** are by name: `github.com` (any port/protocol), `https://github.com`
-  (443), `http://x:8080`, `tcp://host:port`, `*.example.com` (subdomains only).
-  They apply to the per-session HTTP(S) proxy *and* to tools that bypass it: the
-  session's private DNS server only answers approved names and then allows the
-  returned IPs on the rule's ports. Unapproved names don't resolve at all (no DNS
-  leaks). Loopback/link-local destinations are never allowed by a host rule;
-  private/LAN addresses need an exact `protocol://host[:port]` rule. HTTPS is
+- **Built in** (shown in the UI): system dirs read-only; the folder you launched
+  in and `/tmp` read+write. Nothing above it: launch at a repo's root if the agent
+  should commit (`.git` must be inside; its hooks and config stay protected). `write` = read + create/modify/delete/rename.
+- **hosts** are by name: `github.com` (any port), `https://github.com` (443),
+  `http://x:8080`, `*.example.com` (subdomains only) — all go through the
+  per-session HTTP(S) proxy, which checks every request by name, and for HTTPS
+  also checks that the TLS server name matches (no domain fronting). HTTPS is
   decided by host and port, not URL path (no TLS interception).
+  `tcp://host:port` additionally allows **raw** connections for tools that bypass
+  the proxy (databases, …): the session's private DNS server answers approved
+  names and allows the returned IPs on that port, for the answer's TTL (1 min–1 h).
+  Only `tcp://` rules open raw access, so shared CDN IPs stay closed otherwise.
+  Unapproved names don't resolve at all — not even by the proxy (no DNS leaks).
+  Loopback/link-local destinations are never allowed; private/LAN addresses need
+  an exact `protocol://host[:port]` rule.
 - **connect** is raw IP/socket access (advanced); prefer hosts.
 - **Protected**: the sandbox can't read `~/.config/sydguard`, sydguard's state,
   `~/.ssh`, `~/.gnupg`, `~/.lima`, and can't modify rules files, `.sydguard/`,

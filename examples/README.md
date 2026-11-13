@@ -8,7 +8,7 @@
   branches, create/view/comment on PRs, PR checks, view/comment on issues, GitHub
   Actions runs and logs, CircleCI pipelines. They run on your machine with your
   normal `git`/`gh`/`circleci` logins (git hooks disabled); edit or drop any.
-- `sydguard.json` — a project rules file (`<git root>/.sydguard.json`).
+- `sydguard.json` — a project rules file (`.sydguard.json` in the folder you launch in).
 - `AGENTS-snippet.md` — a few lines to paste into `AGENTS.md`/`CLAUDE.md` so agents
   know about `sydguard cmd`.
 - `lima/ai-sandbox.yaml` — a full AI coding VM (Go, Node/pnpm, Bun, uv, Playwright,

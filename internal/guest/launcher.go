@@ -85,17 +85,6 @@ var namespacesOK = sync.OnceValue(func() bool {
 	return exec.Command(engine, "-poff", "-m", "unshare/user:1", "-m", "unshare/mount:1", "--", "/bin/true").Run() == nil
 })
 
-// projectRoot is the git top level of dir, else dir itself.
-func projectRoot(dir string) string {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
-	if err == nil {
-		if p := strings.TrimSpace(string(out)); p != "" {
-			return p
-		}
-	}
-	return dir
-}
-
 // confirmTrust asks on the terminal before using a rules file sydguard didn't
 // write itself (hand edit, git pull, freshly cloned repo).
 func confirmTrust(file string) error {
@@ -144,7 +133,7 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	cwd, _ = filepath.EvalSymlinks(cwd)
-	project := projectRoot(cwd)
+	project := cwd // only the folder you launched in is writable (not its git root)
 	if project == "/" || project == system.Home() || project == filepath.Dir(system.Home()) {
 		return 1, fmt.Errorf("refusing to make %s writable; run from a project directory", project)
 	}

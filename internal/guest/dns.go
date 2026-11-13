@@ -30,7 +30,9 @@ import (
 // proxy (psql, redis-cli, ssh-less git, UDP...) host-NAME rules, and closes
 // DNS as a way to leak data through unapproved names.
 
-const dnsWait = 4 * time.Second // resolvers retry; a card can be approved meanwhile
+// How long one lookup waits for your decision. The card stays afterwards:
+// approve it any time and the agent's retry resolves.
+const dnsWait = 8 * time.Second
 
 type dnsServer struct {
 	d      *Daemon
@@ -284,7 +286,7 @@ func (x *dnsServer) ask(name string) bool {
 		return false
 	}
 	c := x.d.addCardLocked(x.s, "hosts", "dns://"+name, "", x.s.Learn, false,
-		"name lookup — approve to let tools that bypass the proxy connect to it (add :port to limit)")
+		"name lookup by a tool that bypasses the proxy. If it times out, approve anyway: the agent's retry works. tcp:// allows raw connections (add :port to limit)")
 	if x.s.Learn || c == nil {
 		x.d.mu.Unlock()
 		x.d.events.Notify()
@@ -359,7 +361,9 @@ func (x *dnsServer) grant(name string, resp []byte, rules []policy.HostRule) {
 		class := addrClass(ip)
 		x.Names[ip.Unmap().String()] = name
 		for _, h := range rules {
-			if class == "blocked" || (class == "private" && !h.Exact()) {
+			// Only tcp:// rules open raw connections; http(s) names stay proxy-only,
+			// where every request is checked by name (shared CDN IPs stay closed).
+			if h.Scheme != "tcp" || class == "blocked" || (class == "private" && !h.Exact()) {
 				continue
 			}
 			key := h.String()
@@ -397,7 +401,7 @@ func (x *dnsServer) regrant(ip, name, port string) bool {
 	var cmds []string
 	x.mu.Lock()
 	for _, h := range matchingRules(x.rules(), name) {
-		if !h.Match(policy.ConnectScheme(port), name, port) || class == "blocked" || (class == "private" && !h.Exact()) {
+		if h.Scheme != "tcp" || !h.Match("tcp", name, port) || class == "blocked" || (class == "private" && !h.Exact()) {
 			continue
 		}
 		key, target := h.String(), ip+"!"+h.PortRange()

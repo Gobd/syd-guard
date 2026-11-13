@@ -854,8 +854,8 @@ func (d *Daemon) addCardLocked(s *Session, kind, target, cmd string, learned, di
 		scheme, rest, _ := strings.Cut(target, "://")
 		if host, port, err := net.SplitHostPort(rest); err == nil {
 			c.Options = policy.HostSuggestions(scheme, host, port)
-		} else {
-			c.Options = policy.HostSuggestions("", rest, "")
+		} else { // DNS lookup: no port yet; raw access needs a tcp:// rule
+			c.Options = append([]string{"tcp://" + rest}, policy.HostSuggestions("", rest, "")...)
 		}
 	default:
 		c.Options = []string{target}

@@ -65,6 +65,9 @@ check "unknown host paused as a card" "cards | grep -q 'hosts https://github.com
 api /api/allow "{\"scope\":\"rules\",\"file\":\"$R\",\"kind\":\"hosts\",\"pattern\":\"https://github.com\"}" >/dev/null
 wait; check "paused request continued after approval" "tail -1 out3b | grep -q 200"
 
+sydguard -- sh -c 'curl -s -m 10 -o /dev/null -w "%{http_code}\n" --connect-to other.example:443:example.com:443 https://other.example; echo "exit=$?"' > out3c 2>&1
+check "TLS name must match the approved host (no domain fronting)" "! grep -q '^200' out3c"
+
 echo "4. two rules files in one folder (--rules)"
 api /api/allow "{\"scope\":\"rules\",\"file\":\"$DIR/.sydguard/reader.json\",\"kind\":\"read\",\"pattern\":\"$SECRET/**\"}" >/dev/null
 sydguard --rules reader -- cat "$SECRET/a.txt" > out4a 2>&1
@@ -73,6 +76,12 @@ check "--rules reader can read" "grep -q top-secret out4a"
 check "default rules can't" "grep -q 'Permission denied' out4b"
 sydguard --rules reader -- sh -c "echo x > .sydguard/reader.json" > out4c 2>&1
 check "agent can't edit its --rules file" "grep -q 'Permission denied' out4c"
+
+echo "4b. only the launch folder is writable"
+mkdir -p "$DIR/sub"
+(cd "$DIR/sub" && sydguard -- sh -c 'echo ok > here.txt && echo x > ../above.txt' > ../out4d 2>&1)
+check "launch folder writable" "[ -f '$DIR/sub/here.txt' ]"
+check "its parent is not" "grep -q 'above.txt: Permission denied' out4d"
 
 echo "5. daemon restart while an agent runs"
 sydguard -- bash agent.sh > out5 2>&1 &

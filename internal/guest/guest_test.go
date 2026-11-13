@@ -1,9 +1,13 @@
 package guest
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +44,7 @@ func TestProxyDoesNotResolveBeforeApproval(t *testing.T) {
 	d.sessions[s.ID] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // nobody answers the card
-	if _, err := d.decide(ctx, s, "https", "secret-data.attacker.example", "443"); err == nil {
+	if _, _, err := d.decide(ctx, s, "https", "secret-data.attacker.example", "443"); err == nil {
 		t.Fatal("unapproved host was allowed")
 	}
 	if lookups != 0 {
@@ -49,7 +53,7 @@ func TestProxyDoesNotResolveBeforeApproval(t *testing.T) {
 	if _, _, err := d.store.Edit(rules, policy.AddRule("hosts", "https://example.com")); err != nil {
 		t.Fatal(err)
 	}
-	if addr, err := d.decide(context.Background(), s, "https", "example.com", "443"); err != nil || addr != "93.184.216.34:443" || lookups != 1 {
+	if addr, _, err := d.decide(context.Background(), s, "https", "example.com", "443"); err != nil || addr != "93.184.216.34:443" || lookups != 1 {
 		t.Fatalf("approved host: %q %v (lookups %d)", addr, err, lookups)
 	}
 }
@@ -66,5 +70,34 @@ func TestDNSGrantsExpire(t *testing.T) {
 	}
 	if clampTTL(5) != minGrantTTL || clampTTL(86400) != maxGrantTTL || clampTTL(300) != 5*time.Minute {
 		t.Error("TTL clamp")
+	}
+}
+
+// helloFor captures a real TLS ClientHello for serverName.
+func helloFor(t *testing.T, serverName string) *bufio.Reader {
+	t.Helper()
+	a, b := net.Pipe()
+	go func() {
+		_ = tls.Client(a, &tls.Config{ServerName: serverName, InsecureSkipVerify: true}).Handshake() //nolint:gosec // test fixture
+	}()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	return bufio.NewReaderSize(b, 5+16<<10)
+}
+
+func TestTunnelServerNameMustMatch(t *testing.T) {
+	if err := checkTunnel(helloFor(t, "github.com"), "github.com", nil); err != nil {
+		t.Errorf("matching name refused: %v", err)
+	}
+	if err := checkTunnel(helloFor(t, "evil.example"), "github.com", nil); err == nil {
+		t.Error("domain fronting allowed")
+	}
+	plain := bufio.NewReader(strings.NewReader("GET / HTTP/1.1\r\n\r\n"))
+	if err := checkTunnel(plain, "github.com", nil); err == nil {
+		t.Error("non-TLS tunnel allowed without a tcp:// rule")
+	}
+	tcp, _ := policy.ParseHostRule("tcp://db.example.com:5432")
+	plain = bufio.NewReader(strings.NewReader("PGSQL..."))
+	if err := checkTunnel(plain, "db.example.com", []policy.HostRule{tcp}); err != nil {
+		t.Errorf("tcp:// rule should allow raw tunnels: %v", err)
 	}
 }
