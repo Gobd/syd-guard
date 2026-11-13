@@ -10,23 +10,29 @@ import (
 
 const usage = `sydguard — run a command under Syd, approve access in a browser.
 
-  sydguard [flags] -- command [args...]   run under the project's rules
-  sydguard --learn -- command [args...]   allow everything, record suggestions
+  sydguard [flags] -- command [args...]   run under the rules file
+  sydguard --learn -- command [args...]   allow everything, save what it used
   sydguard ui                             open the approvals UI
-  sydguard daemon                         run the UI/proxy daemon (auto-started)
+  sydguard doctor                         check the Syd engine and daemon
 
-Flags (macOS → Lima):
-  --vm NAME     Lima instance (default $SYDGUARD_VM or ai-sandbox)
-  --lima FILE   Lima config used if the VM must be created
+Flags:
+  --rules NAME|FILE  rules file. Default <git root>/.sydguard.json;
+                     NAME = <git root>/.sydguard/NAME.json; or any path.
+                     Lets two agents in one folder use different rules.
+  --learn            permissive run; saves what the agent used into the rules file
+  --vm NAME          (macOS) Lima instance; default $SYDGUARD_VM or ai-sandbox
+  --lima FILE        (macOS) Lima config used if the VM must be created;
+                     default $SYDGUARD_LIMA or the built-in template
 
-Rules: <project>/.sydguard.json (project = git root), plus
-~/.config/sydguard/global.json. The sandbox can never write either.
+Global rules for every project: ~/.config/sydguard/global.json (on the Mac).
+The sandbox can never write rules files; changes made outside sydguard must be
+trusted before they're used.
 `
 
 type opts struct {
-	vm, limaFile, command string
-	learn                 bool
-	args                  []string
+	vm, limaFile, rules, command string
+	learn, fromMac               bool
+	args                         []string
 }
 
 func parse(argv []string) (opts, error) {
@@ -43,6 +49,7 @@ func parse(argv []string) (opts, error) {
 			i++
 			return argv[i], nil
 		}
+		flag, _, _ := strings.Cut(a, "=")
 		var err error
 		switch {
 		case a == "--":
@@ -50,16 +57,20 @@ func parse(argv []string) (opts, error) {
 			return o, nil
 		case a == "--learn":
 			o.learn = true
-		case a == "--vm" || strings.HasPrefix(a, "--vm="):
+		case a == "--from-mac":
+			o.fromMac = true
+		case flag == "--vm":
 			o.vm, err = value()
-		case a == "--lima" || strings.HasPrefix(a, "--lima="):
+		case flag == "--lima":
 			o.limaFile, err = value()
+		case flag == "--rules":
+			o.rules, err = value()
 		case a == "-h" || a == "--help" || a == "help":
 			o.command = "help"
 			return o, nil
 		case strings.HasPrefix(a, "-"):
 			return o, fmt.Errorf("unknown flag %s", a)
-		case o.command == "" && (a == "ui" || a == "daemon" || a == "daemon-ensure" || a == "version"):
+		case o.command == "" && (a == "ui" || a == "ui-server" || a == "daemon" || a == "daemon-ensure" || a == "version" || a == "doctor"):
 			o.command = a
 		default:
 			o.args = argv[i:]
@@ -78,11 +89,16 @@ func main() {
 		fmt.Fprint(os.Stderr, err, "\n\n", usage)
 		os.Exit(2)
 	}
+	_ = selfVersion() // hash our binary now, before any upgrade replaces it
 	switch {
 	case o.command == "help" || (o.command == "" && len(o.args) == 0):
 		fmt.Print(usage)
 	case o.command == "version":
 		fmt.Println(selfVersion())
+	case o.command == "ui-server":
+		if err := runUIServer(); err != nil {
+			os.Exit(fail(err))
+		}
 	case isMac():
 		os.Exit(limaMain(o))
 	case o.command == "daemon":
@@ -94,19 +110,20 @@ func main() {
 		if err != nil {
 			os.Exit(fail(err))
 		}
-		token, _ := readToken()
-		status := "running"
-		if started {
-			status = "started"
-		}
-		fmt.Println(status, uiURL(token))
+		fmt.Println(map[bool]string{true: "started", false: "running"}[started])
+	case o.command == "doctor":
+		os.Exit(cmdDoctor())
 	case o.command == "ui":
 		if _, err := ensureDaemon(); err != nil {
 			os.Exit(fail(err))
 		}
-		token, _ := readToken()
+		if _, err := ensureUIServer(); err != nil {
+			os.Exit(fail(err))
+		}
+		token, _ := uiToken()
+		openBrowser(uiURL(token))
 		fmt.Println(uiURL(token))
 	default:
-		os.Exit(cmdRun(o.args, o.learn))
+		os.Exit(cmdRun(o))
 	}
 }

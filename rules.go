@@ -1,15 +1,12 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -17,18 +14,19 @@ import (
 // Rules is the whole user-facing policy language.
 //
 //	read/write: path globs. "*" = one path segment, "**" = anything,
-//	            "/dir/**" (or Syd's "/dir/***") = dir and everything below.
-//	hosts:      domain globs for the HTTP(S) proxy: "github.com", "*.github.com",
-//	            optionally ":port". "*.x.com" does not match "x.com".
+//	            "/dir/**" (Syd: "/dir/***") = dir and everything below. "~/" ok.
+//	hosts:      [protocol://]host[:port] for the HTTP(S) proxy, by NAME never IP:
+//	            "github.com" (any port/protocol), "https://github.com" (443),
+//	            "*.github.com" (subdomains), "tcp://db.example.com:5432".
 //	connect:    raw Syd network targets for tools that ignore the proxy, e.g.
-//	            "140.82.112.3!22", "127.0.0.1!8080", "/run/user/1000/bus".
+//	            "140.82.112.3!22" or "/run/user/1000/bus". Advanced; prefer hosts.
+//	ignore:     path or host globs that stay denied without asking again.
 type Rules struct {
 	Read    []string `json:"read,omitempty"`
 	Write   []string `json:"write,omitempty"`
 	Hosts   []string `json:"hosts,omitempty"`
 	Connect []string `json:"connect,omitempty"`
-	// Ignore: path or host globs that stay denied without asking again.
-	Ignore []string `json:"ignore,omitempty"`
+	Ignore  []string `json:"ignore,omitempty"`
 }
 
 var kinds = []string{"read", "write", "hosts", "connect", "ignore"}
@@ -49,206 +47,281 @@ func (r *Rules) list(kind string) *[]string {
 	return nil
 }
 
+func (r Rules) clone() Rules {
+	c := Rules{}
+	for _, k := range kinds {
+		*c.list(k) = slices.Clone(*r.list(k))
+	}
+	return c
+}
+
 func home() string { h, _ := os.UserHomeDir(); return h }
 
 func configDir() string { return filepath.Join(home(), ".config", "sydguard") }
 func stateDir() string  { return filepath.Join(home(), ".local", "state", "sydguard") }
 
-const projectFile = ".sydguard.json"
-
-// profilePath returns where rules live: <project>/.sydguard.json (committable;
-// the sandbox can never write it), or the global file for project "".
-func profilePath(project string) string {
-	if project == "" {
-		return filepath.Join(configDir(), "global.json")
-	}
-	return filepath.Join(project, projectFile)
-}
-
-func loadRulesBytes(project string) (Rules, []byte, error) {
-	var r Rules
-	data, err := os.ReadFile(profilePath(project))
-	if errors.Is(err, os.ErrNotExist) {
-		return Rules{}, nil, nil
-	} else if err != nil {
-		return Rules{}, nil, err
-	}
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&r); err != nil {
-		return Rules{}, data, fmt.Errorf("%s: %w", profilePath(project), err)
-	}
-	return r, data, nil
-}
-
-func loadRules(project string) (Rules, error) {
-	r, _, err := loadRulesBytes(project)
-	return r, err
-}
-
-func saveRules(project string, r Rules) error {
-	p := profilePath(project)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return err
-	}
-	data, _ := json.MarshalIndent(r, "", "  ")
-	data = append(data, '\n')
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		return err
-	}
-	if project != "" {
-		return trust(project, data)
+// safeText rejects anything that could break out of a single Syd command line.
+func safeText(s string) error {
+	if s == "" || len(s) > 4096 || strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || r == unicode.ReplacementChar }) >= 0 {
+		return fmt.Errorf("invalid text %q", s)
 	}
 	return nil
 }
 
-// Trust: the hash of the last project file sydguard wrote or the user accepted.
-// A file changed elsewhere (editor, git pull, cloned repo) must be re-trusted.
-func trustPath(project string) string {
-	sum := sha256.Sum256([]byte(project))
-	return filepath.Join(configDir(), "trusted", hex.EncodeToString(sum[:12]))
-}
-
-func hashOf(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-
-func trust(project string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(trustPath(project)), 0o700); err != nil {
+// safePath is safeText plus: absolute, no "..".
+func safePath(p string) error {
+	if err := safeText(p); err != nil {
 		return err
 	}
-	return os.WriteFile(trustPath(project), []byte(project+"\n"+hashOf(data)+"\n"), 0o600)
+	if !filepath.IsAbs(p) || slices.Contains(strings.Split(p, "/"), "..") {
+		return fmt.Errorf("path must be absolute without '..': %q", p)
+	}
+	return nil
 }
 
-func trusted(project string, data []byte) bool {
-	if data == nil {
-		return true // no file yet
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		return home() + p[1:]
 	}
-	b, err := os.ReadFile(trustPath(project))
-	return err == nil && strings.HasSuffix(strings.TrimSpace(string(b)), hashOf(data))
-}
-
-// knownProjects lists every project sydguard has trusted, for the UI.
-func knownProjects() []string {
-	files, _ := filepath.Glob(filepath.Join(configDir(), "trusted", "*"))
-	var out []string
-	for _, f := range files {
-		if b, err := os.ReadFile(f); err == nil {
-			if p, _, ok := strings.Cut(string(b), "\n"); ok && filepath.IsAbs(p) {
-				out = append(out, p)
-			}
-		}
-	}
-	return out
+	return p
 }
 
 // normalize validates a rule and returns its canonical stored form.
 func normalize(kind, pattern string) (string, error) {
 	pattern = strings.TrimSpace(pattern)
-	if pattern == "" || strings.IndexFunc(pattern, unicode.IsControl) >= 0 {
-		return "", fmt.Errorf("empty or invalid rule")
+	if err := safeText(pattern); err != nil {
+		return "", err
 	}
 	switch kind {
 	case "read", "write":
-		if pattern == "~" || strings.HasPrefix(pattern, "~/") {
-			pattern = home() + pattern[1:]
-		}
-		if !strings.HasPrefix(pattern, "/") {
-			return "", fmt.Errorf("path rules must be absolute: %q", pattern)
-		}
+		pattern = expandHome(pattern)
 		if strings.HasSuffix(pattern, "/**") {
 			pattern += "*"
 		}
-		if pattern != "/" {
+		if len(pattern) > 1 {
 			pattern = strings.TrimSuffix(pattern, "/")
 		}
-	case "hosts":
-		pattern = strings.ToLower(pattern)
-		if strings.ContainsAny(pattern, "/ @") {
-			return "", fmt.Errorf("hosts are domain globs like *.github.com, not URLs")
+		if err := safePath(pattern); err != nil {
+			return "", err
 		}
+		if strings.Contains(pattern, "//") {
+			return "", fmt.Errorf("invalid path %q", pattern)
+		}
+	case "hosts":
+		h, err := parseHostRule(pattern)
+		if err != nil {
+			return "", err
+		}
+		pattern = h.String()
 	case "connect":
-		if strings.ContainsAny(pattern, " \t") {
-			return "", fmt.Errorf("invalid connect target")
+		if strings.ContainsAny(pattern, " ") {
+			return "", fmt.Errorf("invalid connect target %q", pattern)
+		}
+		if strings.HasPrefix(pattern, "/") {
+			if err := safePath(pattern); err != nil {
+				return "", err
+			}
 		}
 	case "ignore":
-		if strings.HasPrefix(pattern, "~/") {
-			pattern = home() + pattern[1:]
-		}
+		pattern = expandHome(pattern)
 	default:
 		return "", fmt.Errorf("unknown rule kind %q", kind)
 	}
 	return pattern, nil
 }
 
-// Protected paths are denied after every grant, so no rule can override them.
-// noAccess blocks read+write; noWrite blocks writes (the project's own rules
-// file, and things that later run outside the sandbox, e.g. shell rc files).
-func protected(project string) (noAccess, noWrite []string) {
-	h := home()
-	noAccess = []string{configDir(), stateDir(), filepath.Join(h, ".ssh"), filepath.Join(h, ".gnupg")}
-	noWrite = []string{filepath.Join(h, ".local", "bin"), filepath.Join(h, ".bashrc"), filepath.Join(h, ".bash_profile"),
-		filepath.Join(h, ".profile"), filepath.Join(h, ".zshrc"), filepath.Join(h, ".zprofile"), filepath.Join(h, ".zshenv"),
-		filepath.Join(h, ".config", "systemd"), filepath.Join(h, ".config", "autostart")}
-	if exe, err := os.Executable(); err == nil {
-		noWrite = append(noWrite, exe)
-	}
-	if project != "" {
-		noWrite = append(noWrite, filepath.Join(project, projectFile), filepath.Join(project, projectFile+".tmp"),
-			filepath.Join(project, ".git", "hooks"), filepath.Join(project, ".git", "config"))
-	}
-	return
+// Host rules ---------------------------------------------------------------
+
+type hostRule struct {
+	Scheme string // "", http, https, tcp
+	Host   string // lowercase name or glob ("*", "*.x.com")
+	Port   string // "" = default for scheme, or any when no scheme
 }
 
-func protectionCommands(project string) []string {
-	var lines []string
-	noAccess, noWrite := protected(project)
-	for _, x := range noAccess {
-		lines = append(lines, "deny/all+"+x, "deny/all+"+x+"/***")
+var hostRe = regexp.MustCompile(`^(\*|(\*\.)?[a-z0-9_]([a-z0-9_-]*[a-z0-9])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9])?)*\.?|\[[0-9a-f:.]+\])$`)
+
+func parseHostRule(s string) (hostRule, error) {
+	var h hostRule
+	s = strings.ToLower(strings.TrimSpace(s))
+	if scheme, rest, ok := strings.Cut(s, "://"); ok {
+		if scheme != "http" && scheme != "https" && scheme != "tcp" {
+			return h, fmt.Errorf("protocol must be http, https or tcp: %q", s)
+		}
+		h.Scheme, s = scheme, rest
 	}
-	for _, x := range noWrite {
-		lines = append(lines, "deny/"+denyWriteCaps+"+"+x, "deny/"+denyWriteCaps+"+"+x+"/***")
+	s = strings.TrimSuffix(s, "/")
+	if strings.ContainsAny(s, "/?#@ ") {
+		return h, fmt.Errorf("host rules are [protocol://]host[:port], not URLs: %q", s)
 	}
-	return lines
+	host, port := s, ""
+	if i := strings.LastIndex(s, ":"); i >= 0 && !strings.HasSuffix(s, "]") {
+		host, port = s[:i], s[i+1:]
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+			return h, fmt.Errorf("bad port in %q", s)
+		}
+	}
+	if !hostRe.MatchString(host) {
+		return h, fmt.Errorf("bad host %q", host)
+	}
+	h.Host, h.Port = strings.TrimSuffix(host, "."), port
+	return h, nil
 }
+
+func (h hostRule) String() string {
+	s := h.Host
+	if h.Port != "" {
+		s += ":" + h.Port
+	}
+	if h.Scheme != "" {
+		s = h.Scheme + "://" + s
+	}
+	return s
+}
+
+func defaultPort(scheme string) string {
+	return map[string]string{"http": "80", "https": "443"}[scheme]
+}
+
+// match: scheme is "http" for plain proxied requests, "https"/"tcp" for CONNECT.
+func (h hostRule) match(scheme, host, port string) bool {
+	switch h.Scheme {
+	case "":
+	case "tcp":
+		if scheme == "http" {
+			return false
+		}
+	default:
+		if h.Scheme != scheme {
+			return false
+		}
+	}
+	want := h.Port
+	if want == "" {
+		want = defaultPort(h.Scheme)
+	}
+	if want != "" && want != port {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	switch {
+	case h.Host == "*":
+		return true
+	case strings.HasPrefix(h.Host, "*."):
+		return strings.HasSuffix(host, h.Host[1:])
+	}
+	return host == strings.Trim(h.Host, "[]")
+}
+
+// exact: no wildcard and an explicit or implied port. Only exact rules may
+// reach private (LAN/VPN/host) addresses.
+func (h hostRule) exact() bool {
+	return !strings.Contains(h.Host, "*") && (h.Port != "" || h.Scheme == "http" || h.Scheme == "https")
+}
+
+func connectScheme(port string) string {
+	if port == "443" {
+		return "https"
+	}
+	return "tcp"
+}
+
+func hostSuggestions(scheme, host, port string) []string {
+	first := scheme + "://" + host
+	if port != defaultPort(scheme) {
+		first += ":" + port
+	}
+	out := []string{first, host}
+	parts := strings.Split(host, ".")
+	for i := 1; i < len(parts)-1; i++ {
+		out = append(out, "*."+strings.Join(parts[i:], "."))
+	}
+	return out
+}
+
+// Paths -------------------------------------------------------------------
 
 func under(p, dir string) bool {
-	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
+	return p == dir || dir == "/" || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
 
-// overlaps reports whether pattern could match protected path x or anything below it.
-func overlaps(pattern, x string) bool {
-	lit := pattern
-	if i := strings.IndexAny(pattern, "*?["); i >= 0 {
-		lit = pattern[:i]
-		if j := strings.LastIndex(lit, "/"); j >= 0 {
-			lit = lit[:j]
-		}
-		if lit == "" {
-			lit = "/"
-		}
-		return under(lit, x) || under(x, lit)
+// literalPrefix is the directory part of a pattern before its first wildcard.
+func literalPrefix(pattern string) string {
+	i := strings.IndexAny(pattern, "*?[")
+	if i < 0 {
+		return pattern
 	}
-	return under(lit, x)
+	lit := pattern[:i]
+	if j := strings.LastIndex(lit, "/"); j > 0 {
+		return lit[:j]
+	}
+	return "/"
 }
 
-func checkProtected(project, kind, pattern string) error {
-	noAccess, noWrite := protected(project)
-	for _, x := range noAccess {
+// overlaps reports whether pattern could match protected path x or anything
+// below it. Conservative: may refuse some harmless patterns, never misses.
+func overlaps(pattern, x string) bool {
+	lit := literalPrefix(pattern)
+	if lit == pattern {
+		return under(lit, x)
+	}
+	return under(lit, x) || under(x, lit)
+}
+
+// Protected paths are always denied (and re-denied in every live update).
+// noAccess: no read or write. noWrite: readable, never modifiable.
+type protection struct{ noAccess, noWrite []string }
+
+func protectedFor(project string, rulesFiles ...string) protection {
+	h := home()
+	p := protection{
+		noAccess: []string{configDir(), stateDir(), filepath.Join(h, ".ssh"), filepath.Join(h, ".gnupg"), filepath.Join(h, ".lima")},
+		noWrite: []string{filepath.Join(h, ".local", "bin"), filepath.Join(h, ".bashrc"), filepath.Join(h, ".bash_profile"),
+			filepath.Join(h, ".profile"), filepath.Join(h, ".zshrc"), filepath.Join(h, ".zprofile"), filepath.Join(h, ".zshenv"),
+			filepath.Join(h, ".config", "systemd"), filepath.Join(h, ".config", "autostart")},
+	}
+	if exe, err := os.Executable(); err == nil {
+		p.noWrite = append(p.noWrite, exe)
+	}
+	if project != "" {
+		p.noWrite = append(p.noWrite, filepath.Join(project, defaultRulesName), filepath.Join(project, defaultRulesName+".tmp"),
+			filepath.Join(project, rulesDirName), filepath.Join(project, ".git", "hooks"), filepath.Join(project, ".git", "config"))
+	}
+	for _, f := range rulesFiles {
+		if f != "" {
+			p.noWrite = append(p.noWrite, f, f+".tmp")
+		}
+	}
+	return p
+}
+
+func (p protection) check(kind, pattern string) error {
+	if kind != "read" && kind != "write" {
+		return nil
+	}
+	for _, x := range p.noAccess {
 		if overlaps(pattern, x) {
-			return fmt.Errorf("%s overlaps protected path %s", pattern, x)
+			return fmt.Errorf("%s overlaps protected %s", pattern, x)
 		}
 	}
 	if kind == "write" {
-		for _, x := range noWrite {
+		for _, x := range p.noWrite {
 			if overlaps(pattern, x) {
-				return fmt.Errorf("%s overlaps write-protected path %s", pattern, x)
+				return fmt.Errorf("%s overlaps write-protected %s", pattern, x)
 			}
 		}
 	}
 	return nil
+}
+
+func (p protection) commands() []string {
+	var lines []string
+	for _, x := range p.noAccess {
+		lines = append(lines, "deny/"+writeCaps+"+"+x, "deny/"+writeCaps+"+"+x+"/***")
+	}
+	for _, x := range p.noWrite {
+		lines = append(lines, "deny/"+modifyCaps+"+"+x, "deny/"+modifyCaps+"+"+x+"/***")
+	}
+	return lines
 }
 
 // globRegexp converts a path rule (Syd glob semantics) to a regexp.
@@ -284,50 +357,15 @@ func globRegexp(pattern string) *regexp.Regexp {
 
 func matchPath(pattern, p string) bool { return globRegexp(pattern).MatchString(p) }
 
-// matchHost: "*.x.com" matches subdomains, "*" matches all, optional ":port".
-func matchHost(pattern, host, port string) bool {
-	if h, p, ok := strings.Cut(pattern, ":"); ok {
-		if p != port {
-			return false
-		}
-		pattern = h
-	}
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	switch {
-	case pattern == "*":
-		return true
-	case strings.HasPrefix(pattern, "*."):
-		return strings.HasSuffix(host, pattern[1:])
-	}
-	return host == pattern
-}
-
-// Syd capability sets for each rule kind. write implies read.
+// Syd capabilities. "write" in a rule means read + modify, not Syd's "all".
 const (
-	readCaps  = "read,readdir,readlink,chdir,stat,exec"
-	writeCaps = "all"
-	// denyWriteCaps blocks modification but still allows read/exec.
-	denyWriteCaps = "write,create,delete,rename,truncate,symlink,chmod,chattr,chown,chgrp,utime,mkdir,rmdir,mkfifo,mktemp"
+	readCaps   = "read,readdir,readlink,chdir,stat,exec"
+	modifyCaps = "write,create,delete,rename,truncate,symlink,chmod,chattr,chown,chgrp,utime,mkdir,rmdir,mkfifo,mktemp"
+	writeCaps  = readCaps + "," + modifyCaps
 )
 
-func ignored(r []Rules, kind, target string) bool {
-	for _, rules := range r {
-		for _, p := range rules.Ignore {
-			if kind == "hosts" {
-				h, port, _ := strings.Cut(target, ":")
-				if matchHost(p, h, port) {
-					return true
-				}
-			} else if p == target || (strings.HasPrefix(p, "/") && matchPath(p, target)) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // sydCommands turns a rule into the Syd commands that grant (op "+") or
-// revoke (op "-") it. Hosts are enforced by the proxy, not Syd.
+// revoke (op "-") it. Hosts and ignores are enforced by sydguard, not Syd.
 func sydCommands(kind, pattern, op string) []string {
 	switch kind {
 	case "read":
@@ -340,51 +378,88 @@ func sydCommands(kind, pattern, op string) []string {
 	return nil
 }
 
+// Baseline: what every session gets without any rules. Shown in the UI.
+type baseRule struct {
+	Kind    string `json:"kind"`
+	Pattern string `json:"pattern"`
+	Why     string `json:"why"`
+}
+
+func baseline(project string) []baseRule {
+	var out []baseRule
+	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run/systemd/resolve", "/snap"} {
+		out = append(out, baseRule{"read", p + "/***", "system"})
+	}
+	out = append(out, baseRule{"write", project + "/***", "the project (git root)"})
+	for _, p := range []string{"/tmp/***", "/var/tmp/***", "/dev/shm/***"} {
+		out = append(out, baseRule{"write", p, "temporary files"})
+	}
+	return out
+}
+
+type profileInput struct {
+	Project   string
+	Rules     []Rules
+	Launch    []string
+	Protect   protection
+	ProxyPort int
+	IPC       string
+	Learn     bool
+}
+
 // compileProfile builds the Syd profile for one session.
-func compileProfile(project string, rules []Rules, proxyPort int, ipc string, learn bool) string {
-	h := home()
+func compileProfile(in profileInput) (string, error) {
+	if err := safePath(in.Project); err != nil {
+		return "", err
+	}
+	if err := safeText(in.IPC); err != nil {
+		return "", err
+	}
 	lines := []string{
-		"# generated by sydguard; edit rules in " + configDir(),
-		"sandbox/lock:off", "sandbox/fs:off", "sandbox/ioctl:off", "sandbox/stat:off", "sandbox/tpe:off",
-		"trace/allow_unsafe_exec_nopie:1", "trace/allow_unsafe_symlinks:1", "trace/allow_unsafe_exec_memory:1", // JITs: node, bun, jvm
+		"# generated by sydguard",
+		// Landlock off: live grants may go anywhere you approve (no fixed kernel
+		// ceiling). Syd still enforces every path rule via seccomp-unotify.
+		"sandbox/lock:off", "sandbox/fs:off", "sandbox/ioctl:off", "sandbox/stat:off",
+		// Agents run from ~/.local/bin, ~/.pi, pnpm (group-writable dirs under
+		// Ubuntu's umask, symlink-heavy) and use JITs (node, bun).
+		"sandbox/tpe:off", "trace/allow_unsafe_symlinks:1", "trace/allow_unsafe_exec_nopie:1", "trace/allow_unsafe_exec_memory:1",
+		"passenv+*_PROXY", "passenv+*_proxy",
 		"allow/create+!*", "allow/net/bind+!unnamed",
 		"allow/net/bind+127.0.0.1!0-65535", "allow/net/bind+::1!0-65535",
-		fmt.Sprintf("allow/net/connect+127.0.0.1!%d", proxyPort),
-		"allow/read,readdir,chdir+/",
+		fmt.Sprintf("allow/net/connect+127.0.0.1!%d", in.ProxyPort),
+		"allow/read,readdir,chdir+/", "allow/chdir,readlink+" + home(),
 	}
-	if learn {
+	if in.Learn {
 		lines = append(lines, "default/all:warn", "default/net:warn")
 	}
-	// Syd strips proxy variables from the agent's environment unless passed.
-	lines = append(lines, "passenv+*_PROXY", "passenv+*_proxy")
-	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run/systemd/resolve", "/snap"} {
-		lines = append(lines, "allow/"+readCaps+"+"+p+"/***")
+	for _, b := range baseline(in.Project) {
+		lines = append(lines, sydCommands(b.Kind, b.Pattern, "+")...)
 	}
-	lines = append(lines, "allow/chdir,readlink+"+h)
-	for _, p := range []string{project + "/***", "/tmp/***", "/var/tmp/***", "/dev/shm/***", "/dev/pts/***", "/dev/null", "/dev/zero", "/dev/tty", "/dev/ptmx", "/dev/full"} {
-		lines = append(lines, "allow/"+writeCaps+"+"+p)
+	for _, p := range []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/ptmx", "/dev/pts/***"} {
+		lines = append(lines, sydCommands("write", p, "+")...)
 	}
-	for _, r := range rules {
-		for _, k := range kinds {
+	for _, p := range in.Launch {
+		if safePath(p) == nil && in.Protect.check("read", p) == nil {
+			lines = append(lines, sydCommands("read", p, "+")...)
+		}
+	}
+	for _, r := range in.Rules {
+		for _, k := range []string{"read", "write", "connect"} {
 			for _, pat := range *r.list(k) {
-				if k == "read" || k == "write" {
-					if norm, err := normalize(k, pat); err == nil {
-						pat = norm
-					} else {
-						continue
-					}
+				norm, err := normalize(k, pat)
+				if err != nil || in.Protect.check(k, norm) != nil {
+					continue // invalid or unsafe rules never reach Syd
 				}
-				lines = append(lines, sydCommands(k, pat, "+")...)
+				lines = append(lines, sydCommands(k, norm, "+")...)
 			}
 		}
 	}
-	lines = append(lines, protectionCommands(project)...)
-	lines = append(lines, "ipc:"+ipc, "lock:ipc")
-	return strings.Join(lines, "\n") + "\n"
+	lines = append(lines, in.Protect.commands()...)
+	lines = append(lines, "ipc:"+in.IPC, "lock:ipc")
+	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// suggestions offers the exact path plus parent directories (stopping above
-// home or two levels below /).
+// suggestions: the exact path first, then parents (not above home).
 func suggestions(p string, dir bool) []string {
 	var out []string
 	if dir {
@@ -397,15 +472,6 @@ func suggestions(p string, dir bool) []string {
 		out = append(out, d+"/***")
 	}
 	return slices.Compact(out)
-}
-
-func hostSuggestions(host string) []string {
-	out := []string{host}
-	parts := strings.Split(host, ".")
-	for i := 1; i < len(parts)-1; i++ {
-		out = append(out, "*."+strings.Join(parts[i:], "."))
-	}
-	return out
 }
 
 // learnRoot collapses a path to the folder a person would approve:
@@ -428,10 +494,37 @@ func learnRoot(p string) string {
 		n = 3
 	}
 	if len(parts) <= n && !strings.HasPrefix(parts[0], ".") {
-		return filepath.Dir(p) // a plain file in home: suggest only its folder
+		return filepath.Dir(p)
 	}
 	if len(parts) < n {
 		n = len(parts)
 	}
 	return filepath.Join(append([]string{h}, parts[:n]...)...)
+}
+
+// hostOf strips protocol and port from a host card target.
+func hostOf(target string) string {
+	if _, rest, ok := strings.Cut(target, "://"); ok {
+		target = rest
+	}
+	if i := strings.LastIndex(target, ":"); i >= 0 && !strings.HasSuffix(target, "]") {
+		target = target[:i]
+	}
+	return target
+}
+
+func ignored(r []Rules, kind, target string) bool {
+	for _, rules := range r {
+		for _, p := range rules.Ignore {
+			if kind == "hosts" {
+				host := hostOf(target)
+				if h, err := parseHostRule(p); err == nil && (h.Host == host || h.Host == "*" || (strings.HasPrefix(h.Host, "*.") && strings.HasSuffix(host, h.Host[1:]))) {
+					return true
+				}
+			} else if p == target || (strings.HasPrefix(p, "/") && matchPath(p, target)) {
+				return true
+			}
+		}
+	}
+	return false
 }

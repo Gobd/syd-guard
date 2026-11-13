@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 const approvalTimeout = 10 * time.Minute
 
 // startProxy gives a session its own HTTP(S) proxy. Syd only lets the agent
-// connect to this port, so every web request is decided here by host name.
+// connect to this port, so every web request is decided here by host NAME.
 // Adopted sessions reuse their previous port.
 func (d *Daemon) startProxy(s *Session) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.ProxyPort))
@@ -28,13 +29,13 @@ func (d *Daemon) startProxy(s *Session) error {
 
 var hopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authorization", "Proxy-Authenticate", "Te", "Trailer", "Transfer-Encoding", "Upgrade"}
 
-var upstream = &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 15 * time.Second}).DialContext, ForceAttemptHTTP2: false, IdleConnTimeout: 90 * time.Second}
-
 func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) {
-	hostport := r.Host
-	if r.Method != http.MethodConnect {
-		if r.URL.Host == "" {
-			http.Error(w, "sydguard proxy: absolute URL required", http.StatusBadRequest)
+	scheme, hostport := "http", r.Host
+	if r.Method == http.MethodConnect {
+		scheme = ""
+	} else {
+		if r.URL.Host == "" || r.URL.Scheme != "http" {
+			http.Error(w, "sydguard proxy: absolute http:// URL required (use CONNECT for https)", http.StatusBadRequest)
 			return
 		}
 		hostport = r.URL.Host
@@ -42,17 +43,18 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil {
 		host, port = hostport, "80"
-		if r.URL.Scheme == "https" {
-			port = "443"
-		}
 	}
-	if !d.hostAllowed(s, host, port) {
-		http.Error(w, fmt.Sprintf("sydguard: %s:%s was not approved", host, port), http.StatusForbidden)
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if scheme == "" {
+		scheme = connectScheme(port)
+	}
+	addr, err := d.decide(r.Context(), s, scheme, host, port)
+	if err != nil {
+		http.Error(w, "sydguard: "+err.Error(), http.StatusForbidden)
 		return
 	}
-	target := net.JoinHostPort(host, port)
 	if r.Method == http.MethodConnect {
-		up, err := net.DialTimeout("tcp", target, 15*time.Second)
+		up, err := net.DialTimeout("tcp", addr, 15*time.Second)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -77,11 +79,15 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 		_ = client.Close()
 		return
 	}
+	// Plain HTTP: dial the vetted address, never re-resolve.
+	transport := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
+	}}
 	r.RequestURI = ""
 	for _, h := range hopHeaders {
 		r.Header.Del(h)
 	}
-	resp, err := upstream.RoundTrip(r)
+	resp, err := transport.RoundTrip(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -97,50 +103,103 @@ func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) 
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// hostAllowed checks saved rules; if nothing matches it shows a card and holds
-// the request open until the user decides (learn mode allows and records).
-func (d *Daemon) hostAllowed(s *Session, host, port string) bool {
-	host = strings.ToLower(strings.Trim(host, "[]"))
-	if ignored(d.rulesFor(s.Project), "hosts", net.JoinHostPort(host, port)) {
-		return false
+// addrClass: "blocked" (loopback, link-local/metadata, multicast, unspecified),
+// "private" (LAN/VPN/CGNAT/ULA, incl. the Mac via host.lima.internal), "public".
+func addrClass(a netip.Addr) string {
+	a = a.Unmap()
+	switch {
+	case !a.IsValid(), a.IsLoopback(), a.IsUnspecified(), a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast(), a.IsMulticast(), a.IsInterfaceLocalMulticast():
+		return "blocked"
+	case a.IsPrivate(), netip.MustParsePrefix("100.64.0.0/10").Contains(a), netip.MustParsePrefix("198.18.0.0/15").Contains(a):
+		return "private"
 	}
-	for _, project := range []string{"", s.Project} {
-		r, err := loadRules(project)
-		if err != nil {
-			log.Printf("rules: %v", err)
-			return false
+	return "public"
+}
+
+var resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	if a, err := netip.ParseAddr(host); err == nil {
+		return []netip.Addr{a}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// decide returns the vetted ip:port to dial, asking the user when no rule
+// matches (the request waits). Learn mode allows and records.
+func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port string) (string, error) {
+	if _, err := parseHostRule(host); err != nil {
+		return "", fmt.Errorf("bad host %q", host)
+	}
+	target := scheme + "://" + net.JoinHostPort(host, port)
+	rules := []Rules{d.store.get(globalRulesPath()), d.store.get(s.RulesFile)}
+	if ignored(rules, "hosts", target) {
+		return "", fmt.Errorf("%s is always denied", target)
+	}
+	addrs, err := resolve(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return "", fmt.Errorf("cannot resolve %s", host)
+	}
+	class := "public"
+	for _, a := range addrs {
+		switch addrClass(a) {
+		case "blocked":
+			return "", fmt.Errorf("%s resolves to %s (local addresses are never proxied)", host, a)
+		case "private":
+			class = "private"
 		}
-		for _, p := range r.Hosts {
-			if matchHost(p, host, port) {
-				return true
+	}
+	allowed := func() bool {
+		for _, r := range []Rules{d.store.get(globalRulesPath()), d.store.get(s.RulesFile)} {
+			for _, p := range r.Hosts {
+				if h, err := parseHostRule(p); err == nil && h.match(scheme, host, port) && (class == "public" || h.exact()) {
+					return true
+				}
 			}
 		}
+		return false
+	}
+	addr := net.JoinHostPort(addrs[0].Unmap().String(), port)
+	if allowed() {
+		return addr, nil
+	}
+	note := ""
+	if class == "private" {
+		note = fmt.Sprintf("resolves to a private address (%s); only an exact host:port rule allows it", addrs[0])
 	}
 	d.mu.Lock()
 	if _, live := d.sessions[s.ID]; !live {
 		d.mu.Unlock()
-		return false
+		return "", fmt.Errorf("session ended")
 	}
-	c := d.addCardLocked(s, "hosts", net.JoinHostPort(host, port), "", s.Learn, false)
-	if s.Learn || c == nil {
+	c := d.addCardLocked(s, "hosts", target, "", s.Learn && class == "public", false, note)
+	if c == nil {
 		d.mu.Unlock()
-		return s.Learn
+		return "", fmt.Errorf("too many pending approvals")
+	}
+	if s.Learn && class == "public" {
+		d.mu.Unlock()
+		return addr, nil
 	}
 	ch := make(chan bool, 1)
 	c.waiters = append(c.waiters, ch)
 	d.mu.Unlock()
 	select {
 	case ok := <-ch:
-		return ok
-	case <-time.After(approvalTimeout):
-		d.mu.Lock()
-		for i, w := range c.waiters {
-			if w == ch {
-				c.waiters = append(c.waiters[:i], c.waiters[i+1:]...)
-				break
-			}
+		if ok && allowed() {
+			return addr, nil
 		}
-		d.mu.Unlock()
-		return false
+		return "", fmt.Errorf("%s was not approved", target)
+	case <-ctx.Done():
+	case <-time.After(approvalTimeout):
 	}
+	d.mu.Lock()
+	for i, w := range c.waiters {
+		if w == ch {
+			c.waiters = append(c.waiters[:i], c.waiters[i+1:]...)
+			break
+		}
+	}
+	d.mu.Unlock()
+	return "", fmt.Errorf("%s: no decision", target)
 }
