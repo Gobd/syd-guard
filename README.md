@@ -3,8 +3,9 @@
 Run AI coding agents (Claude Code, Codex, Pi, …) under unmodified upstream
 [Syd](https://gitlab.exherbo.org/sydbox/sydbox). Everything the agent isn't
 allowed to do shows up in a browser UI; approve or deny it, edit rules by hand,
-and every change applies **live to the running agent** and is saved to a rules
-file the agent can't touch.
+and changes apply **live to the running agent**, saved to a rules file the agent
+can't touch. Optional Landlock adds a fixed filesystem ceiling: live grants
+within it still work, but widening that ceiling requires a new session.
 
 ```sh
 make install                             # sydguard + the Linux binaries it puts into VMs
@@ -16,12 +17,17 @@ sydguard ui                              # open the approvals UI (http://127.0.0
 
 Where it runs:
 
-- **Linux and WSL2**: directly (Syd is Linux-only). Add `--vm` (or `"vm"` in the
-  config) to use a Lima VM anyway, as a second wall around your files.
-- **Anywhere else (macOS)**: in a Lima VM at the **same path** as your project.
-  sydguard starts the VM if stopped, creates it if missing (built-in default,
-  `--lima FILE` or the config), installs the matching Linux sydguard and, once,
-  the pinned Syd engine. All agents in a VM share it.
+- **Linux and macOS default to Lima**, with project paths mapped through the
+  VM's shares. Sydguard starts/creates the VM as needed and installs the matching
+  Linux binary, Syd engine, and namespace helper. Linux uses QEMU/9p by default;
+  macOS uses VZ/virtiofs. Install Lima and its platform dependencies first.
+- **Native Linux/WSL2** requires `--backend native`, `SYDGUARD_BACKEND=native`,
+  or `"backend": "native"` in the machine config. There is **no silent fallback**
+  if Lima is unavailable. Inside an existing Lima guest, execution defaults to
+  native to avoid nested VMs.
+- `--vm NAME` selects a named VM; `--lima FILE.yaml` supplies its creation
+  configuration. They do not mean different backends. All sessions selecting
+  the same VM share that instance.
 
 The UI runs on the machine where you type `sydguard` and covers its own agents
 plus every running Lima VM.
@@ -32,7 +38,9 @@ plus every running Lima VM.
 sydguard [flags] [--] command [args...]
   --rules NAME|FILE   rules file; default ./.sydguard.json, NAME = ./.sydguard/NAME.json
                       (two agents in one folder can use different rules)
-  --learn             allow everything; save what the command used into the rules file
+  --learn             allow everything Syd can grant; save what the command used
+  --backend TYPE      lima (default outside guests) or native (explicit Linux opt-in)
+  --landlock[=BOOL]   enable/disable a fixed filesystem ceiling; otherwise use config
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
   --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
   --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
@@ -56,11 +64,12 @@ Background processes: the **UI server** runs on the machine where you type
 ## Config
 
 `~/.config/sydguard/config.json` on the machine you run `sydguard` on (the sandbox
-can't read it; see `examples/config.json`). Flags win over env vars, which win
+can't read it; see the [example configs](examples/README.md)). Flags win over env vars, which win
 over the config.
 
 ```json
 {
+  "backend": "lima",
   "vm": "ai-sandbox",
   "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
   "localPorts": [5173],
@@ -75,6 +84,40 @@ of in your project folder (default `node_modules`, `.venv`, `target`): installs 
 builds inside the VM never write Linux binaries or install-script output into the
 host's copy of the project, which just sees an empty folder. With a VM, the needed parts (resolved) are copied into the VM's
 own protected config dir before each run.
+
+## Optional Landlock filesystem ceiling
+
+Off by default, on both backends. Keep it off for arbitrary filesystem approvals
+without restarting. To opt in, add this to your **machine config**:
+
+```json
+"landlock": {
+  "enabled": true,
+  "read": ["~/datasets", "~/reference"],
+  "write": ["~/Developer", "~/.cache", "~/scratch"]
+}
+```
+
+- Use any number of existing, literal files/directories, not glob patterns.
+  `read` includes execute; `write` includes read. These are **ceilings, not Syd
+  grants**. The normal system/runtime reads, project/temp writes, launch tools,
+  terminal devices, resolver and overlay storage are included automatically.
+- Paths refer to the **execution machine**. With Lima, use Linux guest paths
+  (and `~` is the guest home). See the [paired Lima example](examples/README.md#lima-landlock-example)
+  for host-to-guest mounts and multiple read/write roots.
+- Approvals and revocations inside the ceiling remain live. Requests outside
+  it are rejected with a new-session explanation; changing config or restarting
+  the daemon cannot widen an existing session. The Sessions UI shows its roots.
+- `--landlock` enables it for one run; `--landlock=false` explicitly disables it.
+  Learn mode cannot bypass an enabled ceiling or learn grants for blocked paths.
+- Requires Landlock ABI 3+; unsupported kernels fail closed when it is requested.
+  Some kernel-only failures do not generate Syd cards. Landlock does not cover
+  every filesystem metadata operation and does not replace Syd or a VM.
+
+Ready-to-edit examples: [Lima, default](examples/config-lima.json),
+[native Linux](examples/config-native.json),
+[Lima + Landlock](examples/config-lima-landlock.json), and
+[native + Landlock](examples/config-native-landlock.json).
 
 ## Host commands (git push, PRs, CI status, …)
 
@@ -219,8 +262,10 @@ automatically after upgrades; on plain Linux/WSL run `sydguard setup` after upgr
 
 ## Lima
 
-- Built-in default (`internal/lima/default.yaml`): generic Ubuntu, `~/Developer`
-  mounted at the same path, loopback ports forwarded to the host.
+- Built-in defaults (`internal/lima/default.yaml` for macOS,
+  `internal/lima/default-linux.yaml` for Linux): generic Ubuntu, `~/Developer`
+  mounted writable at the same path, loopback ports forwarded to the host.
+  This share is broader than one project: narrow the mounts if desired.
 - `examples/lima/ai-sandbox.yaml`: a full AI workspace (Go, Node/pnpm/npm, Bun, uv,
   Playwright + browsers, Claude/Codex/Pi, linters, an `xdg-open` shim that prints
   URLs for OAuth logins). Personal extras go in `~/Developer/.sydguard-provision.sh`
@@ -233,6 +278,8 @@ make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
 scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
 python3 scripts/network-e2e.py /path/to/sydguard # Linux: real TLS, TCP/UDP, restart + live IPC
+E2E_LANDLOCK=1 python3 scripts/network-e2e.py /path/to/sydguard # same with ceiling enabled
+python3 scripts/landlock-e2e.py /path/to/sydguard # Linux: live grants, revocation, kernel enforcement
 ```
 
 Layout: `cmd/sydguard` (CLI, urfave/cli v3); `internal/policy` (rules, trust,
@@ -243,8 +290,9 @@ built by Bun into `internal/ui/dist`, which is committed (check.sh fails if stal
 
 ## Known limits
 
-- Landlock is off: approvals can extend anywhere (no kernel ceiling); Syd's
-  seccomp path checks do the enforcing.
+- Landlock is off by default: approvals can extend anywhere Syd can access.
+  Optional Landlock provides a fixed filesystem maximum, not a replacement for
+  Syd's live policy. Native Linux does not have a VM's separate kernel boundary.
 - While the daemon is down, network forwarding stops (fail closed). Syd keeps
   enforcing; the launcher automatically restarts the daemon. Active network
   flows and the bounded connection history do not survive a restart.

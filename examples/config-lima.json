@@ -1,0 +1,6 @@
+{
+  "backend": "lima",
+  "vm": "ai-sandbox",
+  "landlock": { "enabled": false },
+  "keepOnVM": ["node_modules", ".venv", "target"]
+}

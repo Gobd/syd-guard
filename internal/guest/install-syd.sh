@@ -17,7 +17,7 @@ case "$(uname -m)" in
   *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 
-if ! "$ENGINE" --version 2>/dev/null | grep -q "^syd $SYD_VERSION"; then
+if ! "$ENGINE" --version 2>/dev/null | grep "^syd $SYD_VERSION" >/dev/null; then
   if command -v apt-get >/dev/null; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config gperf curl ca-certificates >/dev/null
   fi
@@ -37,7 +37,7 @@ if ! "$ENGINE" --version 2>/dev/null | grep -q "^syd $SYD_VERSION"; then
   cargo install --locked syd --version "$SYD_VERSION" --target "$target" --root "$work/syd" --bin syd
   sudo install -D -m 0755 -o root -g root "$work/syd/bin/syd" "$ENGINE"
 fi
-"$ENGINE" --version | head -1
+"$ENGINE" --version | awk 'NR == 1 { print }'
 HELPER=/usr/local/libexec/sydguard/net-helper
 if [ -n "${SYDGUARD_HELPER_SOURCE:-}" ]; then
   sudo install -D -m 0755 -o root -g root "$SYDGUARD_HELPER_SOURCE" "$HELPER"

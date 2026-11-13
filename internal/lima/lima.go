@@ -23,9 +23,21 @@ import (
 //go:embed default.yaml
 var defaultYAML []byte
 
+//go:embed default-linux.yaml
+var defaultLinuxYAML []byte
+
+func defaultConfig(linux bool) []byte {
+	if linux {
+		return defaultLinuxYAML
+	}
+	return defaultYAML
+}
+
 const DefaultVM = "ai-sandbox"
 
 type Options struct {
+	Backend             string
+	Landlock            *bool
 	VM, LimaFile, Rules string
 	Learn               bool
 	LocalPorts          []int
@@ -35,6 +47,9 @@ type Options struct {
 // WithDefaults fills VM and Lima file from $SYDGUARD_VM/$SYDGUARD_LIMA, then
 // the config file. Flags win.
 func (o Options) WithDefaults(cfg config.Config) Options {
+	if o.Backend == "" {
+		o.Backend = envOr("SYDGUARD_BACKEND", cfg.Backend)
+	}
 	if o.VM == "" {
 		o.VM = envOr("SYDGUARD_VM", cfg.VM)
 	}
@@ -44,16 +59,44 @@ func (o Options) WithDefaults(cfg config.Config) Options {
 	return o
 }
 
-// Use reports whether commands should run in a Lima VM: always when this
-// machine can't run Syd itself, otherwise only when a VM or Lima file was
-// chosen (flag, env or config).
-func Use(o Options) bool {
-	if !system.RunsSyd() {
-		return true
+// Use selects a backend before doing any setup. Failure never falls back to
+// native execution. Already-running Lima guests default to native to avoid
+// recursion; host Linux requires an explicit native opt-in.
+func Use(o Options) (bool, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return false, err
 	}
-	cfg, _ := config.Load()
+	return selectBackend(o, cfg, system.RunsSyd(), system.InLima())
+}
+
+func selectBackend(o Options, cfg config.Config, linux, inGuest bool) (bool, error) {
+	if o.VM != "" || o.LimaFile != "" {
+		if o.Backend == "native" {
+			return false, errors.New("--backend native cannot be combined with --vm or --lima")
+		}
+		if o.Backend == "" {
+			o.Backend = "lima"
+		}
+	}
 	o = o.WithDefaults(cfg)
-	return o.VM != "" || o.LimaFile != ""
+	if o.Backend == "" {
+		o.Backend = "lima"
+		if inGuest && o.VM == "" && o.LimaFile == "" {
+			o.Backend = "native"
+		}
+	}
+	switch o.Backend {
+	case "lima":
+		return true, nil
+	case "native":
+		if !linux {
+			return false, errors.New("native backend requires Linux; use --backend lima")
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown backend %q: choose lima or native", o.Backend)
+	}
 }
 
 // VMName picks the instance: --vm, else the Lima file's name, else ai-sandbox.
@@ -83,7 +126,7 @@ func envOr(k, d string) string {
 // `sydguard vm start` and `sydguard vm` use it.
 func Prepare(o Options) (string, error) {
 	if _, err := exec.LookPath("limactl"); err != nil {
-		return "", errors.New("limactl not found (brew install lima)")
+		return "", errors.New("limactl not found: install Lima (https://lima-vm.io/docs/installation/); native Linux execution requires explicit --backend native")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -101,8 +144,8 @@ func Prepare(o Options) (string, error) {
 		return "", err
 	}
 	if exec.Command("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard engine-check >/dev/null 2>&1").Run() != nil {
-		fmt.Fprintf(os.Stderr, "sydguard: installing the Syd engine in %s (one time; builds from source, ~10 min)…\n", vm)
-		if err := run("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard setup"); err != nil {
+		fmt.Fprintf(os.Stderr, "sydguard: installing/updating the Syd engine and network helper in %s (first engine build may take ~10 min)…\n", vm)
+		if err := run("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard --backend native setup"); err != nil {
 			return "", fmt.Errorf("setup in %s failed: %w", vm, err)
 		}
 	}
@@ -148,9 +191,12 @@ func Run(o Options) error {
 	if err != nil {
 		return err
 	}
-	argv := []string{"limactl", "shell", "--workdir", guestCwd, vm, "sydguard"}
+	argv := []string{"limactl", "shell", "--workdir", guestCwd, vm, "sydguard", "--backend", "native"}
 	if o.Learn {
 		argv = append(argv, "--learn")
+	}
+	if o.Landlock != nil {
+		argv = append(argv, "--landlock="+strconv.FormatBool(*o.Landlock))
 	}
 	for _, p := range o.LocalPorts {
 		argv = append(argv, "--local-port", strconv.Itoa(p))
@@ -201,7 +247,7 @@ func Shell(o Options, args ...string) error {
 		return err
 	}
 	limactl, _ := exec.LookPath("limactl")
-	return syscall.Exec(limactl, append([]string{"limactl", "shell", vm, "sydguard"}, args...), os.Environ())
+	return syscall.Exec(limactl, append([]string{"limactl", "shell", vm, "sydguard", "--backend", "native"}, args...), os.Environ())
 }
 
 func ensureVM(vm, file string) error {
@@ -220,7 +266,7 @@ func ensureVM(vm, file string) error {
 			return err
 		}
 		defer func() { _ = os.Remove(f.Name()) }()
-		_, _ = f.Write(defaultYAML)
+		_, _ = f.Write(defaultConfig(system.RunsSyd()))
 		_ = f.Close()
 		file = f.Name()
 		fmt.Fprintf(os.Stderr, "sydguard: creating Lima VM %s from the built-in default…\n", vm)

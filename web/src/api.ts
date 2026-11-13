@@ -43,7 +43,8 @@ export interface Session {
   learn: boolean;
   pid: number;
   started: string;
-  status: "applied" | "updating" | "unknown";
+  status: "applied" | "updating" | "unknown" | "restart-required";
+  landlock?: { enabled: boolean; read?: string[]; write?: string[] };
   lastError?: string;
   dnsAddr?: string;
   overlays?: string[];

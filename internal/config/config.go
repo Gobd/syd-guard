@@ -17,8 +17,10 @@ import (
 )
 
 type Config struct {
-	VM         string            `json:"vm,omitempty"`         // Lima instance (macOS)
-	Lima       string            `json:"lima,omitempty"`       // Lima file to create it from (macOS)
+	Backend    string            `json:"backend,omitempty"`    // lima (default outside guests) or native (Linux only)
+	Landlock   policy.Landlock   `json:"landlock,omitempty"`   // optional fixed filesystem ceiling
+	VM         string            `json:"vm,omitempty"`         // Lima instance
+	Lima       string            `json:"lima,omitempty"`       // Lima file to create it from
 	LocalPorts []int             `json:"localPorts,omitempty"` // like --local-port, for every run
 	Env        map[string]string `json:"env,omitempty"`        // NAME: "value" or "file:PATH" (secret file)
 	Overlays   []string          `json:"keepOnVM,omitempty"`   // folders kept on the VM disk, not the project (node_modules…)
@@ -53,6 +55,12 @@ func Load() (Config, error) {
 }
 
 func (c Config) validate() error {
+	if c.Backend != "" && c.Backend != "lima" && c.Backend != "native" {
+		return fmt.Errorf("%s: backend must be lima or native", Path())
+	}
+	if err := c.Landlock.Validate(); err != nil {
+		return err
+	}
 	for _, p := range c.LocalPorts {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("%s: bad local port %d", Path(), p)
@@ -124,5 +132,5 @@ func (c Config) ForGuest() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{LocalPorts: c.LocalPorts, Env: env, Overlays: c.Overlays}, nil
+	return Config{Backend: "native", Landlock: c.Landlock, LocalPorts: c.LocalPorts, Env: env, Overlays: c.Overlays}, nil
 }

@@ -1,4 +1,5 @@
 {
+  "backend": "lima",
   "vm": "ai-sandbox",
   "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
   "localPorts": [],

@@ -561,7 +561,8 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
                     ? "warn"
                     : x.status === "applied"
                       ? "ok"
-                      : x.status === "unknown"
+                      : x.status === "unknown" ||
+                          x.status === "restart-required"
                         ? "warn"
                         : "plain"
                 ]
@@ -614,11 +615,26 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
                 <CardView key={c.id} vm={vm} card={c} act={act} />
               ))}
           </details>
+          {x.landlock?.enabled && (
+            <details>
+              <summary class={s.summary}>
+                Landlock: fixed filesystem ceiling
+              </summary>
+              <div class={s.mute}>
+                Live approvals work only inside these roots. A wider ceiling
+                requires a new session. These are maximums, not Syd grants;
+                write includes read and read includes execute.
+              </div>
+              <div>Read: {(x.landlock.read ?? []).join(", ")}</div>
+              <div>Read + write: {(x.landlock.write ?? []).join(", ")}</div>
+            </details>
+          )}
           {x.network && <Connections connections={x.connections ?? []} />}
           {x.lastError && (
             <div class={s.warn}>
-              last update failed: {x.lastError} — policy state unknown; restart
-              this agent
+              {x.status === "restart-required"
+                ? `New session required: ${x.lastError}`
+                : `last update failed: ${x.lastError} — policy state unknown; restart this agent`}
             </div>
           )}
         </div>

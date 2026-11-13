@@ -1,0 +1,9 @@
+{
+  "backend": "native",
+  "landlock": {
+    "enabled": true,
+    "read": ["~/datasets", "~/reference"],
+    "write": ["~/Developer", "~/.cache", "~/scratch"]
+  },
+  "keepOnVM": ["node_modules", ".venv", "target"]
+}

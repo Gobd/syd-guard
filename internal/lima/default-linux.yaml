@@ -1,0 +1,22 @@
+# Linux host default: QEMU/9p instead of macOS Virtualization.framework.
+vmType: qemu
+mountType: 9p
+base: template:ubuntu-lts
+cpus: 4
+memory: 8GiB
+disk: 60GiB
+mounts:
+  - location: ~/Developer
+    writable: true
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 65535]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 65535]
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf iproute2

@@ -112,7 +112,7 @@ while not Path("finish").exists(): time.sleep(.1)
 # Pass a harmless test variable through the command argv, not config secrets.
 agent.write_text(agent.read_text().replace('int(os.environ["TEST_PORT"])', str(port)).replace('Path("before").touch()', 'subprocess.run(' + repr([binary, "cmd", "--list"]) + ', check=True)\nPath("before").touch()'))
 log = open(root / "run.log", "w")
-proc = subprocess.Popen([binary, "--local-port", str(port), "--", "/usr/bin/python3", str(agent)], cwd=project, env={**os.environ, "HOME": str(home)}, stdout=log, stderr=log, start_new_session=True)
+proc = subprocess.Popen([binary, "--backend", "native", *(["--landlock"] if os.environ.get("E2E_LANDLOCK") == "1" else []), "--local-port", str(port), "--", "/usr/bin/python3", str(agent)], cwd=project, env={**os.environ, "HOME": str(home)}, stdout=log, stderr=log, start_new_session=True)
 try:
     pending = wait_for(lambda: next((c for c in api("/api/state")["cards"] if c["kind"] == "hosts"), None))
     assert pending["target"] == "https://example.com:443", pending
