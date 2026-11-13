@@ -1,5 +1,48 @@
 # Temporary handoff — resumed integration checkpoint
 
+## Latest takeover checkpoint
+
+Read `TAKEOVER_PLAN.md` first: it supersedes older current-status notes below.
+Actual Root kernel fixture FAILED before controlled-child readiness; preserve its
+exact quarantined cgroup and logs. `/run` NOEXEC staging failure was corrected by
+an independently accepted fixed executable path outside `/run`, not a remount.
+Latest main diagnostic edits compile but have not been independently reviewed or
+Root-executed. Contained layout source exists but is BLOCKED on one post-write
+original-deadline check. No full live workflow, clean slot release or user readiness.
+
+## Current operator-agreed milestone: FILE-ONLY runnable loop
+
+After asking whether this remained realistic, the operator agreed to continue with
+one bounded vertical slice: learn/review/save a file profile, launch it without
+networking, edit/save through UI, observe allow/revoke in the SAME PID, clean stop,
+and relaunch using saved rules. No networking expansion, ephemeral approval,
+restart-as-live shortcut, or weakened safeguards. Component tests are NOT readiness.
+Parent acknowledged scope/integration mistakes; next meaningful acceptance is a
+personally demonstrated full loop, not another source-primitive checklist.
+
+Latest pushed baseline `faa7651`; networking source remains disabled. Netlink IS in
+`go.mod` with local replacement; corrected stale direct-import `// indirect` tags
+for nftables/mdlayher/netlink/vishvananda/netlink (no version/dependency change).
+
+Current work: fixture reviewer22f27d35 still BLOCK2P1 Wait-error markedreaped and
+ignored owned closes; 4P2 missing-pidfd containment, typed fork/exec ENOENT proof,
+deadline-aware EINTR/child10s, freshnonce names. Worker945decd7 repairs ONLYfixture.
+Observation repairc21eac92 (drain/worker/accounting/linebounds) remains source-only.
+NEW retained `file-live-layout-source` branch basefaa7651: worker9c5924e7 returned
+INCOMPLETE (journal only, not mergeable); resumed6c2d0ad9 now implements only Root
+contained constructor, exclusive backing creation and actual private tmpfs cover.
+No whole startup/public dispatch/worker privileged execution. Parent approved an
+unexported FUTURE authenticated-bootstrap input for original immutable ARM-frame
+copy and trusted initial user/PID/cgroup namespace FDs: no serialization/adoption
+of process-local liveStartupArm owner/mutex, no new ARM/renew/COMPLETE authority,
+no /proc/1-as-initial inference. Trusted FD acquisition and role-authenticated
+handoff remain absent, not runtime-qualified. Missing inputs fail before mutation.
+Fixture repair945decd7 completed; reviewer7c8a0f2a checks final2files. Fixture-only
+one owned Cmd.Wait waiter after positive pidfd death may be deadline-observed;
+timeout/nil ProcessState keeps unreaped authority/quarantine and fails. No second
+waiter/new spawn on uncertainty, no production goroutine fallback. Root fixture
+execution still blocked pending source acceptance and parent provisioning decision.
+
 ## Operator-authorized remaining design calls — 2026-11-12
 
 Operator explicitly said `do anything you want and anything that seems right` while
