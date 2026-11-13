@@ -234,7 +234,46 @@ Latest source state (unmerged isolated worktrees):
   NOremovalretry. Splitmutator-ownedlayoutjournal vsWatch-ownedsealrecord, postSEAL
   layoutreread mandatory; pendingsealing/deleting unknown q/durableterminalmarker,
   legacyNetwork/v1 cleanupUNCHANGED/Live rejectsNetwork!=nil. Kernel6.8sourcebasis
-  notRootruntimeproof. Proposalimplementationnext; noRootexecution/deployapproval.
+  notRootruntimeproof. Parentcreated NEWretained /Users/briankemper/Developer/worktrees/
+  syd-guard/live-compose-source branchpi-subagents/live-compose-source base74a03bb;
+  Workerc05ea506 DIDNOTdelivercontainedbody: onlyoriginalheldCGFD5 Rootidentity
+  check/liveeventkill+drain ALWAYSquarantine (nolegacycleanup/noC) prerequisite+3tests;
+  actualordinaryLinuxGo/race/vetPASS. No mutator/layout/handoff/sealrecord/recovery/
+  fixturecode. ParentreportedINCOMPLETE(notReadyclaim), narrowedresumee27cae44 toONE
+  realdurableWatch-exclusive CGsealbarrier body+typedrecord/actualsyscalls/tests,
+  notfullLayout/interfacesOnly. e27cae44 completedactualSealbarrier: strictv2preARM
+  reservation +Watch-onlyopen/sealing/sealedrecorded sibling atomic/fsyncrecords;
+  originalFDkillfirst/pollpop0/single5s budget/exactCGidentityONErmdir/postdurable
+  sealedauthority, busyboundedsecondkill qNOretry. LiveWatchsuccess STILLQ/noC because
+  layoutcleanupABSENT; v1recover/cleanuprejectANYpartiallive markers. OrdinaryLinux
+  helper/race/vet/2archcompilePASS; RootfixtureCODEONLYclonewins/removalwins/oldFD
+  replacement rejection NOTexecuted. Reviewbd0c95d6 barrier/watchSourceOK
+  privatecontinuousFDlifetime+quiescentrecoverycontracts; FixtureBLOCK3P1 parent/group
+  held/namedidentityexclusivity/exeEXACTdigestreadonly/overallpidfdwaitcleanupbudget,
+  2P2 exactENOENToldFDerrorandpositiveownedchildmembership. Repair5b0858aa CODEONLY.
+  Parentcopiedaccepted5filesMAIN(excludesblockedfixture), nativeGo/vet LinuxARM
+  build/vet andNEWactualordinaryLinuxALLhelperPASS SHA22dd2d869065907e137a6dae5b3ad612f1d42c1b5f8437a92ee3be3edacc85ad
+  logc728f2c5fce8ceeb96d30751b9978b06a0440021680b730e6f48dd9582784fce.
+  Parentreadfixture: fixed /sys/fs/cgroup/sydguard-live-seal-fixture trustedRoot
+  testbinary needed, noRootexecution yet. Missingmutator/layout/postSealcleanup/
+  terminal-retirement/slotrelease stillblockfullworkflow. No publicCLIactivation/Rootexecution/privfixtures
+  byworker. Parentalonefuturequalificationafterindepreview. MainbackupRootpieces74a03bb,
+  UIbridge4e05a10/networkf45bdb0 alreadyPUSHED/draftnotReadyclaim.
+  Reader7d584d27 qualifiesSYD_LOG_FD=4 dedicatedpipe(nonCLOEXECthroughselfseal,
+  explicitchildclose+passfdstdio3) supportedSource. AccessJSON NOmanagedrevision/
+  epoch andaggregatecapsnotindividuallydenied, printableASCIIXPathonlysafeinitial;
+  useRoot-authOBSERVEDrequest/proposedgroup exact-denialREVISIONUNKNOWN, neverparser
+  timereceiptassociation. Rootsinglewritercustody/fullFDclosure runtimegate still.
+  ActualRootpostsetupEXECseal notproven bySydlock:ipc (unlockedcmd/exec exists).
+  Worker10be42e2 deliverednormalizer/codec/privateRootstartupLogBinding; ordinary
+  Linux8newpkg/32Syd/142helperPASS race/vet/cross2arch NoRootpositive/candidate.
+  Reviewbc5b2b2c BLOCKP1 synchronousFSNormalize stallsdrain (canblockSydpipe),
+  P1 Endkeepshistoricalmapendscapacityafter16lifetimes; P2shutdownclose/join+capacity
+  helduntilworkersactuallyexit, P2Encode/Decode necessaryrelativebanklinebounds.
+  Repairc21eac92 decoupledcompactsyntacticqueue/oneboundedFSworker ownedpollableclose/
+  join contract/accounting active, no cardactivation orfakeRootprovenance.
+  NEWretained /Users/briankemper/Developer/worktrees/syd-guard/managed-observation-source
+  branchpi-subagents/managed-observation-source base74a03bb; no livecards/Rootactivation.
   Ordinarychild/proc-exe denial
   experiment permitted; NOcapstoSyd/gate/broker/workload. Rootcoordinator mayuse
   ALREADYpresentnormalRootprivileges solelyownchildexe metadata/hash, Rootproc/LSM

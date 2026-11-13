@@ -253,6 +253,9 @@ func cleanupSlotWithNetwork(baseFD, cgroupFD int, slot *launchSlot, j slotJourna
 	}
 	slot.lifecycleMu.Lock()
 	defer slot.lifecycleMu.Unlock()
+	if err := rejectLiveSlotMarkers(baseFD, slot); err != nil {
+		return err
+	}
 	if err := validateJournal(slot, j); err != nil || j.Phase != "ready" {
 		return errors.New("slot is not recoverable")
 	}
@@ -350,6 +353,9 @@ func sameSlotBinding(a, b slotJournal) bool {
 }
 
 func recoverSlot(baseFD, cgroupFD int, slot *launchSlot, owner uint32, kill func(int, time.Duration) error) error {
+	if err := rejectLiveSlotMarkers(baseFD, slot); err != nil {
+		return err
+	}
 	j, exists, err := readJournal(baseFD, slot, owner)
 	if err != nil {
 		return err

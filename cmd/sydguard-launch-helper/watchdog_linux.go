@@ -30,12 +30,15 @@ type watchdog struct {
 // startWatchdog executes only this fixed immutable binary. Its socket peer and
 // the locked slot FD authenticate the otherwise inaccessible watchdog mode.
 func startWatchdog(slot *launchSlot, j slotJournal) (*watchdog, error) {
-	return startWatchdogMode(slot, j, false)
+	return startWatchdogMode(slot, j, false, nil)
 }
 
 // startWatchdogMode uses only the fixed immutable helper and its existing
 // authenticated parent/slot/journal handshake; live remains unactivated.
-func startWatchdogMode(slot *launchSlot, j slotJournal, live bool) (*watchdog, error) {
+func startWatchdogMode(slot *launchSlot, j slotJournal, live bool, originalCgroup *os.File) (*watchdog, error) {
+	if live && originalCgroup == nil {
+		return nil, errors.New("live watchdog requires original cgroup FD")
+	}
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
@@ -57,6 +60,9 @@ func startWatchdogMode(slot *launchSlot, j slotJournal, live bool) (*watchdog, e
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{child, slot.File}
+	if live {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, originalCgroup)
+	}
 	if err := cmd.Start(); err != nil {
 		_ = parent.Close()
 		_ = child.Close()
@@ -251,6 +257,33 @@ func watchdogMainMode(live bool) error {
 	if err != nil || !exists || j.Phase != "ready" || j.Nonce != parts[2] || j.ParentPID != int(peer.Pid) || j.ParentIdentity != parentIdentity {
 		return errors.New("watchdog journal binding mismatch")
 	}
+	var liveBarrier *liveSealBarrier
+	if live {
+		// Pin the same original cgroup object before acknowledging the watch.
+		// Reopening by name after ARM cannot establish the clone/kill binding.
+		original := os.NewFile(5, "original-live-cgroup")
+		defer original.Close()
+		if err := checkLiveWatchCgroup(5, groupFD, slot, j); err != nil {
+			return err
+		}
+		reservation, exists, readErr := readLiveReservation(baseFD, slot, 0)
+		if readErr != nil {
+			return readErr
+		}
+		if exists {
+			b := reservation.Binding
+			if !liveReservationMatchesLegacy(slot, b, j) {
+				return errors.New("live reservation does not match slot")
+			}
+			if err := initializeLiveSeal(baseFD, slot, b); err != nil {
+				return err
+			}
+			liveBarrier, err = newLiveSealBarrier(baseFD, groupFD, original, slot, b)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := guard.Write([]byte{'R'}); err != nil {
 		return err
 	}
@@ -263,12 +296,22 @@ func watchdogMainMode(live bool) error {
 	var killErr, cleanupErr error
 	cleanup := func() error {
 		cleanupStart = time.Now()
-		cleanupErr = watchdogCleanup(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
+		kill := func(fd int, timeout time.Duration) error {
 			killStart = time.Now()
 			killErr = killCgroup(fd, timeout)
 			killEnd = time.Now()
 			return killErr
-		})
+		}
+		if live && liveBarrier != nil {
+			// A successful seal is not a layout-clean receipt. The future live
+			// cleanup must consume its typed authority before acknowledging C.
+			_, sealErr := liveBarrier.seal()
+			cleanupErr = errors.Join(errors.New("live layout cleanup unavailable; slot quarantined"), sealErr)
+		} else if live {
+			cleanupErr = quarantineLiveWatchCgroup(5, kill)
+		} else {
+			cleanupErr = watchdogCleanup(baseFD, groupFD, slot, j, 0, kill)
+		}
 		cleanupEnd = time.Now()
 		return nil // Preserve the protocol and cleanup outcomes separately.
 	}
@@ -294,8 +337,36 @@ func watchdogMainMode(live bool) error {
 	}
 	// Never emit diagnostics until the kill, cleanup and acknowledgement have
 	// been attempted; a blocked output pipe cannot delay the safety operation.
-	diagnostic(fmt.Sprintf("watchdog event_time=%s poll_count=%d pidfd_revents=%#x socket_revents=%#x cleanup_start=%s cleanup_end=%s cleanup_ok=%t kill_called=%t kill_start=%s kill_end=%s kill_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), event.count, uint16(event.pidfdRevents), uint16(event.socketRevents), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, !killStart.IsZero(), killStart.Format(time.RFC3339Nano), killEnd.Format(time.RFC3339Nano), !killStart.IsZero() && killErr == nil, ackOK))
+	if liveBarrier != nil {
+		diagnostic(fmt.Sprintf("watchdog live seal event_time=%s cleanup_start=%s cleanup_end=%s cleanup_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, ackOK))
+	} else {
+		diagnostic(fmt.Sprintf("watchdog event_time=%s poll_count=%d pidfd_revents=%#x socket_revents=%#x cleanup_start=%s cleanup_end=%s cleanup_ok=%t kill_called=%t kill_start=%s kill_end=%s kill_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), event.count, uint16(event.pidfdRevents), uint16(event.socketRevents), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, !killStart.IsZero(), killStart.Format(time.RFC3339Nano), killEnd.Format(time.RFC3339Nano), !killStart.IsZero() && killErr == nil, ackOK))
+	}
 	return errors.Join(waitErr, cleanupErr)
+}
+
+// checkLiveWatchCgroup authenticates the inherited object against both the
+// reservation and the fixed parent entry before the live watch is armed.
+func checkLiveWatchCgroup(fd, parent int, slot *launchSlot, j slotJournal) error {
+	var held, named, parentStat unix.Stat_t
+	var fs, parentFS unix.Statfs_t
+	if slot == nil || unix.Fstat(fd, &held) != nil || unix.Fstatfs(fd, &fs) != nil ||
+		unix.Fstat(parent, &parentStat) != nil || unix.Fstatfs(parent, &parentFS) != nil ||
+		unix.Fstatat(parent, slotName(slot.UID, slot.Index), &named, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+		fs.Type != unix.CGROUP2_SUPER_MAGIC || parentFS.Type != unix.CGROUP2_SUPER_MAGIC ||
+		parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || parentStat.Uid != 0 || parentStat.Mode&0o022 != 0 ||
+		held.Mode&unix.S_IFMT != unix.S_IFDIR || held.Uid != 0 || held.Mode&0o022 != 0 ||
+		held.Dev != j.CgroupDev || held.Ino != j.CgroupIno || held.Dev != named.Dev || held.Ino != named.Ino ||
+		named.Mode&unix.S_IFMT != unix.S_IFDIR || named.Uid != 0 || named.Mode&0o022 != 0 {
+		return errors.New("invalid original live cgroup FD")
+	}
+	return nil
+}
+
+// Without a typed live reservation the watchdog only kills the original FD
+// and quarantines. It must not call legacy anchor-before-cgroup cleanup.
+func quarantineLiveWatchCgroup(fd int, kill func(int, time.Duration) error) error {
+	return errors.Join(errors.New("live sealing unavailable; slot quarantined"), kill(fd, 5*time.Second))
 }
 
 // watchdogCleanup rereads the durable journal: the parent's initial copy can
