@@ -1,7 +1,6 @@
 package guest
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -21,7 +20,6 @@ import (
 )
 
 const (
-	dnsWait     = 8 * time.Second
 	maxDNSNames = 8192
 )
 
@@ -169,14 +167,17 @@ func (x *dnsServer) handle(q []byte, proto string) []byte {
 	if policy.Ignored(x.rules(), "hosts", "dns://"+name) {
 		return refuse(q, dnsmessage.RCodeRefused)
 	}
-	if len(matchingRules(x.rules(), name)) == 0 && !x.ask(name) {
-		return refuse(q, dnsmessage.RCodeRefused)
-	}
+	// A/AAAA answers are entirely local synthetic identities, not upstream
+	// lookups. Approval happens on the connection with its actual protocol
+	// and port, never as a broad tcp:// grant just to obtain an address.
 	// HTTPS/SVCB records could disclose real addresses or advertise ECH, which
 	// hides SNI. Return NODATA; clients fall back to ordinary A/AAAA + TLS.
 	if qs[0].Type != dnsmessage.TypeA && qs[0].Type != dnsmessage.TypeAAAA {
 		if qs[0].Type != dnsmessage.TypeTXT && qs[0].Type != dnsmessage.TypeMX && qs[0].Type != dnsmessage.TypeSRV {
 			return refuse(q, dnsmessage.RCodeSuccess)
+		}
+		if len(matchingRules(x.rules(), name)) == 0 {
+			return refuse(q, dnsmessage.RCodeRefused)
 		}
 		resp, err := forward(q, proto)
 		if err != nil {
@@ -219,25 +220,6 @@ func matchingRules(rules []policy.Rules, name string) []policy.HostRule {
 	return out
 }
 
-func (x *dnsServer) ask(name string) bool {
-	x.d.mu.Lock()
-	if _, live := x.d.sessions[x.s.ID]; !live {
-		x.d.mu.Unlock()
-		return false
-	}
-	c := x.d.addCardLocked(x.s, "hosts", "dns://"+name, "", x.s.Learn, false, "Session DNS lookup; approve a name, then connections are checked by protocol and port. No upstream query before approval.")
-	if x.s.Learn || c == nil {
-		x.d.mu.Unlock()
-		x.d.events.Notify()
-		return x.s.Learn
-	}
-	ctx := context.Background()
-	if x.s.network != nil {
-		ctx = x.s.network.ctx
-	}
-	return x.d.waitCard(ctx, c, dnsWait)
-}
-
 // Read the current host resolver each time: VPN/Lima/resolved changes should
 // not permanently pin sessions to a dead server. No public fallback (DNS leak).
 func upstreamServers() []string {
@@ -255,7 +237,7 @@ func upstreamServers() []string {
 }
 
 func forward(q []byte, proto string) ([]byte, error) {
-	var last error = errors.New("no host DNS resolvers configured")
+	last := errors.New("no host DNS resolvers configured")
 	for _, server := range upstreamServers() {
 		resp, err := exchangeDNS(q, proto, server)
 		if err == nil {

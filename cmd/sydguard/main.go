@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/urfave/cli/v3"
 
@@ -144,10 +145,7 @@ func app() *cli.Command {
 				_, err := guest.FindEngine()
 				return err
 			}},
-			{Name: "net-attach", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
-				return guest.NetworkAttach(cmd.Args().Get(0))
-			}},
-			{Name: "net-wait", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
+			{Name: "net-run", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
 				args := cmd.Args().Slice()
 				if len(args) < 2 {
 					return fmt.Errorf("missing network command")
@@ -155,7 +153,17 @@ func app() *cli.Command {
 				if args[1] == "--" {
 					args = append(args[:1], args[2:]...)
 				}
-				return guest.NetworkWait(args[0], args[1:])
+				return childExit(guest.NetworkRun(args[0], args[1:]))
+			}},
+			{Name: "net-owner", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
+				args := cmd.Args().Slice()
+				if len(args) < 2 {
+					return fmt.Errorf("missing network command")
+				}
+				if args[1] == "--" {
+					args = append(args[:1], args[2:]...)
+				}
+				return childExit(guest.NetworkOwner(args[0], args[1:]))
 			}},
 			{Name: "ipc-load", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
 				return guest.IPCLoad(cmd.Args().Get(0), cmd.Args().Get(1))
@@ -163,6 +171,18 @@ func app() *cli.Command {
 			{Name: "ui-server", Hidden: true, Action: func(context.Context, *cli.Command) error { return ui.RunServer() }},
 		},
 	}
+}
+
+func childExit(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		code := exit.ExitCode()
+		if code < 0 {
+			code = 1
+		}
+		return cli.Exit("", code)
+	}
+	return err
 }
 
 func limaOptions(cmd *cli.Command) lima.Options {

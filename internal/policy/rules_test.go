@@ -142,6 +142,24 @@ func TestCompileProfile(t *testing.T) {
 	}
 }
 
+func TestNetworkProfileKeepsHelperNamespace(t *testing.T) {
+	profile, err := CompileProfile(ProfileInput{Project: "/work/proj", IPC: "@test", Network: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(profile, "unshare/net") {
+		t.Fatal("Syd must not replace the helper's network namespace")
+	}
+	for _, want := range []string{"unshare/user:1", "unshare/mount:1", "passenv+SG_BROKER", "allow/net/connect+::/0!0-65535"} {
+		if !strings.Contains(profile, want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+	if strings.Contains(profile, "passenv+*_PROXY") {
+		t.Fatal("legacy proxy environment enabled")
+	}
+}
+
 func TestLearnRoot(t *testing.T) {
 	h := system.Home()
 	for in, want := range map[string]string{

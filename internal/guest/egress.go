@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/Gobd/syd-guard/internal/policy"
@@ -21,110 +19,23 @@ import (
 
 const approvalTimeout = 10 * time.Minute
 
-// startProxy gives a session its own HTTP(S) proxy. Syd only lets the agent
-// connect to this port, so every web request is decided here by host NAME.
-// Adopted sessions reuse their previous port.
-func (d *Daemon) startProxy(s *Session) error {
+// startBroker retains the historical port field for session compatibility,
+// but serves ONLY the command broker. All egress uses the TUN policy dialer.
+func (d *Daemon) startBroker(s *Session) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.ProxyPort))
 	if err != nil {
 		return err
 	}
 	s.ProxyPort = ln.Addr().(*net.TCPAddr).Port
-	s.proxy = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { d.serveProxy(s, w, r) }), ReadHeaderTimeout: 30 * time.Second}
-	go func() { _ = s.proxy.Serve(ln) }()
+	s.brokerServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect || r.URL.IsAbs() {
+			http.Error(w, "forward proxy removed", http.StatusForbidden)
+			return
+		}
+		d.serveBroker(s, w, r)
+	}), ReadHeaderTimeout: 30 * time.Second}
+	go func() { _ = s.brokerServer.Serve(ln) }()
 	return nil
-}
-
-var hopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authorization", "Proxy-Authenticate", "Te", "Trailer", "Transfer-Encoding", "Upgrade"}
-
-func (d *Daemon) serveProxy(s *Session, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodConnect && r.URL.Host == brokerHost {
-		d.serveBroker(s, w, r) // `sydguard cmd` from inside the sandbox
-		return
-	}
-	scheme, hostport := "http", r.Host
-	if r.Method == http.MethodConnect {
-		scheme = ""
-	} else {
-		if r.URL.Host == "" || r.URL.Scheme != "http" {
-			http.Error(w, "sydguard proxy: absolute http:// URL required (use CONNECT for https)", http.StatusBadRequest)
-			return
-		}
-		hostport = r.URL.Host
-	}
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host, port = hostport, "80"
-	}
-	host = strings.ToLower(strings.Trim(host, "[]"))
-	if scheme == "" {
-		scheme = policy.ConnectScheme(port)
-	}
-	addr, rules, err := d.decide(r.Context(), s, scheme, host, port)
-	if err != nil {
-		http.Error(w, "sydguard: "+err.Error(), http.StatusForbidden)
-		return
-	}
-	if r.Method == http.MethodConnect {
-		up, err := net.DialTimeout("tcp", addr, 15*time.Second)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			_ = up.Close()
-			return
-		}
-		client, buf, err := hj.Hijack()
-		if err != nil {
-			_ = up.Close()
-			return
-		}
-		_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-		var pending []byte
-		if n := buf.Reader.Buffered(); n > 0 {
-			pending, _ = buf.Peek(n)
-		}
-		in := bufio.NewReaderSize(io.MultiReader(bytes.NewReader(pending), client), 5+16<<10) // a full TLS record
-		if !s.Learn {
-			_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
-			err := checkTunnel(in, host, rules)
-			_ = client.SetReadDeadline(time.Time{})
-			if err != nil {
-				log.Printf("session %s: refused tunnel to %q: %q", s.ID, host, err.Error()) //nolint:gosec // agent-controlled values are %q-quoted
-				_ = client.Close()
-				_ = up.Close()
-				return
-			}
-		}
-		go func() { _, _ = io.Copy(up, in); _ = up.Close() }()
-		_, _ = io.Copy(client, up)
-		_ = client.Close()
-		return
-	}
-	// Plain HTTP: dial the vetted address, never re-resolve.
-	transport := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
-	}}
-	r.RequestURI = ""
-	for _, h := range hopHeaders {
-		r.Header.Del(h)
-	}
-	resp, err := transport.RoundTrip(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	for _, h := range hopHeaders {
-		resp.Header.Del(h)
-	}
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
 }
 
 // addrClass: "blocked" (loopback, link-local/metadata, multicast, unspecified),
@@ -220,41 +131,6 @@ func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port stri
 		}
 	}
 	return net.JoinHostPort(addrs[0].Unmap().String(), port), rules, nil
-}
-
-// checkTunnel stops domain fronting: an HTTPS tunnel approved for host must
-// actually be TLS to host. It reads the TLS ClientHello (the bytes stay in
-// in, to be forwarded) and compares its server name. Non-TLS tunnels, or TLS
-// without a name, are only allowed by an explicit tcp:// rule (or to an IP).
-func checkTunnel(in *bufio.Reader, host string, rules []policy.HostRule) error {
-	raw := false
-	for _, h := range rules {
-		raw = raw || h.Scheme == "tcp"
-	}
-	first, err := in.Peek(1)
-	if err != nil {
-		return err
-	}
-	if first[0] != 0x16 { // not a TLS handshake record
-		if raw {
-			return nil
-		}
-		return errors.New("not TLS (allow raw traffic with a tcp:// rule)")
-	}
-	name, err := peekServerName(in)
-	if err != nil {
-		return err
-	}
-	_, isIP := netip.ParseAddr(host)
-	switch {
-	case name == "" && (raw || isIP == nil):
-		return nil
-	case name == "":
-		return errors.New("TLS without a server name")
-	case !strings.EqualFold(strings.TrimSuffix(name, "."), host):
-		return fmt.Errorf("TLS server name %q doesn't match the approved host", name)
-	}
-	return nil
 }
 
 // peekServerName parses the ClientHello with Go's TLS stack without

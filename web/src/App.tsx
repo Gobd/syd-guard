@@ -142,7 +142,7 @@ export function App() {
         {sessionCount > 0 && (
           <>
             <h2 class={s.section}>Running agents</h2>
-            <Sessions state={state} />
+            <Sessions state={state} act={act} />
           </>
         )}
 
@@ -531,7 +531,7 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
   );
 }
 
-function Sessions({ state }: { state: State | null }) {
+function Sessions({ state, act }: { state: State | null; act: Act }) {
   const rows =
     state?.vms.flatMap((vm) =>
       (vm.state?.sessions ?? []).map((x) => [vm.name, x] as const),
@@ -578,6 +578,20 @@ function Sessions({ state }: { state: State | null }) {
                 : ""}
             </span>
           </div>
+          <details open>
+            <summary class={s.summary}>
+              Approvals for this session’s rules
+            </summary>
+            <div class={s.mute}>
+              Grants are saved to {base(x.rulesFile)} and shared by sessions
+              using that file.
+            </div>
+            {(state?.vms.find((v) => v.name === vm)?.state?.cards ?? [])
+              .filter((c) => c.rulesFile === x.rulesFile && !c.learned)
+              .map((c) => (
+                <CardView key={c.id} vm={vm} card={c} act={act} />
+              ))}
+          </details>
           {x.network && <Connections connections={x.connections ?? []} />}
           {x.lastError && (
             <div class={s.warn}>
@@ -597,9 +611,15 @@ function Connections({ connections }: { connections: Connection[] }) {
   const rows = connections.filter(
     (c) =>
       (filter === "all" || !c.ended) &&
-      [c.hostname, c.httpHost, c.sni, c.destination, c.protocol].some((v) =>
-        v?.toLowerCase().includes(search.toLowerCase()),
-      ),
+      [
+        c.hostname,
+        c.httpHost,
+        c.sni,
+        c.destination,
+        c.protocol,
+        c.scheme,
+        c.port,
+      ].some((v) => v?.toLowerCase().includes(search.toLowerCase())),
   );
   const active = connections.filter((c) => !c.ended).length;
   return (
@@ -632,7 +652,7 @@ function Connections({ connections }: { connections: Connection[] }) {
         <div key={c.id} class={s.card}>
           <div class={s.row}>
             <span class={s.pill[c.error ? "warn" : c.ended ? "plain" : "ok"]}>
-              {c.protocol} · {c.state}
+              {c.scheme || c.protocol} · port {c.port} · {c.state}
             </span>
             <span class={s.target}>{c.hostname || c.destination}</span>
             <span class={s.mute}>

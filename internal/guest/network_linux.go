@@ -3,13 +3,14 @@
 package guest
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -114,6 +115,8 @@ func (d *Daemon) startNetwork(s *Session) error {
 		n.stop = func() { _ = ln.Close(); cleanup() }
 		n.mu.Unlock()
 		_, _ = c.Write([]byte("ok"))
+		// The owner retains its descriptors and reconnects when this daemon dies.
+		<-n.ctx.Done()
 	}()
 	return nil
 }
@@ -151,45 +154,68 @@ func receiveFDs(c *net.UnixConn) ([]int, error) {
 	return fds, nil
 }
 
-func (d *Daemon) attachNetwork(s *Session) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+// NetworkRun starts a session-lived owner in a fresh user/network namespace.
+// The installed helper has a narrowly scoped AppArmor userns exemption, not
+// host root privileges. Syd creates its mount namespace inside this network.
+func NetworkRun(id string, args []string) error {
+	if len(args) == 0 {
+		return errors.New("missing network command")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	ns := fmt.Sprintf("/proc/%d/ns/", s.SydPID)
-	// Syd sets up namespaces asynchronously after Start; wait until the
-	// namespace differs from the daemon's. Never create a TUN in the host.
-	host, err := os.Readlink("/proc/self/ns/net")
+	parentNet, err := os.Readlink("/proc/self/ns/net")
 	if err != nil {
 		return err
 	}
-	for {
-		netns, err := os.Readlink(ns + "net")
-		if err != nil {
-			return err
-		}
-		if netns != host {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(20 * time.Millisecond):
-		}
+	cmd := exec.Command(exe, append([]string{"net-owner", id, "--"}, args...)...)
+	cmd.Env = append(os.Environ(), "SG_PARENT_NET="+parentNet)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWNET,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+		Pdeathsig:                  syscall.SIGKILL,
 	}
-	out, err := exec.CommandContext(ctx, "nsenter", "--user="+ns+"user", "--net="+ns+"net", "--preserve-credentials", "--", exe, "net-attach", s.ID).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("network namespace setup: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return runNetworkChild(cmd)
 }
 
-// NetworkAttach runs outside the sandbox, inside ONLY its user/net namespaces.
-// The state directory and the daemon Unix socket remain outside the sandbox's
-// mount namespace. No privileges or TUN fd are given to the agent.
-func NetworkAttach(id string) error {
+func runNetworkChild(cmd *exec.Cmd) error {
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.ExtraFiles = []*os.File{os.NewFile(3, "syd-log")}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sigs := make(chan os.Signal, 8)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case sig := <-sigs:
+				_ = cmd.Process.Signal(sig)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return cmd.Wait()
+}
+
+// NetworkOwner holds the TUN and local listeners for the entire session. A
+// daemon restart destroys flows, but not the interface, routes or namespace.
+// No TUN descriptors are inherited by Syd or the agent.
+func NetworkOwner(id string, args []string) error {
+	netns, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		return err
+	}
+	if parent := os.Getenv("SG_PARENT_NET"); parent == "" || parent == netns {
+		return errors.New("network owner requires a fresh network namespace")
+	}
 	if id == "" || strings.ContainsAny(id, "/.") {
 		return errors.New("bad session id")
 	}
@@ -201,7 +227,7 @@ func NetworkAttach(id string) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	if s.ID != id || !s.Network || s.SydPID <= 0 {
+	if s.ID != id || !s.Network {
 		return errors.New("not a network session")
 	}
 	f, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
@@ -264,24 +290,82 @@ func NetworkAttach(id string) error {
 		files = append(files, pf)
 		fds = append(fds, int(pf.Fd()))
 	}
-	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: tunSocket(id), Net: "unix"})
+	handoff := func() (*net.UnixConn, error) {
+		c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: tunSocket(id), Net: "unix"})
+		if err != nil {
+			return nil, err
+		}
+		_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, _, err = c.WriteMsgUnix([]byte{1}, unix.UnixRights(fds...), nil); err == nil {
+			b := make([]byte, 2)
+			_, err = io.ReadFull(c, b)
+			if err == nil && string(b) != "ok" {
+				err = errors.New("TUN handoff refused")
+			}
+		}
+		if err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		_ = c.SetDeadline(time.Time{})
+		return c, nil
+	}
+	c, err := handoff()
 	if err != nil {
 		return err
 	}
+	done := make(chan struct{})
+	defer close(done)
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-	if _, _, err := c.WriteMsgUnix([]byte{1}, unix.UnixRights(fds...), nil); err != nil {
+	go func() {
+		conn := c
+		for {
+			_, _ = conn.Read(make([]byte, 1))
+			_ = conn.Close()
+			for {
+				select {
+				case <-done:
+					return
+				case <-time.After(250 * time.Millisecond):
+				}
+				next, err := handoff()
+				if err == nil {
+					conn = next
+					break
+				}
+			}
+		}
+	}()
+	if len(args) == 0 {
+		return errors.New("missing Syd command")
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// Record the actual Syd PID, not either namespace helper PID.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.ExtraFiles = []*os.File{os.NewFile(3, "syd-log")}
+	if err := cmd.Start(); err != nil {
 		return err
 	}
-	b := make([]byte, 2)
-	size, err := c.Read(b)
-	if err != nil {
+	if err := Call("POST", "/internal/started", map[string]any{"Session": id, "PID": cmd.Process.Pid, "NetworkPID": os.Getpid()}, nil); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return err
 	}
-	if string(b[:size]) != "ok" {
-		return errors.New("TUN handoff refused")
-	}
-	return nil
+	sigs := make(chan os.Signal, 8)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	go func() {
+		for {
+			select {
+			case sig := <-sigs:
+				_ = cmd.Process.Signal(sig)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return cmd.Wait()
 }
 
 func (n *network) HandleTCP(c adapter.TCPConn) {
@@ -351,20 +435,6 @@ func (n *network) localUDP(p net.PacketConn, port int) {
 	}
 }
 
-// NetworkWait is the sandbox's first command. It cannot configure networking;
-// it just waits for the daemon-owned TUN to be ready before execing the agent.
-func NetworkWait(proxy string, args []string) error {
-	if len(args) == 0 {
-		return errors.New("missing command")
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("tcp", proxy, 200*time.Millisecond)
-		if err == nil {
-			_ = c.Close()
-			return syscall.Exec(args[0], args, os.Environ())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return errors.New("session network did not become ready")
+func protectNetworkCommand(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 }

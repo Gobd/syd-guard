@@ -27,6 +27,7 @@ import (
 	"github.com/Gobd/syd-guard/internal/api"
 	"github.com/Gobd/syd-guard/internal/policy"
 	"github.com/Gobd/syd-guard/internal/system"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -44,7 +45,7 @@ type Session struct {
 	Learn       bool         `json:"learn"`
 	PID         int          `json:"pid"`
 	IPC         string       `json:"ipc"`
-	ProxyPort   int          `json:"proxyPort"`
+	ProxyPort   int          `json:"proxyPort"` // legacy wire name; command broker only
 	DNSAddr     string       `json:"dnsAddr,omitempty"`
 	Network     bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
 	Connections []Connection `json:"connections,omitempty"`
@@ -53,12 +54,13 @@ type Session struct {
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
-	SydPID       int       `json:"sydPid,omitempty"` // Syd's process, for entering its namespaces
+	SydPID       int       `json:"sydPid,omitempty"`     // Syd's process, for entering its namespaces
+	NetworkPID   int       `json:"networkPid,omitempty"` // owner of the outer user/net namespaces
 	Started      time.Time `json:"started"`
 	Launch       []string  `json:"launch"`
 	Status       string    `json:"status"`
 	LastError    string    `json:"lastError,omitempty"`
-	proxy        *http.Server
+	brokerServer *http.Server
 	dns          *dnsServer
 	network      *network
 	queue        chan applyOp
@@ -120,7 +122,7 @@ func RunDaemon() error {
 }
 
 // adoptSessions re-attaches sessions that survived a daemon restart. Their
-// Syd policy is unchanged; proxies and DNS servers restart on the same ports.
+// Syd policy is unchanged; the session owner reattaches its retained TUN.
 func (d *Daemon) adoptSessions() {
 	files, _ := filepath.Glob(filepath.Join(sessionsDir(), "*.json"))
 	for _, f := range files {
@@ -137,7 +139,7 @@ func (d *Daemon) adoptSessions() {
 			log.Printf("session %s predates isolated networking; stop and restart this agent", s.ID)
 			continue
 		}
-		if err := d.startProxy(&s); err != nil {
+		if err := d.startBroker(&s); err != nil {
 			log.Printf("adopt %s: %v", s.ID, err)
 			continue
 		}
@@ -154,10 +156,6 @@ func (d *Daemon) adoptSessions() {
 		s.Status = statusApplied
 		d.startQueue(&s)
 		d.sessions[s.ID] = &s
-		if err := d.attachNetwork(&s); err != nil {
-			s.Status, s.LastError = statusUnknown, err.Error()
-			d.stopServers(&s)
-		}
 		log.Printf("adopted session %s (%s)", s.ID, s.Project)
 	}
 }
@@ -271,8 +269,9 @@ func (d *Daemon) routes() http.Handler {
 	})
 	api.Handle(mux, "POST /internal/started", func(r *http.Request) (any, error) {
 		var req struct {
-			Session string
-			PID     int
+			Session    string
+			PID        int
+			NetworkPID int
 		}
 		if err := api.Decode(r, &req); err != nil {
 			return nil, err
@@ -283,15 +282,11 @@ func (d *Daemon) routes() http.Handler {
 			d.mu.Unlock()
 			return nil, errors.New("bad session start")
 		}
-		s.SydPID = req.PID
+		s.SydPID, s.NetworkPID = req.PID, req.NetworkPID
 		meta, _ := json.Marshal(s)
 		err := os.WriteFile(filepath.Join(sessionsDir(), s.ID+".json"), meta, 0o600)
 		d.mu.Unlock()
 		if err != nil {
-			return nil, err
-		}
-		if err := d.attachNetwork(s); err != nil {
-			d.stopServers(s)
 			return nil, err
 		}
 		return map[string]any{}, nil
@@ -348,7 +343,7 @@ func (d *Daemon) register(s *Session) (any, error) {
 	s.IPC = "@sydguard-" + s.ID + "-" + system.NewID()
 	s.Started = time.Now()
 	s.Status = statusApplied
-	if err := d.startProxy(s); err != nil {
+	if err := d.startBroker(s); err != nil {
 		return nil, err
 	}
 	registered := false
@@ -404,8 +399,8 @@ func (d *Daemon) register(s *Session) (any, error) {
 }
 
 func (d *Daemon) stopServers(s *Session) {
-	if s.proxy != nil {
-		_ = s.proxy.Close()
+	if s.brokerServer != nil {
+		_ = s.brokerServer.Close()
 	}
 	if s.network != nil {
 		s.network.close()
@@ -547,9 +542,13 @@ func loadViaNamespace(s *Session, batch string) error {
 		exe = filepath.Join(system.Home(), ".local", "bin", "sydguard")
 	}
 	ns := fmt.Sprintf("/proc/%d/ns/", s.SydPID)
+	if s.NetworkPID <= 0 || !system.Alive(s.NetworkPID) {
+		return errors.New("network owner unavailable")
+	}
+	ownerNS := fmt.Sprintf("/proc/%d/ns/", s.NetworkPID)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "nsenter", "--user="+ns+"user", "--pid="+ns+"pid_for_children",
+	out, err := exec.CommandContext(ctx, "nsenter", "--user="+ownerNS+"user", "--net="+ownerNS+"net", "--pid="+ns+"pid_for_children",
 		"--preserve-credentials", "--", exe, "ipc-load", s.IPC, batch).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("syd ipc (via namespace): %v: %s", err, strings.TrimSpace(string(out)))
@@ -1001,6 +1000,19 @@ func Call(method, path string, in, out any) error {
 // EnsureDaemon starts the background daemon if needed (restarting it when the
 // binary changed). Returns true when a new daemon was started.
 func EnsureDaemon() (bool, error) {
+	// Multiple live launchers may notice a crash simultaneously.
+	if err := os.MkdirAll(system.StateDir(), 0o700); err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(filepath.Join(system.StateDir(), "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Close() }()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }()
 	var ping struct{ Version string }
 	if err := Call("GET", "/api/ping", nil, &ping); err == nil {
 		if ping.Version == system.Version() {

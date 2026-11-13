@@ -33,6 +33,8 @@ const (
 type Connection struct {
 	ID          string     `json:"id"`
 	Protocol    string     `json:"protocol"`
+	Scheme      string     `json:"scheme,omitempty"`
+	Port        string     `json:"port"`
 	Destination string     `json:"destination"`
 	Hostname    string     `json:"hostname,omitempty"`
 	HTTPHost    string     `json:"httpHost,omitempty"`
@@ -68,7 +70,8 @@ func (n *network) begin(proto, dest, host string, closeFlow func()) *Connection 
 	if n.ctx.Err() != nil {
 		return nil
 	}
-	c := &Connection{ID: system.NewID(), Protocol: proto, Destination: dest, Hostname: host, State: "connecting", Started: time.Now()}
+	_, port, _ := net.SplitHostPort(dest)
+	c := &Connection{ID: system.NewID(), Protocol: proto, Port: port, Destination: dest, Hostname: host, State: "connecting", Started: time.Now()}
 	if len(n.connections) >= maxConnections {
 		n.connections = n.connections[1:]
 	}
@@ -84,7 +87,7 @@ func (n *network) snapshot() []Connection {
 	out := make([]Connection, 0, len(n.connections))
 	for i := len(n.connections) - 1; i >= 0; i-- {
 		x := n.connections[i]
-		c := Connection{ID: x.ID, Protocol: x.Protocol, Destination: x.Destination, Hostname: x.Hostname, HTTPHost: x.HTTPHost, SNI: x.SNI, State: x.State, Error: x.Error, Started: x.Started, Ended: x.Ended}
+		c := Connection{ID: x.ID, Protocol: x.Protocol, Scheme: x.Scheme, Port: x.Port, Destination: x.Destination, Hostname: x.Hostname, HTTPHost: x.HTTPHost, SNI: x.SNI, State: x.State, Error: x.Error, Started: x.Started, Ended: x.Ended}
 		c.Sent = atomic.LoadInt64(&x.Sent)
 		c.Received = atomic.LoadInt64(&x.Received)
 		out = append(out, c)
@@ -257,6 +260,9 @@ func (n *network) tcp(client net.Conn, dest string) {
 			return
 		}
 	}
+	n.mu.Lock()
+	c.Scheme = scheme
+	n.mu.Unlock()
 	addr, err := n.dialTarget(ctx, "tcp", scheme, host, port)
 	if err != nil {
 		result = err
@@ -468,4 +474,4 @@ func (n *network) udp(client net.Conn, dest string) {
 	<-done
 }
 
-func networkProxy(port int) string { return fmt.Sprintf("http://%s:%d", networkGateway, port) }
+func networkBroker(port int) string { return fmt.Sprintf("http://%s:%d", networkGateway, port) }

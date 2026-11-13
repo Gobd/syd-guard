@@ -141,19 +141,24 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 - **Built in** (shown in the UI): system dirs read-only; the folder you launched
   in and `/tmp` read+write. Nothing above it: launch at a repo's root if the agent
   should commit (`.git` must be inside; its hooks and config stay protected). `write` = read + create/modify/delete/rename.
-- **hosts** are by name: `github.com` (any port), `https://github.com` (443),
-  `http://x:8080`, `*.example.com` (subdomains only) — all go through the
-  per-session HTTP(S) proxy, which checks every request by name, and for HTTPS
-  also checks that the TLS server name matches (no domain fronting). HTTPS is
-  decided by host and port, not URL path (no TLS interception).
-  `tcp://host:port` additionally allows **raw** connections for tools that bypass
-  the proxy (databases, …): the session's private DNS server answers approved
-  names and allows the returned IPs on that port, for the answer's TTL (1 min–1 h).
-  Only `tcp://` rules open raw access, so shared CDN IPs stay closed otherwise.
-  Unapproved names don't resolve at all — not even by the proxy (no DNS leaks).
-  Loopback/link-local destinations are never allowed; private/LAN addresses need
-  an exact `protocol://host[:port]` rule.
-- **connect** is raw IP/socket access (advanced); prefer hosts.
+- **hosts** are by name: `github.com` (any port/protocol),
+  `https://github.com` (TLS on 443), `tcp://db.example.com:5432`,
+  `udp://service.example.com:9000`, `*.example.com` (subdomains only).
+  Each session has a private TUN and tun2socks/gVisor TCP/UDP stack, not an
+  HTTP/SOCKS proxy. HTTPS on port 443 checks TLS SNI against the DNS identity
+  (no domain fronting, TLS interception, or URL-path rules). Other ports use
+  raw `tcp://` grants. Plain HTTP on port 80 also requires `tcp://host:80`:
+  only its initial Host is inspected, not every request on a reused connection.
+  Existing `http://` grants must be replaced with an explicit raw TCP grant.
+  A/AAAA DNS answers are synthetic, local-only identities, stable across daemon
+  restarts. Real DNS resolution happens only after approving the connection's
+  host, protocol and port. An unapproved lookup never leaves the namespace;
+  unrelated names sharing a CDN address do not share authorization.
+  Loopback/link-local destinations are blocked except explicit `--local-port`
+  helpers; private/LAN destinations need an exact host rule.
+- **connect** grants literal IP access (advanced); prefer hosts. Use
+  `tcp!93.184.216.34!443` or `udp!93.184.216.34!9000` to scope the protocol;
+  legacy unprefixed IP/port rules permit both.
 - **Protected**: the sandbox can't read `~/.config/sydguard`, sydguard's state,
   `~/.ssh`, `~/.gnupg`, `~/.lima`, and can't modify rules files, `.sydguard/`,
   `~/.local/bin`, shell rc files, `.git/hooks`, `.git/config`. Grants overlapping
@@ -174,16 +179,24 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
   token: it refuses non-loopback Host headers (DNS rebinding) and any write that
   isn't a same-origin JSON request (cross-site pages).
 - **VM daemon** (Unix socket, auto-started): compiles a Syd profile per session,
-  runs its HTTP(S) proxy and DNS server, turns Syd's JSON denials (fd 3) into cards,
+  runs its gVisor transport and synthetic DNS resolver, turns Syd's JSON denials (fd 3) into cards,
   and applies approvals/removals through Syd's IPC as one atomic `load` per
   session. Sessions show **applied / updating / unknown**; a failed or unanswered
   update is reported and stops further edits to that session — never shown as
   applied. Change events stream to the UI (SSE) so cards appear instantly.
-- File accesses are denied immediately and succeed on retry once applied. Web
-  requests and DNS lookups wait for your decision (10 min / a few seconds).
-- Sessions use user+mount namespaces (private resolv.conf, overlays). Syd's IPC
-  only accepts peers in its PID namespace, so live updates go through a short
-  `nsenter` helper.
+- File accesses are denied immediately and succeed on retry once applied.
+  Network connections wait for approval (up to 10 minutes; application timeouts
+  still apply). The Sessions view shows per-session flows, protocol, port,
+  hostname/SNI, counters, and approvals for that session's shared rules file.
+- A session-lived, unprivileged helper creates user+network namespaces and the
+  TUN **before** starting Syd. Syd creates its inner user/mount namespaces
+  (private resolv.conf, overlays), with no `unshare/net`. The helper keeps the
+  TUN and local-listener descriptors and passes duplicates to the daemon over
+  a private Unix socket. The agent inherits none of these descriptors.
+- The launcher restarts a crashed daemon even without Syd log activity. The
+  owner reconnects and hands back the same TUN/listeners. Existing flows reset;
+  new flows work with unchanged routes and cached DNS identities. Live Syd IPC
+  updates enter the owner's user/net and Syd's PID namespaces.
 
 ## Engine
 
@@ -191,8 +204,10 @@ Tested with upstream Syd 3.59 (the latest release), unmodified. `sydguard setup`
 (automatic when sydguard starts a VM) runs `internal/guest/install-syd.sh`: builds Syd 3.59.0
 statically (`cargo --locked`, libseccomp 2.6.1 checked by SHA-256), installs it
 root-owned at `/usr/local/libexec/sydguard/syd`, and adds an AppArmor profile that
-lets only that binary create user namespaces (Ubuntu blocks this by default).
-`sydguard doctor` checks engine, namespaces and daemon.
+lets the engine and root-owned `/usr/local/libexec/sydguard/net-helper` create
+user namespaces (Ubuntu blocks this by default). Neither binary is setuid.
+Run `sydguard setup` after upgrading to install the matching helper build.
+`sydguard doctor` checks engine, helper version, namespaces and daemon.
 
 ## Lima
 
@@ -209,10 +224,11 @@ lets only that binary create user namespaces (Ubuntu blocks this by default).
 make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
 scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
+python3 scripts/network-e2e.py /path/to/sydguard # Linux: real TLS, TCP/UDP, restart + live IPC
 ```
 
 Layout: `cmd/sydguard` (CLI, urfave/cli v3); `internal/policy` (rules, trust,
-Syd profile); `internal/guest` (daemon, proxy, DNS, launcher, engine setup);
+Syd profile); `internal/guest` (daemon, TUN/gVisor, DNS, launcher, engine setup);
 `internal/ui` (UI server + embedded build); `internal/lima` (running in Lima VMs);
 `internal/api`, `internal/system` (shared). `web/` is Preact + vanilla-extract,
 built by Bun into `internal/ui/dist`, which is committed (check.sh fails if stale).
@@ -221,9 +237,11 @@ built by Bun into `internal/ui/dist`, which is committed (check.sh fails if stal
 
 - Landlock is off: approvals can extend anywhere (no kernel ceiling); Syd's
   seccomp path checks do the enforcing.
-- If the agent kills the daemon, approvals, its proxy and DNS stop (fail closed)
-  until it restarts and re-adopts the session. Syd itself keeps enforcing.
-- Revoking can't undo completed I/O or close already-open files/connections.
+- While the daemon is down, network forwarding stops (fail closed). Syd keeps
+  enforcing; the launcher automatically restarts the daemon. Active network
+  flows and the bounded connection history do not survive a restart.
+- Revoking network rules conservatively closes active flows. Revoking cannot
+  undo completed I/O or close already-open files.
 - Compatibility switches are on for agents: TPE off, symlinks and file creation
   in group-writable dirs, W^X memory for JITs, non-PIE binaries.
 - Programs on the UI's machine itself can use its API (like any local tool).

@@ -128,6 +128,9 @@ func Run(o RunOptions) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	if err := checkNetworkHelper(); err != nil {
+		return 1, err
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return 1, err
@@ -206,20 +209,17 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	defer func() { _ = logR.Close(); _ = logW.Close() }()
-	exe, err := os.Executable()
-	if err != nil {
-		return 1, err
-	}
-	cmd := exec.Command(engine, "-P", reg.Profile, "--", exe, "net-wait", fmt.Sprintf("%s:%d", networkGateway, reg.ProxyPort), "--")
+	cmd := exec.Command(networkHelper, "net-run", reg.ID, "--", engine, "-P", reg.Profile, "--")
 	cmd.Args = append(cmd.Args, argv...)
+	protectNetworkCommand(cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{logW} // fd 3; Syd closes it before running the agent
-	proxy := networkProxy(reg.ProxyPort)
-	cmd.Env = append(os.Environ(), "SYD_LOG_FD=3", "SYDGUARD=1", "NODE_USE_ENV_PROXY=1")
-	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GLOBAL_AGENT_HTTP_PROXY"} {
-		cmd.Env = append(cmd.Env, k+"="+proxy, strings.ToLower(k)+"="+proxy)
+	cmd.Env = append(os.Environ(), "SYD_LOG_FD=3", "SYDGUARD=1", "SG_BROKER="+networkBroker(reg.ProxyPort))
+	// Transparent networking must not inherit the operator's proxy routing.
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GLOBAL_AGENT_HTTP_PROXY", "NO_PROXY"} {
+		cmd.Env = append(cmd.Env, k+"=", strings.ToLower(k)+"=")
 	}
-	cmd.Env = append(cmd.Env, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+	cmd.Env = append(cmd.Env, "NODE_USE_ENV_PROXY=0")
 	for k, v := range env { // secrets from the config, e.g. a scoped GH_TOKEN
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -229,11 +229,6 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	_ = logW.Close()
-	if err := Call("POST", "/internal/started", map[string]any{"Session": reg.ID, "PID": cmd.Process.Pid}, nil); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return 1, err
-	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -315,6 +310,10 @@ func forwardEvents(id string, r io.Reader) {
 	}
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
+	// Network-only workloads may produce no Syd denials. Recovery must not
+	// depend on a log batch, and must run here in the host namespace.
+	health := time.NewTicker(2 * time.Second)
+	defer health.Stop()
 	for {
 		select {
 		case l, ok := <-lines:
@@ -328,6 +327,8 @@ func forwardEvents(id string, r io.Reader) {
 			}
 		case <-tick.C:
 			flush()
+		case <-health.C:
+			_, _ = EnsureDaemon()
 		}
 	}
 }
@@ -335,6 +336,12 @@ func forwardEvents(id string, r io.Reader) {
 // Doctor prints what works and what doesn't. Returns false on a hard failure.
 func Doctor() bool {
 	ok := true
+	if err := checkNetworkHelper(); err != nil {
+		fmt.Println("✗ network helper:", err)
+		ok = false
+	} else {
+		fmt.Println("✓ session-lived namespace/TUN helper:", networkHelper)
+	}
 	if engine, err := FindEngine(); err != nil {
 		fmt.Println("✗ engine:", err)
 		ok = false
@@ -360,8 +367,23 @@ func Doctor() bool {
 var installScript string
 
 // Setup installs the pinned Syd engine (and its AppArmor exemption).
+const networkHelper = "/usr/local/libexec/sydguard/net-helper"
+
+func checkNetworkHelper() error {
+	out, err := exec.Command(networkHelper, "version").Output()
+	if err != nil || strings.TrimSpace(string(out)) != system.Version() {
+		return errors.New("network helper missing or outdated; run `sydguard setup` after upgrading")
+	}
+	return nil
+}
+
 func Setup() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command("bash", "-c", installScript)
+	cmd.Env = append(os.Environ(), "SYDGUARD_HELPER_SOURCE="+exe)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }

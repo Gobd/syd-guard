@@ -20,6 +20,8 @@ export interface Card {
 export interface Connection {
   id: string;
   protocol: string;
+  scheme?: string;
+  port: string;
   destination: string;
   hostname?: string;
   httpHost?: string;

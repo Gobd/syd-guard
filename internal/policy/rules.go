@@ -438,7 +438,7 @@ func CompileProfile(in ProfileInput) (string, error) {
 		// would then refuse `> existing-file`. That guards shared multi-user
 		// directories, not a single-user VM.
 		"trace/allow_unsafe_create:1",
-		"passenv+*_PROXY", "passenv+*_proxy",
+		"passenv+SG_BROKER",
 		"allow/create+!*", "allow/net/bind+!unnamed",
 		"allow/net/bind+127.0.0.1!0-65535", "allow/net/bind+::1!0-65535",
 		fmt.Sprintf("allow/net/connect+127.0.0.1!%d", in.ProxyPort),
@@ -450,7 +450,7 @@ func CompileProfile(in ProfileInput) (string, error) {
 	if in.Network {
 		// IP sockets stay within the namespace. Only the daemon can relay
 		// them to the host; keep Syd's Unix-socket policy intact.
-		lines = append(lines, "unshare/net:1", "root/map:1", "allow/net/connect+0.0.0.0/0!0-65535", "allow/net/connect+::/0!0-65535")
+		lines = append(lines, "root/map:1", "allow/net/connect+0.0.0.0/0!0-65535", "allow/net/connect+::/0!0-65535")
 	}
 	if in.DNS != "" {
 		host, _, err := net.SplitHostPort(in.DNS)
