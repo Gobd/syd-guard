@@ -39,8 +39,9 @@ export function SavedDecision({
   const [recursive, setRecursive] = useState(false);
   const session = requestSession(sessions, request);
   const profile = matchingProfile(session, profiles);
-  const available =
-    ready && !!profile?.capabilities?.saved_decisions && (!file || !!initial);
+  // Legacy pending events are not authenticated managed denial events.
+  // Never turn one into a persistent live approval.
+  const available = false;
   return (
     <div>
       {file && initial && (
@@ -93,7 +94,8 @@ export function SavedDecision({
       </button>
       {!available && (
         <p className={styles.muted}>
-          Saving requires a matching active session profile and server support.
+          Persistent approval is unavailable without an authenticated managed
+          denial binding.
         </p>
       )}
     </div>

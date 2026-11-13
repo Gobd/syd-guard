@@ -37,6 +37,9 @@ type Server struct {
 	closed       bool
 	profiles     ProfileProvider
 	profilesMu   sync.Mutex
+	saveMu       sync.Mutex
+	liveMu       sync.Mutex
+	live         map[string]*liveBinding
 	candidateIDs map[string]string
 }
 
@@ -61,7 +64,11 @@ func (server *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		server.reap()
-		reply(w, http.StatusOK, server.registry.List(r.URL.Query().Get("history") == "true"))
+		values := server.registry.List(r.URL.Query().Get("history") == "true")
+		for i := range values {
+			values[i].ManagedLive = server.liveStatus(values[i].ID)
+		}
+		reply(w, http.StatusOK, values)
 	})
 	mux.HandleFunc("GET /api/profiles", server.profileList)
 	mux.HandleFunc("GET /api/profiles/{id}", server.profileGet)
@@ -255,6 +262,10 @@ func (server *Server) fileReady(w http.ResponseWriter, r *http.Request) {
 		reply(w, 409, map[string]string{"error": "no active session"})
 		return
 	}
+	if value.SelectedProfile != nil {
+		reply(w, 409, map[string]string{"error": "legacy file learning is unavailable for managed selections"})
+		return
+	}
 	var input files.Context
 	if err := decode(w, r, &input); err != nil {
 		reply(w, 400, map[string]string{"error": err.Error()})
@@ -299,6 +310,7 @@ func (server *Server) endSession(id, identity string) error {
 	if !ok || value.StartIdentity != identity {
 		return fmt.Errorf("unknown or stale session identity")
 	}
+	server.stopManagedLive(id)
 	server.files.End(id)
 	gate := server.gates[id]
 	if gate != nil {

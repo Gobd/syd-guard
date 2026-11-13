@@ -12,6 +12,7 @@ import {
   type ProfileMetadata,
   profileApi,
 } from "./api";
+import { validUint64 } from "./uint64";
 import { ProfileEditor } from "./ProfileEditor";
 import { SavedDecision } from "./SavedDecision";
 import * as styles from "./theme.css";
@@ -42,6 +43,43 @@ function validStatus(active: unknown, net: unknown, fs: unknown): boolean {
           item.profile === null ||
           (isObject(item.profile) &&
             hasStrings(item.profile, ["id", "name", "revision"]))) &&
+        (item.managed_live === undefined ||
+          (isObject(item.managed_live) &&
+            hasStrings(item.managed_live, [
+              "session",
+              "project",
+              "profile",
+              "saved_revision",
+              "state",
+              "engine_digest",
+              "last_confirmed_at",
+            ]) &&
+            [
+              "saved",
+              "pending",
+              "applied",
+              "unknown",
+              "skipped",
+              "not_queued",
+              "unsupported_network",
+            ].includes(item.managed_live.state as string) &&
+            validUint64(item.managed_live.generation) &&
+            validUint64(item.managed_live.sequence) &&
+            (item.managed_live.pending_sequence === undefined ||
+              validUint64(item.managed_live.pending_sequence)) &&
+            (item.managed_live.predecessor_sequence === undefined ||
+              validUint64(item.managed_live.predecessor_sequence)) &&
+            (item.managed_live.applied_revision === undefined ||
+              typeof item.managed_live.applied_revision === "string") &&
+            (item.managed_live.request_id === undefined ||
+              typeof item.managed_live.request_id === "string") &&
+            ["pending_request_id", "predecessor_revision"].every(
+              (key) =>
+                item.managed_live &&
+                isObject(item.managed_live) &&
+                (item.managed_live[key] === undefined ||
+                  typeof item.managed_live[key] === "string"),
+            ))) &&
         (item.command === undefined ||
           item.command === null ||
           (Array.isArray(item.command) &&
@@ -538,6 +576,31 @@ export function App() {
                   ? `${session.profile.name} · ID: ${session.profile.id} · Revision: ${session.profile.revision}`
                   : "not supplied by launcher"}
               </p>
+              {session.managed_live && (
+                <p>
+                  Managed live (cached last-confirmed receipt; periodic checks,
+                  not continuous liveness): {session.managed_live.state} · Last
+                  confirmed at (controller UTC):{" "}
+                  {session.managed_live.last_confirmed_at} · Saved revision:{" "}
+                  {session.managed_live.saved_revision} · Applied revision:{" "}
+                  {session.managed_live.applied_revision ?? "none"} · ROOT
+                  session: {session.managed_live.session} · Project ID:{" "}
+                  {session.managed_live.project} · Profile:{" "}
+                  {session.managed_live.profile} · Generation:{" "}
+                  {session.managed_live.generation} · Sequence:{" "}
+                  {session.managed_live.sequence} · Applied request ID:{" "}
+                  {session.managed_live.request_id ?? "none"} · Engine digest:{" "}
+                  {session.managed_live.engine_digest} · Pending request ID:{" "}
+                  {session.managed_live.pending_request_id ?? "none"} · Pending
+                  sequence: {session.managed_live.pending_sequence ?? "none"} ·
+                  Predecessor sequence:{" "}
+                  {session.managed_live.predecessor_sequence ?? "none"} ·
+                  Predecessor revision:{" "}
+                  {session.managed_live.predecessor_revision ?? "none"}
+                  {session.managed_live.state === "unsupported_network" &&
+                    " · Network rules are saved only; ROOT network enforcement is not available."}
+                </p>
+              )}
             </div>
           ))
         )}

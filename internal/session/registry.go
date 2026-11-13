@@ -31,21 +31,41 @@ type SelectedProfile struct {
 	Applied          bool   `json:"applied"`
 }
 
+// ManagedLiveStatus contains receipt metadata only, never credentials or profile bytes.
+type ManagedLiveStatus struct {
+	Session             string    `json:"session"`
+	Project             string    `json:"project"`
+	Profile             string    `json:"profile"`
+	Generation          uint64    `json:"generation,string"`
+	SavedRevision       string    `json:"saved_revision"`
+	AppliedRevision     string    `json:"applied_revision,omitempty"`
+	Sequence            uint64    `json:"sequence,string"`
+	RequestID           string    `json:"request_id,omitempty"`
+	EngineDigest        string    `json:"engine_digest"`
+	PendingRequestID    string    `json:"pending_request_id,omitempty"`
+	PendingSequence     uint64    `json:"pending_sequence,string,omitempty"`
+	PredecessorSequence uint64    `json:"predecessor_sequence,string,omitempty"`
+	PredecessorRevision string    `json:"predecessor_revision,omitempty"`
+	State               string    `json:"state"`
+	LastConfirmedAt     time.Time `json:"last_confirmed_at"`
+}
+
 type Session struct {
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	Project         string           `json:"project"`
-	Command         []string         `json:"command"`
-	ArgumentCount   int              `json:"argument_count"`
-	Gateway         string           `json:"gateway,omitempty"`
-	Namespace       string           `json:"namespace,omitempty"`
-	TransitDNS      string           `json:"transit_dns,omitempty"`
-	SelectedProfile *SelectedProfile `json:"selected_profile,omitempty"`
-	PID             int              `json:"pid"`
-	StartIdentity   string           `json:"start_identity"`
-	State           State            `json:"state"`
-	StartedAt       time.Time        `json:"started_at"`
-	EndedAt         *time.Time       `json:"ended_at,omitempty"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Project         string             `json:"project"`
+	Command         []string           `json:"command"`
+	ArgumentCount   int                `json:"argument_count"`
+	Gateway         string             `json:"gateway,omitempty"`
+	Namespace       string             `json:"namespace,omitempty"`
+	TransitDNS      string             `json:"transit_dns,omitempty"`
+	SelectedProfile *SelectedProfile   `json:"selected_profile,omitempty"`
+	ManagedLive     *ManagedLiveStatus `json:"managed_live,omitempty"`
+	PID             int                `json:"pid"`
+	StartIdentity   string             `json:"start_identity"`
+	State           State              `json:"state"`
+	StartedAt       time.Time          `json:"started_at"`
+	EndedAt         *time.Time         `json:"ended_at,omitempty"`
 }
 
 type Registry struct {

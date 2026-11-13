@@ -354,7 +354,28 @@ browserTest(
           await new Promise((resolve) => setTimeout(resolve, 700));
           if (statusFailure) return route.fulfill({ status: 503 });
           if (invalidStatus)
-            return route.fulfill({ json: { unexpected: true } });
+            return route.fulfill({
+              json: [
+                {
+                  id: "session-id",
+                  name: "agent",
+                  state: "running",
+                  project: "/project",
+                  managed_live: {
+                    session: "root",
+                    project: "project",
+                    profile: "default",
+                    generation: "1",
+                    sequence: "1",
+                    saved_revision: "revision",
+                    state: "pending",
+                    engine_digest: "digest",
+                    last_confirmed_at: "2025-01-01T00:00:00Z",
+                    pending_sequence: "not-a-number",
+                  },
+                },
+              ],
+            });
           return route.fulfill({
             json: [
               {
@@ -404,11 +425,11 @@ browserTest(
         exact: true,
       });
       const savedDecision = page.getByRole("button", {
-        name: "Save to profile",
+        name: "Save to profile (unavailable)",
         exact: true,
       });
       expect(await save.isEnabled()).toBe(true);
-      expect(await savedDecision.isEnabled()).toBe(true);
+      expect(await savedDecision.isDisabled()).toBe(true);
       await page
         .waitForFunction(() => false, undefined, { timeout: 500 })
         .catch(() => {});
@@ -416,7 +437,7 @@ browserTest(
       for (let i = 0; i < 25; i++) {
         expect(await deny.isEnabled()).toBe(true);
         expect(await save.isEnabled()).toBe(true);
-        expect(await savedDecision.isEnabled()).toBe(true);
+        expect(await savedDecision.isDisabled()).toBe(true);
         await page.waitForTimeout(100);
       }
       expect(catalogCalls).toBeGreaterThanOrEqual(2);
@@ -653,12 +674,12 @@ browserTest(
       await page.goto(`${server.url}#token=test-token`);
       const deny = page.getByRole("button", { name: "Deny for run" });
       const saved = page.getByRole("button", {
-        name: "Save to profile",
+        name: "Save to profile (unavailable)",
         exact: true,
       });
       await saved.waitFor();
       expect(await deny.isEnabled()).toBe(true);
-      expect(await saved.isEnabled()).toBe(true);
+      expect(await saved.isDisabled()).toBe(true);
       await page
         .getByText(/Profile service unavailable or refreshing/)
         .waitFor({ timeout: 16000 });
@@ -1366,4 +1387,134 @@ browserTest(
     }
   },
   20_000,
+);
+
+browserTest(
+  "managed uint64 fields reject malformed status without losing drafts",
+  async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const file =
+          new URL(request.url).pathname === "/"
+            ? "index.html"
+            : new URL(request.url).pathname.slice(1);
+        return ["index.html", "app.js", "app.css"].includes(file)
+          ? new Response(Bun.file(`${assets}/${file}`))
+          : new Response("not found", { status: 404 });
+      },
+    });
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const max = "18446744073709551615";
+    const live: Record<string, unknown> = {
+      session: "root",
+      project: "project",
+      profile: "default",
+      generation: max,
+      sequence: max,
+      pending_sequence: max,
+      predecessor_sequence: max,
+      saved_revision: "revision",
+      state: "pending",
+      engine_digest: "digest",
+      last_confirmed_at: "2025-01-01T00:00:00Z",
+    };
+    const metadata = {
+      id: "profile-id",
+      name: "default",
+      project: "/project",
+      path: "/project/default.json",
+      revision: "a".repeat(64),
+      capabilities: { edit: true, reload: true, saved_decisions: false },
+    };
+    let completed = 0;
+    try {
+      await page.route("**/api/**", async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/api/sessions") {
+          const snapshot = { ...live };
+          await route.fulfill({
+            json: [
+              {
+                id: "session-id",
+                name: "agent",
+                state: "running",
+                project: "/project",
+                managed_live: snapshot,
+              },
+            ],
+          });
+          completed++;
+          return;
+        }
+        if (path === "/api/profiles")
+          return route.fulfill({ json: [metadata] });
+        if (path === "/api/profiles/profile-id")
+          return route.fulfill({
+            json: {
+              ...metadata,
+              profile: {
+                version: 1,
+                name: "default",
+                files: [
+                  { path: "/original", access: ["read"], recursive: false },
+                ],
+                network: [],
+              },
+            },
+          });
+        return route.fulfill({ json: [] });
+      });
+      await page.goto(`${server.url}#token=test-token`);
+      await page
+        .getByText(
+          /Generation: 18446744073709551615.*Sequence: 18446744073709551615.*Pending sequence: 18446744073709551615.*Predecessor sequence: 18446744073709551615/,
+        )
+        .waitFor();
+      await page
+        .getByLabel("Selected project profile")
+        .selectOption("profile-id");
+      const field = page
+        .getByRole("group", { name: "File rule 1" })
+        .getByLabel("Path");
+      await field.fill("/draft-preserved");
+      const invalid: unknown[] = [
+        "18446744073709551616",
+        "-1",
+        "+1",
+        "01",
+        "1.0",
+        "not-a-number",
+        1,
+      ];
+      for (const key of [
+        "generation",
+        "sequence",
+        "pending_sequence",
+        "predecessor_sequence",
+      ]) {
+        for (const value of invalid) {
+          live[key] = value;
+          const previous = completed;
+          const deadline = Date.now() + 5000;
+          while (completed <= previous && Date.now() < deadline)
+            await page.waitForTimeout(20);
+          expect(completed).toBeGreaterThan(previous);
+          await page.waitForTimeout(50);
+          await page
+            .getByRole("alert")
+            .getByText(/Invalid status response/)
+            .waitFor({ timeout: 2000 });
+          expect(await field.inputValue()).toBe("/draft-preserved");
+        }
+        live[key] = max;
+      }
+    } finally {
+      await browser.close();
+      server.stop();
+    }
+  },
+  80_000,
 );

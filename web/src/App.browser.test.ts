@@ -45,6 +45,19 @@ browserTest(
                     project: "/project-a",
                     command: ["agent-cli"],
                     pid: 123,
+                    managed_live: {
+                      session: "root-session",
+                      project: "project-id",
+                      profile: "default",
+                      generation: "18446744073709551615",
+                      sequence: "2",
+                      saved_revision: "saved-revision",
+                      last_confirmed_at: "2025-01-01T00:00:00Z",
+                      applied_revision: "applied-revision",
+                      request_id: "request-id",
+                      engine_digest: "engine-digest",
+                      state: "pending",
+                    },
                   },
                 ]
               : [],
@@ -85,6 +98,16 @@ browserTest(
       ).toBe(1);
       expect(
         await page.getByText("Profile: not supplied by launcher").count(),
+      ).toBe(1);
+      expect(
+        await page
+          .getByText(
+            /Managed live \(cached last-confirmed receipt; periodic checks, not continuous liveness\): pending.*Last confirmed at \(controller UTC\): 2025-01-01T00:00:00Z.*Saved revision: saved-revision.*Applied revision: applied-revision/,
+          )
+          .count(),
+      ).toBe(1);
+      expect(
+        await page.getByText(/Generation: 18446744073709551615/).count(),
       ).toBe(1);
       expect(new URL(page.url()).hash).toBe("");
       const allow = page.getByRole("button", {
@@ -386,29 +409,13 @@ browserTest(
       supportsSaved = true;
       await page.waitForTimeout(2400);
       const savedButtons = page.getByRole("button", {
-        name: "Save to profile",
+        name: "Save to profile (unavailable)",
         exact: true,
       });
       expect(await savedButtons.count()).toBe(2);
-      await savedButtons.nth(0).click();
-      await page.getByText(/Saved; restart required Applied: no/).waitFor();
-      expect(decisions[0]).toEqual({
-        id: "f",
-        action: "allow",
-        scope: "saved",
-        profile_id: id,
-        expected_revision: c,
-        access: ["read"],
-        recursive: false,
-      });
-      await savedButtons.nth(1).click();
-      expect(decisions[1]).toEqual({
-        id: "n",
-        action: "allow",
-        scope: "saved",
-        profile_id: id,
-        expected_revision: c,
-      });
+      expect(await savedButtons.nth(0).isDisabled()).toBe(true);
+      expect(await savedButtons.nth(1).isDisabled()).toBe(true);
+      expect(decisions).toEqual([]);
       failedSessions = true;
       await page
         .getByRole("alert")
@@ -430,7 +437,7 @@ browserTest(
         .getByText("Project: Unavailable; refresh before deciding")
         .first()
         .waitFor({ timeout: 5000 });
-      expect(decisions).toHaveLength(2);
+      expect(decisions).toHaveLength(0);
     } finally {
       await browser.close();
       server.stop();

@@ -311,6 +311,12 @@ func (server *Server) profileGet(w http.ResponseWriter, r *http.Request) {
 func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), ProfileOperationTimeout)
 	defer cancel()
+	// CAS and enqueue order must agree even for concurrent accepted saves.
+	if err := lockContext(ctx, &server.saveMu); err != nil {
+		profileFailure(w, 503, "unavailable", "profile save deadline exceeded before replacement", "")
+		return
+	}
+	defer server.saveMu.Unlock()
 	record, candidate, err := server.readProfile(ctx, r.PathValue("id"))
 	if err != nil {
 		profileFailure(w, 404, "unavailable", "profile unavailable", "")
@@ -352,6 +358,7 @@ func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, managedstore.ErrIndeterminate) || ctx.Err() != nil {
+		server.managedSaveUnknown(record.ID)
 		profileFailure(w, 503, "indeterminate", "Save may have committed; authenticate a fresh snapshot before retrying. Your draft must be preserved.", "")
 		return
 	}
@@ -360,15 +367,18 @@ func (server *Server) profileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !sameProfileIdentity(source, ProfileSource{ID: record.ID, Name: record.Name, Project: record.Project, Path: record.Path}) {
+		server.managedSaveUnknown(record.ID)
 		profileFailure(w, 503, "indeterminate", "Save may have committed with an invalid binding; reconcile before retrying.", "")
 		return
 	}
 	updated, err := recordFromSource(source, data, false)
 	if err != nil || updated.Revision != snapshot.Revision() {
+		server.managedSaveUnknown(record.ID)
 		profileFailure(w, 503, "indeterminate", "Save may have committed with an invalid snapshot; reconcile before retrying.", "")
 		return
 	}
-	reply(w, 200, profileOutcome{Status: "saved", Profile: updated, Message: "Saved; running permissions are unchanged."})
+	server.managedSaved(record.ID, updated.Revision)
+	reply(w, 200, profileOutcome{Status: "saved", Profile: updated, Message: "Saved; live application is tracked separately."})
 }
 
 func (server *Server) profileReload(w http.ResponseWriter, r *http.Request) {

@@ -203,8 +203,29 @@ Latest source state (unmerged isolated worktrees):
   apparentELFDYN/nointerp binary segfault139 EMPTYlog beforeSyd/noagent started;
   STOPPEDbrokenbuild, existingordinaryguestGCC external-static-pie investigation
   inprivatefreshscratchapproved(noinstalls/globalchanges/debuggers/tracing).
-  Newbuildmustactuallystart andELFverifybeforegatecandidatefixture, norequirePIE
-  orstaticrelaxation. Ordinarychild/proc-exe denial
+  ExistingGCC13.3/Go1.27.4 EXTERNAL-static-pie CGO1 netgo/osusergo producedworking
+  ET_DYN/noINTERP/noDTNEEDED/RWstack/RELRO helpergate; actualCOREfixture engine268539
+  gate-agent268540 SAMEPID heldDumpable0->ReleasecloseFD3->Dumpable1/exec requirePIE
+  PASS. Fullwrappercorrectlyrefusedunclearedordinarygroups; noRootwrapperproof.
+  WorkerreturnedPARTIAL(noactualRootlayout/shim/idleobserver/recovery/fixturebody).
+  Frozen14files snapshot /Users/briankemper/Developer/worktrees/syd-guard/live-startup-review
+  base158 branchpi-subagents/live-startup-review-9b4e23ee. Reviewac2d90a9 BLOCK3P1:
+  gateOverlapbeforeproject/scratchcanonicalization, releaseFD3..255vsfixed3, gatevalid
+  EOFafterdeadline accepted. Repaira1e106c3 active snapshotsolewriter, originalsuntouched.
+  Layoutworker27483a53 STOPPEDbeforeedits crossPROCESSsetup/cleanup serialization:
+  slot.lifecycleMu processlocal/sharedinheritedflock OFD notexclusion; lateRootmutator
+  afterCGcleanup couldwrite/createafterreuse. NarrowedDIAGNOSTIC containedfixedRoot
+  setupsubprocess atomicallyborninBOUNDsessionCG, watchdogkill+populated0 beforecleanup,
+  stalledmutator=>quarantine/noreuse, noRootpost-cleanupmutation outsidecontainedhelper.
+  Diagnostic27483a53 confirmedatomicCGchildstilllateoutsideclonegap afterkill/pop0;
+  independentbf06ce74 approvesREPAIREDsourcecontract no-networkonly: atomiccontained
+  mutator+directSyd originalheldCGFD, immediatekill finitepop0 THENidentityCG rmdir
+  successfulkerneldead barrier BEFORElayoutcleanup; busy=>boundedsecondkill/q,
+  NOremovalretry. Splitmutator-ownedlayoutjournal vsWatch-ownedsealrecord, postSEAL
+  layoutreread mandatory; pendingsealing/deleting unknown q/durableterminalmarker,
+  legacyNetwork/v1 cleanupUNCHANGED/Live rejectsNetwork!=nil. Kernel6.8sourcebasis
+  notRootruntimeproof. Proposalimplementationnext; noRootexecution/deployapproval.
+  Ordinarychild/proc-exe denial
   experiment permitted; NOcapstoSyd/gate/broker/workload. Rootcoordinator mayuse
   ALREADYpresentnormalRootprivileges solelyownchildexe metadata/hash, Rootproc/LSM
   access mustParentqualify; NOnewcaps/filecaps/globalpolicy/ptrace/tracing grants.
@@ -216,7 +237,16 @@ Latest source state (unmerged isolated worktrees):
   ParentSTOPPEDreportedlane(noCLI/providerfallback), inspectedhandoff.json, restored
   EXACTtask-0-worker.patch onbase158037f to /Users/briankemper/Developer/worktrees/
   syd-guard/ui-live-source branchpi-subagents/ui-live-source-b54c6050 (retained).
-  ImplementationNOTrerun; newreadonlyreview3b494a85 active restored14files.
+  ImplementationNOTrerun; review3b494a85 BLOCKP1 sameRootBindingcanregister2localIDs;
+  P2 gatesMucontextwait, uint64frontendALLfields/range, cachedreceiptlabel/time,
+  ordinalMaxsaturation. Repairdd535822 complete retained17files; reviewf19796f5
+  noissues/sourceOK (P1+4actualP2 inventory allfixed). ActualordinaryARM19controller/
+  2webui/4managedlive testsPASS; noRootpositiveproof. ParentcopiedUIpatchmainf45:
+  nativeGo/race/vet LinuxARMbuild/vet type/fmt/buildPASS, embeddedJS rebuiltIDENTICAL
+  SHA toacceptedworkerasset. Combined120sverificationcommandTIMEDOUTduringbrowser
+  afterGo+11slowtests,no softwarefailure/fullpassclaim. Confirmednolefttestprocess;
+  SEPARATE240s browserfullsuite PASS31/647 expectations145.78s. Rootregistration
+  inactive/legacymanagedcardsdisabled/networkunsupported SavedOnly.
   RealexistingLinux managedlive.Exchange +trustedinternalconnfactory (noClienttype),
   nonLinuxUnavailable permitted. Managedpermissioncards DISABLED: noauthenticated
   Rootdenial-event transport exists; doNOTrelabellegacypending/relaxmanaged+Learning

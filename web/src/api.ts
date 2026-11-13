@@ -37,6 +37,30 @@ export type Session = {
   command?: string[];
   pid?: number;
   profile?: { id: string; name: string; revision: string };
+  managed_live?: {
+    session: string;
+    project: string;
+    profile: string;
+    generation: string;
+    saved_revision: string;
+    last_confirmed_at: string;
+    applied_revision?: string;
+    sequence: string;
+    request_id?: string;
+    engine_digest: string;
+    pending_request_id?: string;
+    pending_sequence?: string;
+    predecessor_sequence?: string;
+    predecessor_revision?: string;
+    state:
+      | "saved"
+      | "pending"
+      | "applied"
+      | "unknown"
+      | "skipped"
+      | "not_queued"
+      | "unsupported_network";
+  };
 };
 export type NetworkRequest = {
   id: string;
