@@ -4,9 +4,7 @@ package ui
 
 import (
 	"context"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +29,7 @@ import (
 var dist embed.FS
 
 // The UI server runs on your Mac (or on the Linux machine when there's no Mac).
-// It is the only TCP listener, needs a token, and talks to each VM's daemon
+// It is the only TCP listener (Mac loopback) and talks to each VM's daemon
 // over that VM's Unix socket (forwarded over Lima's SSH). On the Mac it also
 // owns the global ("all projects") rules and mirrors them to every VM.
 
@@ -43,24 +41,7 @@ func uiPort() int {
 	return 7878
 }
 
-func uiTokenPath() string { return filepath.Join(system.StateDir(), "ui-token") }
-
-// Token is the secret the browser needs (kept in the state dir).
-func Token() (string, error) {
-	if b, err := os.ReadFile(uiTokenPath()); err == nil && len(strings.TrimSpace(string(b))) >= 32 {
-		return strings.TrimSpace(string(b)), nil
-	}
-	if err := os.MkdirAll(system.StateDir(), 0o700); err != nil {
-		return "", err
-	}
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	t := hex.EncodeToString(b)
-	return t, os.WriteFile(uiTokenPath(), []byte(t+"\n"), 0o600)
-}
-
-// URL is the UI address including the token.
-func URL(token string) string { return fmt.Sprintf("http://127.0.0.1:%d/#%s", uiPort(), token) }
+func URL() string { return fmt.Sprintf("http://127.0.0.1:%d/", uiPort()) }
 
 type backend struct {
 	name    string
@@ -76,7 +57,6 @@ type backend struct {
 
 type uiServer struct {
 	mu       sync.Mutex
-	token    string
 	backends map[string]*backend
 	store    *policy.Store // global rules (Mac only)
 	ownsGlob bool
@@ -85,11 +65,7 @@ type uiServer struct {
 
 // RunServer serves the UI until killed.
 func RunServer() error {
-	token, err := Token()
-	if err != nil {
-		return err
-	}
-	u := &uiServer{token: token, backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: system.IsMac(), events: api.NewBroadcaster()}
+	u := &uiServer{backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: system.IsMac(), events: api.NewBroadcaster()}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", uiPort()))
 	if err != nil {
 		return err
@@ -263,24 +239,11 @@ func (u *uiServer) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		data, _ := dist.ReadFile("dist/index.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 		_, _ = w.Write(data)
 	})
-	handle := func(pattern string, h api.Func) {
-		api.Handle(mux, pattern, func(r *http.Request) (any, error) {
-			if r.Header.Get("Authorization") != "Bearer "+u.token {
-				return nil, api.ErrUnauthorized
-			}
-			return h(r)
-		})
-	}
-	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != u.token { // EventSource can't send headers
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		u.events.Serve(w, r)
-	})
+	handle := func(pattern string, h api.Func) { api.Handle(mux, pattern, h) }
+	mux.HandleFunc("GET /api/events", u.events.Serve)
 	mux.Handle("GET /assets/", http.FileServerFS(sub(dist, "dist")))
 	handle("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
 	handle("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
@@ -301,15 +264,7 @@ func (u *uiServer) routes() http.Handler {
 			return out, api.Call(b.client, "POST", "/api/"+op, req, &out)
 		})
 	}
-	// Reject DNS rebinding: only literal loopback hosts.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, _ := net.SplitHostPort(r.Host)
-		if host != "127.0.0.1" && host != "localhost" {
-			http.Error(w, "bad host", http.StatusForbidden)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	return guard(mux)
 }
 
 func (u *uiServer) backend(name string) *backend {
@@ -412,13 +367,8 @@ func (u *uiServer) state() map[string]any {
 // true when it was (re)started.
 // EnsureServer starts the UI server in the background if needed.
 func EnsureServer() (bool, error) {
-	token, err := Token()
-	if err != nil {
-		return false, err
-	}
 	ping := func() string {
 		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/api/ping", uiPort()), nil)
-		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 		if err != nil {
 			return ""
@@ -436,10 +386,11 @@ func EnsureServer() (bool, error) {
 		return false, nil
 	case "":
 	default:
-		if v == "?" {
+		// An older sydguard UI (or something else): replace it only if our pid
+		// file names it.
+		if err := killUIServer(); err != nil && v == "?" {
 			return false, fmt.Errorf("port %d is used by something else (set SYDGUARD_PORT)", uiPort())
 		}
-		_ = killUIServer()
 	}
 	if err := system.SpawnDetached(filepath.Join(system.StateDir(), "ui.log"), "ui-server"); err != nil {
 		return false, err
@@ -482,3 +433,28 @@ func OpenBrowser(url string) {
 }
 
 func sub(f embed.FS, dir string) fs.FS { s, _ := fs.Sub(f, dir); return s }
+
+// guard is the UI's access control, instead of a token: the server only listens
+// on loopback; the Host check stops DNS rebinding; writes must be same-origin
+// JSON (cross-site pages can't send that without a CORS preflight we never
+// answer). Other programs on this machine are trusted, as with any local tool.
+func guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, port, _ := net.SplitHostPort(r.Host)
+		if (host != "127.0.0.1" && host != "localhost") || port != fmt.Sprint(uiPort()) {
+			http.Error(w, "bad host", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			origin := r.Header.Get("Origin")
+			sameOrigin := origin == "" || origin == "http://"+r.Host
+			if !sameOrigin || r.Header.Get("Sec-Fetch-Site") == "cross-site" ||
+				!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+				http.Error(w, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}

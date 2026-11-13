@@ -222,13 +222,9 @@ func OpenUI(always bool) error {
 	if err != nil {
 		return err
 	}
-	token, err := ui.Token()
-	if err != nil {
-		return err
-	}
 	if always || started {
-		fmt.Fprintln(os.Stderr, "sydguard: approvals UI at http://127.0.0.1:7878")
-		ui.OpenBrowser(ui.URL(token))
+		fmt.Fprintln(os.Stderr, "sydguard: approvals UI at", ui.URL())
+		ui.OpenBrowser(ui.URL())
 	}
 	return nil
 }

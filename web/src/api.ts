@@ -91,21 +91,10 @@ export interface EditResult {
   note?: string;
 }
 
-export function token(): string {
-  if (location.hash.length > 1) {
-    localStorage.setItem("sydguard-token", location.hash.slice(1));
-    history.replaceState(null, "", "/");
-  }
-  return localStorage.getItem("sydguard-token") ?? "";
-}
-
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(path, {
     method: body ? "POST" : "GET",
-    headers: {
-      Authorization: `Bearer ${token()}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   const j = await r.json().catch(() => null);
@@ -121,9 +110,7 @@ export const edit = (
 
 // Subscribe to "something changed" events; returns an unsubscribe function.
 export function onChange(fn: () => void): () => void {
-  const es = new EventSource(
-    `/api/events?token=${encodeURIComponent(token())}`,
-  );
+  const es = new EventSource("/api/events");
   es.onmessage = fn;
   return () => es.close();
 }

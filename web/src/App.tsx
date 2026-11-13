@@ -12,7 +12,6 @@ import {
   type RuleFile,
   short,
   type State,
-  token,
 } from "./api";
 import * as s from "./styles.css";
 
@@ -67,7 +66,6 @@ export function App() {
       .finally(() => void refresh());
   };
 
-  if (!token()) return <p class={s.main}>Missing token — run `sydguard ui`.</p>;
   const cards: [string, Card][] = [];
   const files: [string, FileView][] = [];
   for (const vm of state?.vms ?? []) {

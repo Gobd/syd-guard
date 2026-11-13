@@ -109,8 +109,7 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 			if started, err := ui.EnsureServer(); err != nil {
 				fmt.Fprintln(os.Stderr, "sydguard: UI:", err)
 			} else if started {
-				token, _ := ui.Token()
-				ui.OpenBrowser(ui.URL(token))
+				ui.OpenBrowser(ui.URL())
 			}
 		},
 	})
@@ -133,12 +132,8 @@ func uiAction(_ context.Context, cmd *cli.Command) error {
 	if _, err := ui.EnsureServer(); err != nil {
 		return err
 	}
-	token, err := ui.Token()
-	if err != nil {
-		return err
-	}
-	ui.OpenBrowser(ui.URL(token))
-	fmt.Println(ui.URL(token))
+	ui.OpenBrowser(ui.URL())
+	fmt.Println(ui.URL())
 	return nil
 }
 
