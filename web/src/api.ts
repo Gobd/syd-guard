@@ -47,6 +47,7 @@ export interface Session {
   lastError?: string;
   dnsAddr?: string;
   overlays?: string[];
+  ports?: { port: number; exposed: boolean; error?: string }[];
   network?: boolean;
   connections?: Connection[];
 }

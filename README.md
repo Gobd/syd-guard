@@ -193,6 +193,13 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
   (private resolv.conf, overlays), with no `unshare/net`. The helper keeps the
   TUN and local-listener descriptors and passes duplicates to the daemon over
   a private Unix socket. The agent inherits none of these descriptors.
+- **Dev servers**: TCP ports the agent listens on (any address, port 1024+) are
+  mirrored onto the VM's loopback, which Lima forwards to the host, so
+  `localhost:3000` on your machine reaches the agent's server. A port already in
+  use there is shown as not exposed in the UI. Inbound only: this never gives the
+  agent new outbound access.
+- Agents run as your own uid inside their namespaces (not root), with no Linux
+  capabilities.
 - The launcher restarts a crashed daemon even without Syd log activity. The
   owner reconnects and hands back the same TUN/listeners. Existing flows reset;
   new flows work with unchanged routes and cached DNS identities. Live Syd IPC
@@ -206,7 +213,8 @@ statically (`cargo --locked`, libseccomp 2.6.1 checked by SHA-256), installs it
 root-owned at `/usr/local/libexec/sydguard/syd`, and adds an AppArmor profile that
 lets the engine and root-owned `/usr/local/libexec/sydguard/net-helper` create
 user namespaces (Ubuntu blocks this by default). Neither binary is setuid.
-Run `sydguard setup` after upgrading to install the matching helper build.
+The helper must match the sydguard build: with a VM, sydguard reinstalls it
+automatically after upgrades; on plain Linux/WSL run `sydguard setup` after upgrading.
 `sydguard doctor` checks engine, helper version, namespaces and daemon.
 
 ## Lima

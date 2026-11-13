@@ -450,7 +450,10 @@ func CompileProfile(in ProfileInput) (string, error) {
 	if in.Network {
 		// IP sockets stay within the namespace. Only the daemon can relay
 		// them to the host; keep Syd's Unix-socket policy intact.
-		lines = append(lines, "allow/net/connect+0.0.0.0/0!0-65535", "allow/net/connect+::/0!0-65535")
+		lines = append(lines, "allow/net/connect+0.0.0.0/0!0-65535", "allow/net/connect+::/0!0-65535",
+			// Dev servers may bind any address: the namespace is private, and
+			// sydguard mirrors listening ports onto the VM's loopback.
+			"allow/net/bind+0.0.0.0!0-65535", "allow/net/bind+::!0-65535")
 	}
 	if in.DNS != "" {
 		host, _, err := net.SplitHostPort(in.DNS)

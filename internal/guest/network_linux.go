@@ -357,6 +357,7 @@ func NetworkOwner(id string, args []string) error {
 		_ = cmd.Wait()
 		return err
 	}
+	go watchDevPorts(id, s.LocalPorts, done) // expose the agent's dev servers
 	sigs := make(chan os.Signal, 8)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)

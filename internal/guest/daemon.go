@@ -49,6 +49,7 @@ type Session struct {
 	DNSAddr     string       `json:"dnsAddr,omitempty"`
 	Network     bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
 	Connections []Connection `json:"connections,omitempty"`
+	Ports       []PortView   `json:"ports,omitempty"` // dev servers mirrored onto the VM's loopback
 	LocalPorts  []int        `json:"localPorts,omitempty"`
 	Overlays    []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
 	// From the launcher: overlay folder names to look for, env var names to pass.
@@ -164,7 +165,7 @@ func removeSessionFiles(id string) {
 	if id == "" || strings.ContainsAny(id, "/.") {
 		return
 	}
-	for _, ext := range []string{".json", ".syd-3", ".batch", ".resolv", ".dns.json", ".dns.json.tmp", ".tun.sock"} {
+	for _, ext := range []string{".json", ".syd-3", ".batch", ".resolv", ".dns.json", ".dns.json.tmp", ".tun.sock", ".ports.sock"} {
 		_ = os.Remove(filepath.Join(sessionsDir(), id+ext))
 	}
 }
@@ -289,6 +290,28 @@ func (d *Daemon) routes() http.Handler {
 		if err != nil {
 			return nil, err
 		}
+		return map[string]any{}, nil
+	})
+	// The namespace owner reports which dev-server ports the agent listens on.
+	api.Handle(mux, "POST /internal/ports", func(r *http.Request) (any, error) {
+		var req struct {
+			Session string
+			Ports   []int
+		}
+		if err := api.Decode(r, &req); err != nil {
+			return nil, err
+		}
+		if len(req.Ports) > 256 {
+			return nil, errors.New("too many ports")
+		}
+		d.mu.Lock()
+		s, ok := d.sessions[req.Session]
+		d.mu.Unlock()
+		if !ok || s.network == nil {
+			return nil, errors.New("no such network session")
+		}
+		s.network.ports.set(req.Ports)
+		d.events.Notify()
 		return map[string]any{}, nil
 	})
 	api.Handle(mux, "POST /internal/end", func(r *http.Request) (any, error) {
@@ -953,6 +976,7 @@ func (d *Daemon) state() map[string]any {
 		view := *s
 		if s.network != nil {
 			view.Connections = s.network.snapshot()
+			view.Ports = s.network.ports.view()
 		}
 		sessions = append(sessions, view)
 		files[s.RulesFile] = s.Project

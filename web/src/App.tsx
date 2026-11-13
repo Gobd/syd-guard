@@ -578,6 +578,28 @@ function Sessions({ state, act }: { state: State | null; act: Act }) {
                 : ""}
             </span>
           </div>
+          {(x.ports ?? []).length > 0 && (
+            <div class={s.row}>
+              <span class={s.mute}>dev servers:</span>
+              {(x.ports ?? []).map((p) =>
+                p.exposed ? (
+                  <a
+                    key={p.port}
+                    class={s.target}
+                    href={`http://localhost:${p.port}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    localhost:{p.port}
+                  </a>
+                ) : (
+                  <span key={p.port} class={s.warn} title={p.error}>
+                    {p.port} (not exposed: {p.error})
+                  </span>
+                ),
+              )}
+            </div>
+          )}
           <details open>
             <summary class={s.summary}>
               Approvals for this session’s rules

@@ -135,6 +135,12 @@ check "agent can write node_modules" "grep -q built out9"
 check "nothing written into the project's node_modules" "[ ! -e '$DIR/web/node_modules/artifact.txt' ]"
 check "it lives in the VM overlay cache" "find '$HOME/.cache/sydguard/overlay' -name artifact.txt | grep -q ."
 
+echo "9b. dev servers the agent starts are reachable from outside"
+( timeout 30 sydguard -- sh -c 'python3 -m http.server 18770 --bind 0.0.0.0 >/dev/null 2>&1 & sleep 12' >/dev/null 2>&1 & )
+for _ in $(seq 1 20); do curl -s -m 1 -o /dev/null http://127.0.0.1:18770/ && break; sleep 0.5; done
+check "agent's dev server reachable on the VM loopback" "[ \"\$(curl -s -m 3 -o /dev/null -w %{http_code} http://127.0.0.1:18770/)\" = 200 ]"
+sleep 12
+
 echo "10. --local-port for a trusted helper"
 python3 -m http.server 18765 --bind 127.0.0.1 >/dev/null 2>&1 & srv=$!
 sleep 0.5
