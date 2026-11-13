@@ -1,4 +1,4 @@
-// Package lima is the macOS side: it makes sure a Lima VM is running with the
+// Package lima runs agents in a Lima VM: it makes sure the VM is running with the
 // matching Linux sydguard and a working Syd, then runs commands inside it at
 // the same project path.
 package lima
@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Gobd/syd-guard/internal/config"
 	"github.com/Gobd/syd-guard/internal/system"
 	"github.com/Gobd/syd-guard/internal/ui"
 )
@@ -31,15 +32,38 @@ type Options struct {
 	Args                []string
 }
 
-// VMName picks the instance: --vm, else the Lima file's name, else
-// $SYDGUARD_VM, else ai-sandbox.
+// WithDefaults fills VM and Lima file from $SYDGUARD_VM/$SYDGUARD_LIMA, then
+// the config file. Flags win.
+func (o Options) WithDefaults(cfg config.Config) Options {
+	if o.VM == "" {
+		o.VM = envOr("SYDGUARD_VM", cfg.VM)
+	}
+	if o.LimaFile == "" {
+		o.LimaFile = system.ExpandHome(envOr("SYDGUARD_LIMA", cfg.Lima))
+	}
+	return o
+}
+
+// Use reports whether commands should run in a Lima VM: always when this
+// machine can't run Syd itself, otherwise only when a VM or Lima file was
+// chosen (flag, env or config).
+func Use(o Options) bool {
+	if !system.RunsSyd() {
+		return true
+	}
+	cfg, _ := config.Load()
+	o = o.WithDefaults(cfg)
+	return o.VM != "" || o.LimaFile != ""
+}
+
+// VMName picks the instance: --vm, else the Lima file's name, else ai-sandbox.
 func (o Options) VMName() (string, error) {
 	vm := o.VM
 	if vm == "" && o.LimaFile != "" {
 		vm = strings.TrimSuffix(filepath.Base(o.LimaFile), filepath.Ext(o.LimaFile))
 	}
 	if vm == "" {
-		vm = envOr("SYDGUARD_VM", DefaultVM)
+		vm = DefaultVM
 	}
 	if err := system.SafeText(vm); err != nil || strings.ContainsAny(vm, "/ ") {
 		return "", fmt.Errorf("bad VM name %q", vm)
@@ -54,20 +78,23 @@ func envOr(k, d string) string {
 	return d
 }
 
-// Prepare makes sure the VM runs, has our Linux binary and a working engine.
+// Prepare gets a VM ready to run agents without running one: VM up, matching
+// Linux sydguard, working engine, config synced, daemon and UI running.
+// `sydguard prepare` exposes it for wrappers that hop into the VM themselves.
 func Prepare(o Options) (string, error) {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return "", errors.New("limactl not found (brew install lima)")
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	o = o.WithDefaults(cfg)
 	vm, err := o.VMName()
 	if err != nil {
 		return "", err
 	}
-	file := o.LimaFile
-	if file == "" {
-		file = os.Getenv("SYDGUARD_LIMA")
-	}
-	if err := ensureVM(vm, file); err != nil {
+	if err := ensureVM(vm, o.LimaFile); err != nil {
 		return "", err
 	}
 	if err := ensureGuestBinary(vm); err != nil {
@@ -79,7 +106,35 @@ func Prepare(o Options) (string, error) {
 			return "", fmt.Errorf("setup in %s failed: %w", vm, err)
 		}
 	}
+	if err := syncConfig(vm, cfg); err != nil {
+		return "", err
+	}
+	// Start the guest daemon first so the UI can connect right away.
+	if out, err := exec.Command("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard daemon-ensure").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("starting sydguard in %s: %v: %s", vm, err, out)
+	}
+	if err := OpenUI(false); err != nil {
+		fmt.Fprintln(os.Stderr, "sydguard: UI:", err)
+	}
 	return vm, nil
+}
+
+// syncConfig writes the parts of this machine's config the VM needs (local
+// ports, overlays, secrets resolved from their files) into the VM's own
+// protected config dir, via stdin (never on a command line).
+func syncConfig(vm string, cfg config.Config) error {
+	guest, err := cfg.ForGuest()
+	if err != nil {
+		return err
+	}
+	data, _ := json.Marshal(guest)
+	cmd := exec.Command("limactl", "shell", vm, "sh", "-c",
+		`umask 077 && mkdir -p ~/.config/sydguard && cat > ~/.config/sydguard/config.json.tmp && mv ~/.config/sydguard/config.json.tmp ~/.config/sydguard/config.json`)
+	cmd.Stdin = strings.NewReader(string(data))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("syncing config into %s: %v: %s", vm, err, out)
+	}
+	return nil
 }
 
 // Run runs the command inside the VM under sydguard. It only returns on error.
@@ -93,7 +148,7 @@ func Run(o Options) error {
 	if err != nil {
 		return err
 	}
-	argv := []string{"limactl", "shell", "--workdir", guestCwd, vm, "sydguard", "--from-mac"}
+	argv := []string{"limactl", "shell", "--workdir", guestCwd, vm, "sydguard"}
 	if o.Learn {
 		argv = append(argv, "--learn")
 	}
@@ -112,13 +167,6 @@ func Run(o Options) error {
 			}
 		}
 		argv = append(argv, "--rules", spec)
-	}
-	// Start the guest daemon first so the Mac UI can connect right away.
-	if out, err := exec.Command("limactl", "shell", vm, "sh", "-c", "~/.local/bin/sydguard daemon-ensure").CombinedOutput(); err != nil {
-		return fmt.Errorf("starting sydguard in %s: %v: %s", vm, err, out)
-	}
-	if err := OpenUI(false); err != nil {
-		fmt.Fprintln(os.Stderr, "sydguard: UI:", err)
 	}
 	argv = append(append(argv, "--"), o.Args...)
 	limactl, _ := exec.LookPath("limactl")
@@ -215,7 +263,7 @@ func guestPath(vm, p string) (string, error) {
 	return best, nil
 }
 
-// OpenUI makes sure the Mac UI server runs; opens the browser when asked or
+// OpenUI makes sure the UI server runs; opens the browser when asked or
 // when the server was just started.
 func OpenUI(always bool) error {
 	started, err := ui.EnsureServer()

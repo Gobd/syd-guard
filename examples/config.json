@@ -1,0 +1,13 @@
+{
+  "vm": "ai-sandbox",
+  "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
+  "localPorts": [],
+  "env": {
+    "GH_TOKEN": "file:~/.config/sydguard/secrets/github-agent-token",
+    "CIRCLECI_TOKEN": "file:~/.config/sydguard/secrets/circleci-token",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "credential.https://github.com.helper",
+    "GIT_CONFIG_VALUE_0": "!gh auth git-credential"
+  },
+  "overlays": ["node_modules", ".venv", "target"]
+}

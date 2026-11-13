@@ -1,5 +1,5 @@
 # sydguard's built-in Lima VM, used when the VM doesn't exist and no --lima
-# file is given. Generic on purpose; see templates/ for fuller setups.
+# file is given. Generic on purpose; see examples/lima/ for a fuller setup.
 # sydguard installs its Syd engine on first use (`sydguard setup`).
 vmType: vz
 mountType: virtiofs

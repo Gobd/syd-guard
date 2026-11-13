@@ -30,7 +30,12 @@ func StateDir() string { return filepath.Join(Home(), ".local", "state", "sydgua
 func DaemonSocket() string    { return filepath.Join(StateDir(), "daemon.sock") }
 func GlobalRulesPath() string { return filepath.Join(ConfigDir(), "global.json") }
 
-func IsMac() bool { return runtime.GOOS == "darwin" }
+// RunsSyd reports whether agents can run on this machine directly. Syd is
+// Linux-only (WSL counts); elsewhere sydguard uses a Lima VM.
+func RunsSyd() bool { return runtime.GOOS == "linux" }
+
+// InLima reports whether we're inside a Lima VM, whose host runs the UI.
+func InLima() bool { _, err := os.Stat("/mnt/lima-cidata"); return err == nil }
 
 func ExpandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {

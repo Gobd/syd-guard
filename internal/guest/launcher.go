@@ -11,11 +11,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/Gobd/syd-guard/internal/config"
 	"github.com/Gobd/syd-guard/internal/policy"
 	"github.com/Gobd/syd-guard/internal/system"
 )
@@ -158,6 +160,15 @@ func Run(o RunOptions) (int, error) {
 	if err := confirmTrust(rulesFile); err != nil {
 		return 1, err
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		return 1, err
+	}
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		return 1, err
+	}
+	localPorts := append(slices.Clone(o.LocalPorts), cfg.LocalPorts...)
 	if _, err := EnsureDaemon(); err != nil {
 		return 1, err
 	}
@@ -177,7 +188,10 @@ func Run(o RunOptions) (int, error) {
 	}
 	s := Session{
 		Project: project, RulesFile: rulesFile, Cwd: cwd, Cmd: o.Args, Learn: o.Learn, PID: os.Getpid(),
-		Launch: launchPaths(argv[0]), LocalPorts: o.LocalPorts,
+		Launch: launchPaths(argv[0]), LocalPorts: localPorts, OverlayNames: cfg.OverlayNames(),
+	}
+	for k := range env {
+		s.EnvNames = append(s.EnvNames, k)
 	}
 	if err := Call("POST", "/internal/session", s, &reg); err != nil {
 		return 1, err
@@ -207,6 +221,9 @@ func Run(o RunOptions) (int, error) {
 		cmd.Env = append(cmd.Env, k+"="+proxy, strings.ToLower(k)+"="+proxy)
 	}
 	cmd.Env = append(cmd.Env, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+	for k, v := range env { // secrets from the config, e.g. a scoped GH_TOKEN
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	// The terminal delivers ^C etc. to the agent directly; we just outlive it.
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTSTP)
 	if err := cmd.Start(); err != nil {

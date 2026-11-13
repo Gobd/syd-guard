@@ -394,7 +394,8 @@ type ProfileInput struct {
 	DNS        string // "127.53.x.y:53": private resolver (needs namespaces)
 	ResolvConf string // file bind-mounted over /etc/resolv.conf
 	Overlays   []Overlay
-	LocalPorts []int // loopback ports of trusted helpers the agent may use
+	LocalPorts []int    // loopback ports of trusted helpers the agent may use
+	PassEnv    []string // env var names to keep (Syd strips some by default)
 	Project    string
 	Rules      []Rules
 	Launch     []string
@@ -451,6 +452,12 @@ func CompileProfile(in ProfileInput) (string, error) {
 			return "", fmt.Errorf("bad local port %d", p)
 		}
 		lines = append(lines, fmt.Sprintf("allow/net/connect+127.0.0.1!%d", p))
+	}
+	for _, name := range in.PassEnv {
+		if system.SafeText(name) != nil || strings.ContainsAny(name, " =*?[") {
+			return "", fmt.Errorf("bad env name %q", name)
+		}
+		lines = append(lines, "passenv+"+name)
 	}
 	if in.Learn {
 		lines = append(lines, "default/all:warn", "default/net:warn")

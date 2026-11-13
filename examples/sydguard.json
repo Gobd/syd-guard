@@ -1,0 +1,13 @@
+{
+  "read": ["~/.cache/go-build/**", "~/go/pkg/mod/**"],
+  "write": ["~/.npm/**", "~/.cache/pnpm/**"],
+  "hosts": [
+    "https://github.com",
+    "https://api.github.com",
+    "*.githubusercontent.com",
+    "https://registry.npmjs.org",
+    "https://proxy.golang.org",
+    "https://circleci.com"
+  ],
+  "ignore": ["telemetry.example.com"]
+}

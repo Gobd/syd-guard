@@ -7,18 +7,24 @@ and every change applies **live to the running agent** and is saved to a rules
 file the agent can't touch.
 
 ```sh
-make install                             # Mac binary + the Linux binaries it puts into VMs
+make install                             # sydguard + the Linux binaries it puts into VMs
 cd ~/Developer/myproject
 sydguard --learn -- claude               # first run: allow everything, save what it used
 sydguard -- claude                       # then: enforce the rules file, approve the rest
 sydguard ui                              # open the approvals UI (http://127.0.0.1:7878)
 ```
 
-On macOS, sydguard runs the command in a Lima VM at the **same path** as on the
-Mac: it starts the VM if stopped, creates it if missing (built-in default or
-`--lima FILE`), installs the matching Linux sydguard and, once, the pinned Syd
-engine (`sydguard setup`). All agents in a VM share it; one UI on the Mac covers
-every VM. On Linux/WSL run `sydguard` directly.
+Where it runs:
+
+- **Linux and WSL2**: directly (Syd is Linux-only). Add `--vm` (or `"vm"` in the
+  config) to use a Lima VM anyway, as a second wall around your files.
+- **Anywhere else (macOS)**: in a Lima VM at the **same path** as your project.
+  sydguard starts the VM if stopped, creates it if missing (built-in default,
+  `--lima FILE` or the config), installs the matching Linux sydguard and, once,
+  the pinned Syd engine. All agents in a VM share it.
+
+The UI runs on the machine where you type `sydguard` and covers its own agents
+plus every running Lima VM.
 
 ## Usage
 
@@ -28,15 +34,49 @@ sydguard [flags] [--] command [args...]
                       (two agents in one folder can use different rules)
   --learn             allow everything; save what the command used into the rules file
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
-  --vm NAME           Lima instance (default $SYDGUARD_VM or ai-sandbox)
-  --lima FILE         Lima config to create the VM from (default $SYDGUARD_LIMA or built in)
-sydguard ui | doctor | setup | version
+  --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
+  --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
+sydguard ui        open the approvals UI
+sydguard doctor    check engine, namespaces, daemon
+sydguard setup     install the pinned Syd engine
+sydguard prepare   get VM/engine/daemon/UI ready without running anything (for wrappers)
 ```
+
+## Config
+
+`~/.config/sydguard/config.json` on the machine you run `sydguard` on (the sandbox
+can't read it; see `examples/config.json`). Flags win over env vars, which win
+over the config.
+
+```json
+{
+  "vm": "ai-sandbox",
+  "lima": "~/Developer/syd-guard/examples/lima/ai-sandbox.yaml",
+  "localPorts": [5173],
+  "env": { "GH_TOKEN": "file:~/.config/sydguard/secrets/github-agent-token" },
+  "overlays": ["node_modules", ".venv", "target"]
+}
+```
+
+`env` values are passed to every agent; `file:` values are read from files the
+sandbox can't see. With a VM, the needed parts (resolved) are copied into the VM's
+own protected config dir before each run.
+
+## GitHub, CI and other services
+
+Agents use their normal CLIs (`gh`, `git`, `circleci`, `curl`) through the proxy;
+approve the hosts once. Give them **their own least-privilege credentials** via
+`env`, not yours: e.g. a fine-grained GitHub token limited to specific repos with
+contents/pull requests/issues read+write and actions read — enough to clone, commit,
+push, comment, read comments and check GitHub Actions — and GitHub enforces the
+limits even for `gh api`. `examples/config.json` also shows the `GIT_CONFIG_*`
+entries that make `git push` use `gh`'s credential helper. Your own `~/.config/gh`
+and `~/.ssh` stay unreadable to agents.
 
 ## Rules
 
 `<git root>/.sydguard.json` (committable) or `--rules`, plus "all projects" rules
-in `~/.config/sydguard/global.json` on the Mac (mirrored to every VM):
+in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 
 ```json
 {
@@ -69,13 +109,13 @@ in `~/.config/sydguard/global.json` on the Mac (mirrored to every VM):
 - **Build folders stay in the VM**: `node_modules` next to every `package.json`,
   `.venv` (Python) and `target` (Rust) are bind-mounted from the VM's disk, so
   `npm install` and friends never write Linux binaries or install scripts' output
-  into your Mac tree (the Mac sees an empty folder).
+  into your host's project tree (the host sees an empty folder).
 
 ## How it works
 
-- **Mac**: `sydguard` prepares the VM and execs `sydguard` inside it. The UI server
-  runs on the Mac, bound to loopback, and reaches each running VM's daemon over its
-  Unix socket forwarded through Lima's SSH. VMs have no UI port. The UI needs no
+- **With a VM**: `sydguard` prepares the VM and execs `sydguard` inside it. The UI
+  server runs on the host, bound to loopback, and reaches each running VM's daemon
+  over its Unix socket forwarded through Lima's SSH. VMs have no UI port. The UI needs no
   token: it refuses non-loopback Host headers (DNS rebinding) and any write that
   isn't a same-origin JSON request (cross-site pages).
 - **VM daemon** (Unix socket, auto-started): compiles a Syd profile per session,
@@ -93,7 +133,7 @@ in `~/.config/sydguard/global.json` on the Mac (mirrored to every VM):
 ## Engine
 
 Tested with upstream Syd 3.59 (the latest release), unmodified. `sydguard setup`
-(automatic from the Mac) runs `internal/guest/install-syd.sh`: builds Syd 3.59.0
+(automatic when sydguard prepares a VM) runs `internal/guest/install-syd.sh`: builds Syd 3.59.0
 statically (`cargo --locked`, libseccomp 2.6.1 checked by SHA-256), installs it
 root-owned at `/usr/local/libexec/sydguard/syd`, and adds an AppArmor profile that
 lets only that binary create user namespaces (Ubuntu blocks this by default).
@@ -102,23 +142,23 @@ lets only that binary create user namespaces (Ubuntu blocks this by default).
 ## Lima
 
 - Built-in default (`internal/lima/default.yaml`): generic Ubuntu, `~/Developer`
-  mounted at the same path, loopback ports forwarded to the Mac.
-- `templates/ai-sandbox.yaml`: a full AI workspace (Go, Node/pnpm/npm, Bun, uv,
+  mounted at the same path, loopback ports forwarded to the host.
+- `examples/lima/ai-sandbox.yaml`: a full AI workspace (Go, Node/pnpm/npm, Bun, uv,
   Playwright + browsers, Claude/Codex/Pi, linters, an `xdg-open` shim that prints
-  URLs for OAuth logins). Personal extras go in `~/Developer/.sydguard-provision.sh`,
-  which the template runs if present (e.g. building a private CLI).
+  URLs for OAuth logins). Personal extras go in `~/Developer/.sydguard-provision.sh`
+  (see `examples/provision.sh`), which it runs if present.
 
 ## Development
 
 ```sh
-make                       # web UI, Linux arm64/amd64 + Mac binaries into bin/
+make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
 scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
 ```
 
 Layout: `cmd/sydguard` (CLI, urfave/cli v3); `internal/policy` (rules, trust,
 Syd profile); `internal/guest` (daemon, proxy, DNS, launcher, engine setup);
-`internal/ui` (UI server + embedded build); `internal/lima` (macOS side);
+`internal/ui` (UI server + embedded build); `internal/lima` (running in Lima VMs);
 `internal/api`, `internal/system` (shared). `web/` is Preact + vanilla-extract,
 built by Bun into `internal/ui/dist`, which is committed (check.sh fails if stale).
 
@@ -131,4 +171,4 @@ built by Bun into `internal/ui/dist`, which is committed (check.sh fails if stal
 - Revoking can't undo completed I/O or close already-open files/connections.
 - Compatibility switches are on for agents: TPE off, symlinks and file creation
   in group-writable dirs, W^X memory for JITs, non-PIE binaries.
-- Programs on the Mac itself can use the UI API (like any local tool).
+- Programs on the UI's machine itself can use its API (like any local tool).

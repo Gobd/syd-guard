@@ -1,6 +1,6 @@
 # Full AI coding workspace (Ubuntu 24.04, VZ/virtiofs). A starting point:
 # copy it, adjust sizes and tools, then
-#   sydguard --lima templates/ai-sandbox.yaml -- pi
+#   sydguard --lima examples/lima/ai-sandbox.yaml -- pi   (or set "lima" in config.json)
 # (the VM is named after the file: ai-sandbox). sydguard installs its Syd
 # engine on first use. Tool versions resolve at provisioning time.
 vmType: vz
@@ -21,8 +21,8 @@ mounts:
   - location: ~/Developer
     writable: true
 
-# Guest loopback ports appear on the Mac's loopback (OAuth callbacks such as
-# lambdap's on 5173, dev servers). Bound to Mac loopback only, not the LAN.
+# Guest loopback ports appear on the Mac's loopback (OAuth/login callbacks,
+# dev servers). Bound to Mac loopback only, not the LAN.
 portForwards:
   - guestIP: 127.0.0.1
     guestPortRange: [1024, 65535]

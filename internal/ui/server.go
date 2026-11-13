@@ -48,6 +48,7 @@ type backend struct {
 	sock    string // local Unix socket reaching that VM's daemon
 	client  *http.Client
 	fwding  bool // an ssh forward is starting or running
+	lima    bool // a Lima VM (vs this machine's own daemon)
 	ok      bool
 	err     string
 	synced  bool // global rules pushed since (re)connect
@@ -65,7 +66,7 @@ type uiServer struct {
 
 // RunServer serves the UI until killed.
 func RunServer() error {
-	u := &uiServer{backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: system.IsMac(), events: api.NewBroadcaster()}
+	u := &uiServer{backends: map[string]*backend{}, store: policy.NewStore(), ownsGlob: true, events: api.NewBroadcaster()}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", uiPort()))
 	if err != nil {
 		return err
@@ -76,12 +77,15 @@ func RunServer() error {
 	return (&http.Server{Handler: u.routes(), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 }
 
-// discover keeps one backend per running VM (Mac) or the local daemon (Linux).
+// discover keeps one backend per running Lima VM (if limactl is installed)
+// plus this machine's own daemon (if it runs Syd).
 func (u *uiServer) discover() {
+	_, hasLima := exec.LookPath("limactl")
 	for {
-		if system.IsMac() {
+		if hasLima == nil {
 			u.discoverLima()
-		} else {
+		}
+		if system.RunsSyd() {
 			u.mu.Lock()
 			if _, ok := u.backends["local"]; !ok {
 				host, _ := os.Hostname()
@@ -132,16 +136,16 @@ func (u *uiServer) discoverLima() {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	for name := range u.backends {
-		if _, ok := running[name]; !ok {
-			delete(u.backends, name) // its ssh forward exits with the VM
+	for key, b := range u.backends {
+		if _, ok := running[b.name]; !ok && b.lima {
+			delete(u.backends, key) // its ssh forward exits with the VM
 		}
 	}
 	for name, li := range running {
 		b, ok := u.backends[name]
 		if !ok {
 			sock := filepath.Join(system.StateDir(), "fwd", name+".sock")
-			b = &backend{name: name, sock: sock, client: api.UnixClient(sock, 15*time.Second)}
+			b = &backend{name: name, sock: sock, client: api.UnixClient(sock, 15*time.Second), lima: true}
 			u.backends[name] = b
 		}
 		if !b.fwding {
@@ -423,12 +427,14 @@ func killUIServer() error {
 	return nil
 }
 
-// OpenBrowser opens url on this machine.
+// OpenBrowser opens url with whatever this machine has: $BROWSER, wslview
+// (WSL), xdg-open (Linux desktops), open (macOS; on Linux `open` is openvt).
 func OpenBrowser(url string) {
-	if system.IsMac() {
-		_ = exec.Command("open", url).Run()
-	} else if p, err := exec.LookPath("xdg-open"); err == nil {
-		_ = exec.Command(p, url).Start()
+	for _, c := range []string{os.Getenv("BROWSER"), "wslview", "xdg-open", "open"} {
+		if p, err := exec.LookPath(c); c != "" && err == nil {
+			_ = exec.Command(p, url).Start()
+			return
+		}
 	}
 }
 

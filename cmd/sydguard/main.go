@@ -25,8 +25,9 @@ Rules files: <git root>/.sydguard.json by default, --rules NAME for
 ~/.config/sydguard/global.json. The sandbox can never write rules files, and
 changes made outside sydguard must be trusted before they're used.
 
-On macOS the command runs in a Lima VM (started or created as needed) at the
-same project path; one UI covers every VM.`
+On Linux (and WSL) the command runs here. Elsewhere, or with --vm/--lima, it
+runs in a Lima VM (started or created as needed) at the same project path.
+One UI, on the machine you run sydguard on, covers every VM.`
 
 func main() {
 	_ = system.Version() // hash our binary now, before any upgrade replaces it
@@ -53,15 +54,15 @@ func app() *cli.Command {
 			&cli.StringFlag{Name: "rules", Usage: "rules file: NAME (= .sydguard/NAME.json) or a path; default .sydguard.json"},
 			&cli.BoolFlag{Name: "learn", Usage: "allow everything and save what the command used into the rules file"},
 			&cli.IntSliceFlag{Name: "local-port", Usage: "let the agent reach 127.0.0.1:`PORT` (a trusted helper you started, e.g. an auth proxy)"},
-			&cli.StringFlag{Name: "vm", Usage: "(macOS) Lima instance; default $SYDGUARD_VM or " + lima.DefaultVM},
-			&cli.StringFlag{Name: "lima", Usage: "(macOS) Lima config to create the VM from if missing; default $SYDGUARD_LIMA or built in"},
-			&cli.BoolFlag{Name: "from-mac", Hidden: true},
+			&cli.StringFlag{Name: "vm", Usage: "run in this Lima VM (default when this OS can't run Syd: $SYDGUARD_VM, config, or " + lima.DefaultVM + ")"},
+			&cli.StringFlag{Name: "lima", Usage: "Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, or built in)"},
 		},
 		Action: runAction,
 		Commands: []*cli.Command{
 			{Name: "ui", Usage: "open the approvals UI", Action: uiAction},
 			{Name: "doctor", Usage: "check the Syd engine, namespaces and daemon", Action: doctorAction},
-			{Name: "setup", Usage: "install the pinned Syd engine (inside the VM on macOS)", Action: setupAction},
+			{Name: "setup", Usage: "install the pinned Syd engine (here, or in the VM)", Action: setupAction},
+			{Name: "prepare", Usage: "get everything ready (VM, engine, daemon, UI) without running a command", Action: prepareAction},
 			{Name: "version", Usage: "print the build hash", Action: func(context.Context, *cli.Command) error {
 				fmt.Println(system.Version())
 				return nil
@@ -97,14 +98,14 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	if cmd.Args().Len() == 0 {
 		return cli.ShowAppHelp(cmd)
 	}
-	if system.IsMac() {
+	if lima.Use(limaOptions(cmd)) {
 		return lima.Run(limaOptions(cmd))
 	}
 	code, err := guest.Run(guest.RunOptions{
 		Rules: cmd.String("rules"), Learn: cmd.Bool("learn"),
 		LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(), OnReady: func() {
-			if cmd.Bool("from-mac") {
-				return // the Mac hosts the UI
+			if system.InLima() {
+				return // the machine hosting the VM runs the UI
 			}
 			if started, err := ui.EnsureServer(); err != nil {
 				fmt.Fprintln(os.Stderr, "sydguard: UI:", err)
@@ -123,11 +124,13 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 }
 
 func uiAction(_ context.Context, cmd *cli.Command) error {
-	if system.IsMac() {
-		return lima.OpenUI(true)
+	if system.InLima() {
+		return errors.New("the UI runs on the machine hosting this VM: run `sydguard ui` there")
 	}
-	if _, err := guest.EnsureDaemon(); err != nil {
-		return err
+	if system.RunsSyd() {
+		if _, err := guest.EnsureDaemon(); err != nil {
+			return err
+		}
 	}
 	if _, err := ui.EnsureServer(); err != nil {
 		return err
@@ -138,7 +141,7 @@ func uiAction(_ context.Context, cmd *cli.Command) error {
 }
 
 func doctorAction(_ context.Context, cmd *cli.Command) error {
-	if system.IsMac() {
+	if lima.Use(limaOptions(cmd.Root())) {
 		return lima.Shell(limaOptions(cmd.Root()), "doctor")
 	}
 	if !guest.Doctor() {
@@ -147,8 +150,26 @@ func doctorAction(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+func prepareAction(_ context.Context, cmd *cli.Command) error {
+	if lima.Use(limaOptions(cmd.Root())) {
+		vm, err := lima.Prepare(limaOptions(cmd.Root()))
+		if err == nil {
+			fmt.Println(vm)
+		}
+		return err
+	}
+	if _, err := guest.EnsureDaemon(); err != nil {
+		return err
+	}
+	if system.InLima() {
+		return nil
+	}
+	_, err := ui.EnsureServer()
+	return err
+}
+
 func setupAction(_ context.Context, cmd *cli.Command) error {
-	if system.IsMac() {
+	if lima.Use(limaOptions(cmd.Root())) {
 		_, err := lima.Prepare(limaOptions(cmd.Root())) // installs the engine if missing
 		return err
 	}

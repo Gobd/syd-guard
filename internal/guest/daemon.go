@@ -35,26 +35,29 @@ const (
 )
 
 type Session struct {
-	ID         string    `json:"id"`
-	Project    string    `json:"project"`
-	RulesFile  string    `json:"rulesFile"`
-	Cwd        string    `json:"cwd"`
-	Cmd        []string  `json:"cmd"`
-	Learn      bool      `json:"learn"`
-	PID        int       `json:"pid"`
-	IPC        string    `json:"ipc"`
-	ProxyPort  int       `json:"proxyPort"`
-	DNSAddr    string    `json:"dnsAddr,omitempty"` // "" = no private DNS (namespaces unavailable)
-	LocalPorts []int     `json:"localPorts,omitempty"`
-	Overlays   []string  `json:"overlays,omitempty"` // build dirs kept on the VM disk
-	SydPID     int       `json:"sydPid,omitempty"`   // Syd's process, for entering its namespaces
-	Started    time.Time `json:"started"`
-	Launch     []string  `json:"launch"`
-	Status     string    `json:"status"`
-	LastError  string    `json:"lastError,omitempty"`
-	proxy      *http.Server
-	dns        *dnsServer
-	queue      chan applyOp
+	ID         string   `json:"id"`
+	Project    string   `json:"project"`
+	RulesFile  string   `json:"rulesFile"`
+	Cwd        string   `json:"cwd"`
+	Cmd        []string `json:"cmd"`
+	Learn      bool     `json:"learn"`
+	PID        int      `json:"pid"`
+	IPC        string   `json:"ipc"`
+	ProxyPort  int      `json:"proxyPort"`
+	DNSAddr    string   `json:"dnsAddr,omitempty"` // "" = no private DNS (namespaces unavailable)
+	LocalPorts []int    `json:"localPorts,omitempty"`
+	Overlays   []string `json:"overlays,omitempty"` // build dirs kept on the VM disk
+	// From the launcher: overlay folder names to look for, env var names to pass.
+	OverlayNames []string  `json:"overlayNames,omitempty"`
+	EnvNames     []string  `json:"envNames,omitempty"`
+	SydPID       int       `json:"sydPid,omitempty"` // Syd's process, for entering its namespaces
+	Started      time.Time `json:"started"`
+	Launch       []string  `json:"launch"`
+	Status       string    `json:"status"`
+	LastError    string    `json:"lastError,omitempty"`
+	proxy        *http.Server
+	dns          *dnsServer
+	queue        chan applyOp
 }
 
 type applyOp struct {
@@ -199,7 +202,7 @@ func (d *Daemon) routes() http.Handler {
 		}
 		return map[string]any{"saved": req.File, "sessions": d.applyChange(req.File, before, after)}, nil
 	})
-	// The Mac UI owns the global rules and mirrors them to every VM.
+	// When the UI runs on the VM host it owns the global rules and mirrors them here.
 	api.Handle(mux, "POST /api/global", func(r *http.Request) (any, error) {
 		var req struct{ Rules policy.Rules }
 		if err := api.Decode(r, &req); err != nil {
@@ -307,12 +310,12 @@ func (d *Daemon) register(s *Session) (any, error) {
 			log.Printf("session dns: %v", err)
 			s.DNSAddr = ""
 		}
-		s.Overlays = overlayDirs(s.Project)
+		s.Overlays = overlayDirs(s.Project, s.OverlayNames)
 	}
 	in := policy.ProfileInput{
 		Project: s.Project, Rules: []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)},
 		Launch: s.Launch, Protect: policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()), ProxyPort: s.ProxyPort,
-		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts,
+		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts, PassEnv: s.EnvNames,
 	}
 	if s.DNSAddr != "" {
 		resolv := filepath.Join(sessionsDir(), s.ID+".resolv")
