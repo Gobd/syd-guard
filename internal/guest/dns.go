@@ -38,8 +38,59 @@ type dnsServer struct {
 	udp    *net.UDPConn
 	tcp    net.Listener
 	mu     sync.Mutex
-	Names  map[string]string          `json:"names"`  // ip -> name
-	Grants map[string]map[string]bool `json:"grants"` // host rule -> "ip!ports"
+	Names  map[string]string               `json:"names"`  // ip -> name
+	Grants map[string]map[string]time.Time `json:"grants"` // host rule -> "ip!ports" -> expiry
+	done   chan struct{}
+}
+
+// Granted IPs live as long as the DNS answer said (clamped), then are revoked
+// unless a fresh lookup renewed them: DNS changes don't leave old IPs open.
+const (
+	minGrantTTL = time.Minute
+	maxGrantTTL = time.Hour
+)
+
+func clampTTL(seconds uint32) time.Duration {
+	d := time.Duration(seconds) * time.Second
+	return min(max(d, minGrantTTL), maxGrantTTL)
+}
+
+// expire removes grants past their expiry and returns the Syd revocations.
+func expireGrants(grants map[string]map[string]time.Time, now time.Time) []string {
+	var cmds []string
+	for rule, targets := range grants {
+		for target, exp := range targets {
+			if now.After(exp) {
+				cmds = append(cmds, "allow/net/connect-"+target)
+				delete(targets, target)
+			}
+		}
+		if len(targets) == 0 {
+			delete(grants, rule)
+		}
+	}
+	return cmds
+}
+
+func (x *dnsServer) sweep() {
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-x.done:
+			return
+		case <-tick.C:
+		}
+		x.mu.Lock()
+		cmds := expireGrants(x.Grants, time.Now())
+		x.mu.Unlock()
+		if len(cmds) > 0 {
+			if res := x.d.pushOne(x.s, cmds); !res.Applied {
+				log.Printf("session %s: revoking expired DNS grants: %s", x.s.ID, res.Error)
+			}
+			x.save()
+		}
+	}
 }
 
 func (d *Daemon) startDNS(s *Session) error {
@@ -66,13 +117,14 @@ func (d *Daemon) startDNS(s *Session) error {
 	if err != nil {
 		return fmt.Errorf("dns listen: %w", err)
 	}
-	srv := &dnsServer{d: d, s: s, udp: udp, tcp: tcp, Names: map[string]string{}, Grants: map[string]map[string]bool{}}
+	srv := &dnsServer{d: d, s: s, udp: udp, tcp: tcp, Names: map[string]string{}, Grants: map[string]map[string]time.Time{}, done: make(chan struct{})}
 	if data, err := os.ReadFile(srv.statePath()); err == nil {
 		_ = json.Unmarshal(data, srv)
 	}
 	s.DNSAddr, s.dns = addr, srv
 	go srv.serveUDP()
 	go srv.serveTCP()
+	go srv.sweep()
 	return nil
 }
 
@@ -85,7 +137,15 @@ func (x *dnsServer) save() {
 	_ = os.WriteFile(x.statePath(), data, 0o600)
 }
 
-func (x *dnsServer) close() { _ = x.udp.Close(); _ = x.tcp.Close() }
+func (x *dnsServer) close() {
+	_ = x.udp.Close()
+	_ = x.tcp.Close()
+	select {
+	case <-x.done:
+	default:
+		close(x.done)
+	}
+}
 
 func (x *dnsServer) nameOf(ip string) string {
 	x.mu.Lock()
@@ -278,14 +338,21 @@ func (x *dnsServer) grant(name string, resp []byte, rules []policy.HostRule) {
 	_ = p.SkipAllQuestions()
 	answers, _ := p.AllAnswers()
 	var ips []netip.Addr
+	ttl := map[netip.Addr]time.Duration{}
 	for _, a := range answers {
+		var ip netip.Addr
 		switch r := a.Body.(type) {
 		case *dnsmessage.AResource:
-			ips = append(ips, netip.AddrFrom4(r.A))
+			ip = netip.AddrFrom4(r.A)
 		case *dnsmessage.AAAAResource:
-			ips = append(ips, netip.AddrFrom16(r.AAAA))
+			ip = netip.AddrFrom16(r.AAAA)
+		default:
+			continue
 		}
+		ips = append(ips, ip)
+		ttl[ip] = clampTTL(a.Header.TTL)
 	}
+	now := time.Now()
 	var cmds []string
 	x.mu.Lock()
 	for _, ip := range ips {
@@ -297,12 +364,15 @@ func (x *dnsServer) grant(name string, resp []byte, rules []policy.HostRule) {
 			}
 			key := h.String()
 			if x.Grants[key] == nil {
-				x.Grants[key] = map[string]bool{}
+				x.Grants[key] = map[string]time.Time{}
 			}
 			target := ip.Unmap().String() + "!" + h.PortRange()
-			if !x.Grants[key][target] {
-				x.Grants[key][target] = true
+			exp, granted := x.Grants[key][target]
+			if !granted {
 				cmds = append(cmds, "allow/net/connect+"+target)
+			}
+			if until := now.Add(ttl[ip]); until.After(exp) {
+				x.Grants[key][target] = until // a fresh answer renews it
 			}
 		}
 	}
@@ -313,6 +383,41 @@ func (x *dnsServer) grant(name string, resp []byte, rules []policy.HostRule) {
 		}
 		x.save()
 	}
+}
+
+// regrant renews an expired grant when a tool reconnects to an IP it got from
+// an earlier lookup of a still-approved name (e.g. a connection pool that
+// cached the address). Returns false if no rule allows it (ask instead).
+func (x *dnsServer) regrant(ip, name, port string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	class := addrClass(addr)
+	var cmds []string
+	x.mu.Lock()
+	for _, h := range matchingRules(x.rules(), name) {
+		if !h.Match(policy.ConnectScheme(port), name, port) || class == "blocked" || (class == "private" && !h.Exact()) {
+			continue
+		}
+		key, target := h.String(), ip+"!"+h.PortRange()
+		if x.Grants[key] == nil {
+			x.Grants[key] = map[string]time.Time{}
+		}
+		if _, ok := x.Grants[key][target]; !ok {
+			cmds = append(cmds, "allow/net/connect+"+target)
+		}
+		x.Grants[key][target] = time.Now().Add(minGrantTTL)
+	}
+	x.mu.Unlock()
+	if len(cmds) == 0 {
+		return false
+	}
+	go func() {
+		x.d.pushOne(x.s, cmds)
+		x.save()
+	}()
+	return true
 }
 
 // revokeRemoved returns the Syd commands that take back IPs granted by host

@@ -792,6 +792,9 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 			// A raw connect to an address our DNS handed out: ask by name.
 			if ip, port, ok := strings.Cut(target, "!"); ok && s.dns != nil {
 				if name := s.dns.nameOf(ip); name != "" {
+					if s.dns.regrant(ip, name, port) {
+						continue // still approved; its grant had expired. The retry works.
+					}
 					kind, target = "hosts", "tcp://"+net.JoinHostPort(name, port)
 					note = "raw connection (not via the proxy) to " + ip
 				}

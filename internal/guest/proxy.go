@@ -132,64 +132,75 @@ var resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// decide returns the vetted ip:port to dial, asking the user when no rule
-// matches (the request waits). Learn mode allows and records.
+// decide returns the vetted ip:port to dial. Order matters: the name is
+// checked against the rules (or approved by you) BEFORE it is resolved, so an
+// agent can't leak data through DNS lookups of names nobody approved. Only
+// then is it resolved and the addresses checked (local never, private only
+// with an exact rule). Learn mode allows and records.
 func (d *Daemon) decide(ctx context.Context, s *Session, scheme, host, port string) (string, error) {
 	if _, err := policy.ParseHostRule(host); err != nil {
 		return "", fmt.Errorf("bad host %q", host)
 	}
 	target := scheme + "://" + net.JoinHostPort(host, port)
-	rules := []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)}
-	if policy.Ignored(rules, "hosts", target) {
+	matching := func() []policy.HostRule {
+		var out []policy.HostRule
+		for _, r := range []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)} {
+			for _, p := range r.Hosts {
+				if h, err := policy.ParseHostRule(p); err == nil && h.Match(scheme, host, port) {
+					out = append(out, h)
+				}
+			}
+		}
+		return out
+	}
+	if policy.Ignored([]policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)}, "hosts", target) {
 		return "", fmt.Errorf("%s is always denied", target)
 	}
+	// A literal IP needs no lookup: refuse local ones right away.
+	if ip, err := netip.ParseAddr(host); err == nil && addrClass(ip) == "blocked" {
+		return "", fmt.Errorf("%s is a local address (never proxied)", host)
+	}
+	rules := matching()
+	if len(rules) == 0 {
+		d.mu.Lock()
+		if _, live := d.sessions[s.ID]; !live {
+			d.mu.Unlock()
+			return "", fmt.Errorf("session ended")
+		}
+		c := d.addCardLocked(s, "hosts", target, "", s.Learn, false, "")
+		switch {
+		case c == nil:
+			d.mu.Unlock()
+			return "", fmt.Errorf("too many pending approvals")
+		case s.Learn:
+			d.mu.Unlock()
+			d.events.Notify()
+		case !d.waitCard(ctx, c, approvalTimeout):
+			return "", fmt.Errorf("%s was not approved", target)
+		default:
+			if rules = matching(); len(rules) == 0 {
+				return "", fmt.Errorf("%s was not approved", target)
+			}
+		}
+	}
+	// Approved by name: now resolve and vet the addresses.
 	addrs, err := resolve(ctx, host)
 	if err != nil || len(addrs) == 0 {
 		return "", fmt.Errorf("cannot resolve %s", host)
 	}
-	class := "public"
+	exact := false
+	for _, h := range rules {
+		exact = exact || h.Exact()
+	}
 	for _, a := range addrs {
 		switch addrClass(a) {
 		case "blocked":
 			return "", fmt.Errorf("%s resolves to %s (local addresses are never proxied)", host, a)
 		case "private":
-			class = "private"
-		}
-	}
-	allowed := func() bool {
-		for _, r := range []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)} {
-			for _, p := range r.Hosts {
-				if h, err := policy.ParseHostRule(p); err == nil && h.Match(scheme, host, port) && (class == "public" || h.Exact()) {
-					return true
-				}
+			if !exact {
+				return "", fmt.Errorf("%s resolves to a private address (%s); allow it with an exact rule like %s://%s", host, a, scheme, net.JoinHostPort(host, port))
 			}
 		}
-		return false
 	}
-	addr := net.JoinHostPort(addrs[0].Unmap().String(), port)
-	if allowed() {
-		return addr, nil
-	}
-	note := ""
-	if class == "private" {
-		note = fmt.Sprintf("resolves to a private address (%s); only an exact host:port rule allows it", addrs[0])
-	}
-	d.mu.Lock()
-	if _, live := d.sessions[s.ID]; !live {
-		d.mu.Unlock()
-		return "", fmt.Errorf("session ended")
-	}
-	c := d.addCardLocked(s, "hosts", target, "", s.Learn && class == "public", false, note)
-	if c == nil {
-		d.mu.Unlock()
-		return "", fmt.Errorf("too many pending approvals")
-	}
-	if s.Learn && class == "public" {
-		d.mu.Unlock()
-		return addr, nil
-	}
-	if d.waitCard(ctx, c, approvalTimeout) && allowed() {
-		return addr, nil
-	}
-	return "", fmt.Errorf("%s was not approved", target)
+	return net.JoinHostPort(addrs[0].Unmap().String(), port), nil
 }
