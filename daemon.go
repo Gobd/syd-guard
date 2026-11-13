@@ -46,6 +46,7 @@ type Session struct {
 	IPC       string    `json:"ipc"`
 	ProxyPort int       `json:"proxyPort"`
 	Started   time.Time `json:"started"`
+	Launch    []string  `json:"launch"` // read+exec paths for the launched binary
 	proxy     *http.Server
 }
 
@@ -269,7 +270,7 @@ func (d *Daemon) register(s *Session) (any, error) {
 	}
 	dir := filepath.Join(stateDir(), "sessions")
 	profile := filepath.Join(dir, s.ID+".syd-3")
-	if err := os.WriteFile(profile, []byte(compileProfile(s.Project, []Rules{global, project}, s.ProxyPort, s.IPC, s.Learn)), 0o600); err != nil {
+	if err := os.WriteFile(profile, []byte(compileProfile(s.Project, append([]Rules{{Read: s.Launch}}, global, project), s.ProxyPort, s.IPC, s.Learn)), 0o600); err != nil {
 		return nil, err
 	}
 	meta, _ := json.Marshal(s)
@@ -292,10 +293,24 @@ func (d *Daemon) endLocked(id string) {
 	if s.proxy != nil {
 		_ = s.proxy.Close()
 	}
+	saved := 0
 	for k, c := range d.cards {
-		if c.Session == id && !c.Learned {
-			d.resolveLocked(k, false)
+		if c.Session != id {
+			continue
 		}
+		if c.Learned && s.Learn && len(c.Options) > 0 {
+			// Learn runs save what they saw, so the next normal run just works.
+			if err := d.editRules(s.Project, c.Kind, c.Options[0], true); err == nil {
+				saved++
+			} else {
+				log.Printf("learn: %s %s: %v", c.Kind, c.Options[0], err)
+				continue
+			}
+		}
+		d.resolveLocked(k, false)
+	}
+	if saved > 0 {
+		log.Printf("session %s: learned %d rules into %s", id, saved, profilePath(s.Project))
 	}
 	d.removeSessionFiles(id, filepath.Join(stateDir(), "sessions", id+".json"))
 	log.Printf("session %s ended", id)
@@ -360,8 +375,8 @@ func (d *Daemon) events(sessionID string, lines []string) {
 			continue
 		}
 		learned := e.Act == "warn"
-		if learned && kind != "connect" && e.Type != "dir" {
-			target = filepath.Dir(target) // learn mode: one suggestion per directory
+		if learned && kind != "connect" {
+			target = learnRoot(target) // learn mode: one suggestion per tool/cache root
 		}
 		d.addCardLocked(s, kind, target, e.Cmd, learned, e.Type == "dir" || learned)
 	}

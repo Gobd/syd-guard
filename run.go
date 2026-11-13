@@ -99,12 +99,12 @@ func cmdRun(args []string, learn bool) int {
 		Profile   string
 		ProxyPort int
 	}
-	if err := call("POST", "/internal/session", Session{Project: project, Cwd: cwd, Cmd: args, Learn: learn, PID: os.Getpid()}, &reg); err != nil {
+	if err := call("POST", "/internal/session", Session{Project: project, Cwd: cwd, Cmd: args, Learn: learn, PID: os.Getpid(), Launch: launchPaths(args[0])}, &reg); err != nil {
 		return fail(err)
 	}
 	mode := "enforcing " + profilePath(project)
 	if learn {
-		mode = "LEARNING (everything allowed and recorded)"
+		mode = "LEARNING (everything allowed; what it uses is saved as rules at exit)"
 	}
 	fmt.Fprintf(os.Stderr, "sydguard: %s — approvals at http://127.0.0.1:%d\n", mode, uiPort())
 
@@ -113,7 +113,11 @@ func cmdRun(args []string, learn bool) int {
 		return fail(err)
 	}
 	cmd := exec.Command(engine, "-P", reg.Profile, "--")
-	cmd.Args = append(cmd.Args, args...)
+	argv := append([]string(nil), args...)
+	if p, err := exec.LookPath(argv[0]); err == nil {
+		argv[0], _ = filepath.Abs(p) // Syd's own PATH search trips over hidden dirs
+	}
+	cmd.Args = append(cmd.Args, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{logW} // fd 3; Syd closes it before running the agent
 	proxy := fmt.Sprintf("http://127.0.0.1:%d", reg.ProxyPort)
@@ -142,7 +146,7 @@ func cmdRun(args []string, learn bool) int {
 	wg.Wait()
 	_ = call("POST", "/internal/end", map[string]string{"Session": reg.ID}, nil)
 	if learn {
-		fmt.Fprintf(os.Stderr, "sydguard: learning done — review suggestions at http://127.0.0.1:%d\n", uiPort())
+		fmt.Fprintf(os.Stderr, "sydguard: learned rules saved to %s — review/delete them at http://127.0.0.1:%d\n", profilePath(project), uiPort())
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -161,7 +165,11 @@ func forwardEvents(id string, r io.Reader) {
 	go func() {
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		debug := os.Getenv("SYDGUARD_DEBUG") != ""
 		for sc.Scan() {
+			if debug {
+				fmt.Fprintln(os.Stderr, "[syd]", sc.Text())
+			}
 			if bytes.Contains(sc.Bytes(), []byte(`"ctx":"access"`)) {
 				lines <- sc.Text()
 			}
@@ -245,4 +253,27 @@ func fileHash(path string) string {
 	h := sha256.New()
 	_, _ = io.Copy(h, f)
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// launchPaths lets the sandbox run the command you asked for: the binary as
+// found on PATH plus the directory its symlinks resolve to (read+exec only).
+func launchPaths(name string) []string {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return nil
+	}
+	p, _ = filepath.Abs(p)
+	out := []string{p}
+	if real, err := filepath.EvalSymlinks(p); err == nil && real != p {
+		out = append(out, real)
+	}
+	for _, x := range out[1:] {
+		if d := filepath.Dir(x); d != home() && d != "/" {
+			out = append(out, d+"/***")
+		}
+	}
+	if d := filepath.Dir(p); filepath.Base(d) == "bin" && d != "/usr/bin" {
+		out = append(out, d+"/***") // sibling tools (pi -> node, etc.)
+	}
+	return out
 }

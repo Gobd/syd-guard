@@ -48,7 +48,7 @@
   <div id="toast" class="err"></div>
   <h2>Waiting for you <span id="pendingCount"></span></h2>
   <div id="pending"></div>
-  <h2>Learned suggestions <span id="learnedActions"></span></h2>
+  <h2>Learning now <span class="mute small">(saved to the rules file when the learn run exits)</span> <span id="learnedActions"></span></h2>
   <div id="learned"></div>
   <h2>Running sessions</h2>
   <div id="sessions"></div>
@@ -133,9 +133,9 @@ function render() {
   document.title = (pending.length ? `(${pending.length}) ` : "") + "sydguard";
   $("pendingCount").textContent = pending.length ? `(${pending.length})` : "";
   $("pending").replaceChildren(...(pending.length ? pending.map(cardView) : [h("div", { class: "empty" }, "Nothing blocked right now.")]));
-  $("learned").replaceChildren(...(learned.length ? learned.map(cardView) : [h("div", { class: "empty" }, "Run with --learn to collect suggestions.")]));
+  $("learned").replaceChildren(...(learned.length ? learned.map(cardView) : [h("div", { class: "empty" }, "Run sydguard --learn -- <agent> to record rules automatically.")]));
   $("learnedActions").replaceChildren(...(learned.length ? [
-    h("button", { onclick: async () => { for (const c of learned) { const st = choice[c.id] || { pattern: c.options[0], kind: c.kind, scope: "project" }; try { await api("/api/allow", { card: c.id, scope: st.scope, project: c.project, kind: st.kind, pattern: st.pattern }); } catch (e) { $("toast").textContent = e.message; } } refresh(); } }, `accept all ${learned.length} as shown`),
+    h("button", { onclick: async () => { for (const c of learned) { const st = choice[c.id] || { pattern: c.options[0], kind: c.kind, scope: "project" }; try { await api("/api/allow", { card: c.id, scope: st.scope, project: c.project, kind: st.kind, pattern: st.pattern }); } catch (e) { $("toast").textContent = e.message; } } refresh(); } }, `save all ${learned.length} now`),
     h("button", { onclick: () => act("/api/dismiss", { card: "learned" }) }, "clear")] : []));
   $("sessions").replaceChildren(...(s.sessions.length ? s.sessions.map((x) => h("div", { class: "card row" },
     h("span", { class: "kind" + (x.learn ? " write" : "") }, x.learn ? "learning" : "enforcing"),
