@@ -36,14 +36,17 @@ sydguard [flags] [--] command [args...]
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
   --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
   --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
-sydguard ui                open (and start) the approvals UI
-sydguard status            UI server, daemons and VMs: running? which build? agents?
-sydguard stop [--force]    stop the UI server and daemons (refuses while agents run)
-sydguard stop VM...        shut down those Lima VMs;  --all: UI, daemons and every VM
-sydguard restart           restart the UI server and daemons with this build
-sydguard vm [-- cmd]       a shell (or command) in the VM, outside the sandbox
-sydguard doctor | setup    check / install the pinned Syd engine
-sydguard prepare           VM, engine, daemon and UI ready without running anything
+sydguard ui                       open the approvals UI (starts it if needed)
+sydguard ui status|start|stop     the UI server only (agents keep running)
+sydguard ui restart               restart the UI server and daemons with this build
+sydguard vm                       a shell in the VM at this path, outside the sandbox
+sydguard vm -- cmd [args]         run a command there (e.g. logins)
+sydguard vm list                  VMs: running/stopped, agents, sydguard build
+sydguard vm start [NAME]          start or create a VM; install sydguard + engine
+sydguard vm stop [NAME...]        shut down VMs (all running by default; --force with agents)
+sydguard status                   overview of all of the above
+sydguard doctor | setup           check / install the pinned Syd engine
+sydguard cmd ...                  (inside the sandbox) host commands, see below
 ```
 
 Background processes: the **UI server** runs on the machine where you type
@@ -180,7 +183,7 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
 ## Engine
 
 Tested with upstream Syd 3.59 (the latest release), unmodified. `sydguard setup`
-(automatic when sydguard prepares a VM) runs `internal/guest/install-syd.sh`: builds Syd 3.59.0
+(automatic when sydguard starts a VM) runs `internal/guest/install-syd.sh`: builds Syd 3.59.0
 statically (`cargo --locked`, libseccomp 2.6.1 checked by SHA-256), installs it
 root-owned at `/usr/local/libexec/sydguard/syd`, and adds an AppArmor profile that
 lets only that binary create user namespaces (Ubuntu blocks this by default).

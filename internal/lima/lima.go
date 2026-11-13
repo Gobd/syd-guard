@@ -80,7 +80,7 @@ func envOr(k, d string) string {
 
 // Prepare gets a VM ready to run agents without running one: VM up, matching
 // Linux sydguard, working engine, config synced, daemon and UI running.
-// `sydguard prepare` exposes it for wrappers that hop into the VM themselves.
+// `sydguard vm start` and `sydguard vm` use it.
 func Prepare(o Options) (string, error) {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return "", errors.New("limactl not found (brew install lima)")

@@ -59,14 +59,57 @@ func app() *cli.Command {
 		},
 		Action: runAction,
 		Commands: []*cli.Command{
-			{Name: "ui", Usage: "open the approvals UI", Action: uiAction},
+			{
+				Name: "ui", Usage: "the approvals UI: open it (starting it if needed), or status/start/stop/restart",
+				Action: uiAction,
+				Commands: []*cli.Command{
+					{Name: "status", Usage: "running? which build?", Action: func(context.Context, *cli.Command) error { ui.UIStatus(); return nil }},
+					{Name: "start", Usage: "start the UI server (no browser)", Action: func(context.Context, *cli.Command) error { return ui.StartUI() }},
+					{Name: "stop", Usage: "stop the UI server only (agents keep running)", Action: func(context.Context, *cli.Command) error { return ui.StopUI() }},
+					{Name: "restart", Usage: "restart the UI server and daemons with this build (agents keep running)", Action: func(context.Context, *cli.Command) error {
+						return ui.Restart()
+					}},
+				},
+			},
+			{
+				Name: "vm", Usage: "Lima VMs: a shell (or `-- command`) in the VM outside the sandbox, or list/start/stop",
+				UsageText: "sydguard vm                    shell in the VM at this path (outside the sandbox)\n" +
+					"sydguard vm -- command [args]  run a command there\n" +
+					"sydguard vm list | start [NAME] | stop [NAME...]",
+				StopOnNthArg: &one, Action: vmAction,
+				Commands: []*cli.Command{
+					{Name: "list", Usage: "VMs: running or stopped, agents, sydguard build", Action: func(context.Context, *cli.Command) error {
+						ui.ListMachines()
+						return nil
+					}},
+					{
+						Name: "start", Usage: "start (or create) a VM and install sydguard + its engine", UsageText: "sydguard vm start [NAME]",
+						Action: func(_ context.Context, cmd *cli.Command) error {
+							o := limaOptions(cmd.Root())
+							if n := cmd.Args().First(); n != "" {
+								o.VM = n
+							}
+							vm, err := lima.Prepare(o)
+							if err == nil {
+								fmt.Println("ready:", vm)
+							}
+							return err
+						},
+					},
+					{
+						Name: "stop", Usage: "shut down VMs (all running ones by default; refuses while agents run)", UsageText: "sydguard vm stop [NAME...]",
+						Flags: []cli.Flag{&cli.BoolFlag{Name: "force", Usage: "stop even with agents running"}},
+						Action: func(_ context.Context, cmd *cli.Command) error {
+							return ui.StopVMs(cmd.Args().Slice(), cmd.Bool("force"))
+						},
+					},
+				},
+			},
+			{Name: "status", Usage: "overview: UI, this host and every VM (running? builds? agents?)", Action: func(context.Context, *cli.Command) error {
+				return ui.Status()
+			}},
 			{Name: "doctor", Usage: "check the Syd engine, namespaces and daemon", Action: doctorAction},
 			{Name: "setup", Usage: "install the pinned Syd engine (here, or in the VM)", Action: setupAction},
-			{
-				Name: "vm", Usage: "run a command in the VM outside the sandbox, at this path (default: a shell)",
-				UsageText: "sydguard vm [-- command [args...]]", StopOnNthArg: &one, Action: vmAction,
-			},
-			{Name: "prepare", Usage: "get everything ready (VM, engine, daemon, UI) without running a command", Action: prepareAction},
 			{
 				Name: "cmd", Usage: "(inside the sandbox) run or propose a host command: sydguard cmd --list",
 				UsageText:       "sydguard cmd --list | NAME key=value... | --propose [--why TEXT] -- PROGRAM ARGS...",
@@ -82,26 +125,6 @@ func app() *cli.Command {
 					return nil
 				},
 			},
-			{Name: "status", Usage: "show the UI, daemons and VMs (running? which build?)", Action: func(context.Context, *cli.Command) error {
-				return ui.Status()
-			}},
-			{
-				Name: "stop", Usage: "stop the UI and daemons, or the named VMs (refuses while agents run)",
-				UsageText: "sydguard stop            UI + daemons\nsydguard stop VM...      shut down those Lima VMs\nsydguard stop --all      UI, daemons and every VM",
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "force", Usage: "stop even with agents running"},
-					&cli.BoolFlag{Name: "all", Usage: "also shut down every Lima VM"},
-				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					if cmd.Args().Len() > 0 {
-						return ui.StopVMs(cmd.Args().Slice(), cmd.Bool("force"))
-					}
-					return ui.Stop(cmd.Bool("force"), cmd.Bool("all"))
-				},
-			},
-			{Name: "restart", Usage: "restart the UI and daemons with this build (agents keep running)", Action: func(context.Context, *cli.Command) error {
-				return ui.Restart()
-			}},
 			{Name: "version", Usage: "print the build hash", Action: func(context.Context, *cli.Command) error {
 				fmt.Println(system.Version())
 				return nil
@@ -198,24 +221,6 @@ func vmAction(_ context.Context, cmd *cli.Command) error {
 		return errors.New("no VM in use here: this machine runs agents directly (pass --vm to use one)")
 	}
 	return lima.Outside(o, cmd.Args().Slice())
-}
-
-func prepareAction(_ context.Context, cmd *cli.Command) error {
-	if lima.Use(limaOptions(cmd.Root())) {
-		vm, err := lima.Prepare(limaOptions(cmd.Root()))
-		if err == nil {
-			fmt.Println(vm)
-		}
-		return err
-	}
-	if _, err := guest.EnsureDaemon(); err != nil {
-		return err
-	}
-	if system.InLima() {
-		return nil
-	}
-	_, err := ui.EnsureServer()
-	return err
 }
 
 func setupAction(_ context.Context, cmd *cli.Command) error {
