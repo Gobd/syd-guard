@@ -23,17 +23,18 @@ const cgroupBase = "/sys/fs/cgroup/sydguard-launch"
 // A preparing journal precedes resource creation. A complete ready journal
 // binds both root-controlled object identities before any workload can fork.
 type slotJournal struct {
-	Version        int    `json:"version"`
-	UID            uint32 `json:"uid"`
-	Index          int    `json:"index"`
-	Nonce          string `json:"nonce"`
-	ParentPID      int    `json:"parent_pid"`
-	ParentIdentity string `json:"parent_identity"`
-	Phase          string `json:"phase"`
-	AnchorDev      uint64 `json:"anchor_dev"`
-	AnchorIno      uint64 `json:"anchor_ino"`
-	CgroupDev      uint64 `json:"cgroup_dev"`
-	CgroupIno      uint64 `json:"cgroup_ino"`
+	Version        int             `json:"version"`
+	UID            uint32          `json:"uid"`
+	Index          int             `json:"index"`
+	Nonce          string          `json:"nonce"`
+	ParentPID      int             `json:"parent_pid"`
+	ParentIdentity string          `json:"parent_identity"`
+	Phase          string          `json:"phase"`
+	AnchorDev      uint64          `json:"anchor_dev"`
+	AnchorIno      uint64          `json:"anchor_ino"`
+	CgroupDev      uint64          `json:"cgroup_dev"`
+	CgroupIno      uint64          `json:"cgroup_ino"`
+	Network        *networkJournal `json:"network,omitempty"`
 }
 
 func anchorName(slot *launchSlot) string      { return slotName(slot.UID, slot.Index) + ".anchor" }
@@ -58,7 +59,7 @@ func validateJournal(slot *launchSlot, j slotJournal) error {
 	}
 	switch j.Phase {
 	case "preparing":
-		if j.AnchorDev != 0 || j.AnchorIno != 0 || j.CgroupDev != 0 || j.CgroupIno != 0 {
+		if j.Network != nil || j.AnchorDev != 0 || j.AnchorIno != 0 || j.CgroupDev != 0 || j.CgroupIno != 0 {
 			return errors.New("invalid preparing journal")
 		}
 	case "ready":
@@ -67,6 +68,11 @@ func validateJournal(slot *launchSlot, j slotJournal) error {
 		}
 	default:
 		return errors.New("unknown slot journal phase")
+	}
+	if j.Network != nil {
+		if err := validateNetworkJournal(j); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -238,9 +244,31 @@ func killCgroup(fd int, timeout time.Duration) error {
 // cleanupSlot never traverses the user-owned work directory. Nonempty or
 // unverified resources retain their journal and quarantine the bounded slot.
 func cleanupSlot(baseFD, cgroupFD int, slot *launchSlot, j slotJournal, owner uint32, kill func(int, time.Duration) error) error {
+	return cleanupSlotWithNetwork(baseFD, cgroupFD, slot, j, owner, kill, nil)
+}
+
+func cleanupSlotWithNetwork(baseFD, cgroupFD int, slot *launchSlot, j slotJournal, owner uint32, kill func(int, time.Duration) error, adapter networkResourceAdapter) error {
+	if slot == nil {
+		return errors.New("missing launch slot")
+	}
+	slot.lifecycleMu.Lock()
+	defer slot.lifecycleMu.Unlock()
 	if err := validateJournal(slot, j); err != nil || j.Phase != "ready" {
 		return errors.New("slot is not recoverable")
 	}
+	// The slot lock serializes lifecycle transactions. A stale snapshot is
+	// never authority to drop resources recorded by a newer journal.
+	current, exists, readErr := readJournal(baseFD, slot, owner)
+	if readErr != nil || !exists || !sameSlotBinding(j, current) {
+		fd, openErr := openCheckedDirectory(cgroupFD, slotName(slot.UID, slot.Index), j.CgroupDev, j.CgroupIno, owner)
+		if openErr != nil {
+			return errors.Join(errors.New("slot journal unavailable; quarantined"), readErr, openErr)
+		}
+		killErr := kill(fd, 5*time.Second)
+		_ = unix.Close(fd)
+		return errors.Join(errors.New("slot journal unavailable; quarantined"), readErr, killErr)
+	}
+	j = current
 	name := slotName(slot.UID, slot.Index)
 	anchor := anchorName(slot)
 	anchorExists, err := objectExists(baseFD, anchor)
@@ -263,6 +291,14 @@ func cleanupSlot(baseFD, cgroupFD int, slot *launchSlot, j slotJournal, owner ui
 		_ = unix.Close(fd)
 		if err != nil {
 			return err
+		}
+	}
+	if j.Network != nil {
+		if !groupExists {
+			return errors.New("network resources require a verified cgroup kill")
+		}
+		if err := cleanupNetwork(baseFD, slot, &j, adapter); err != nil {
+			return fmt.Errorf("network cleanup quarantined: %w", err)
 		}
 	}
 	if anchorExists {
@@ -307,6 +343,10 @@ func cleanupSlot(baseFD, cgroupFD int, slot *launchSlot, j slotJournal, owner ui
 		return err
 	}
 	return unix.Fsync(baseFD)
+}
+
+func sameSlotBinding(a, b slotJournal) bool {
+	return a.Version == b.Version && a.UID == b.UID && a.Index == b.Index && a.Nonce == b.Nonce && a.ParentPID == b.ParentPID && a.ParentIdentity == b.ParentIdentity && a.Phase == b.Phase && a.AnchorDev == b.AnchorDev && a.AnchorIno == b.AnchorIno && a.CgroupDev == b.CgroupDev && a.CgroupIno == b.CgroupIno
 }
 
 func recoverSlot(baseFD, cgroupFD int, slot *launchSlot, owner uint32, kill func(int, time.Duration) error) error {

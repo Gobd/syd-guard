@@ -195,7 +195,49 @@ Latest source state (unmerged isolated worktrees):
   ipc/gid:0 immutableRootmessageauth (RootUID/GIDboth0), separateRootinodeowner vs
   ordinarypeer identity, retainedruntimeexeFD compareeachconnection, SINGLEARM
   beforeEngineSpawn withoriginalframe handedcoordinator(no2ndARM/newbudget).
-  Independentvariantdesignreviewca53b698 active; implementationstillblocked.
+  Independentvariantdesignreviewca53b698 REPAIR/acceptsarchitectureSourceONLY;
+  immutableReadableRegularProfile bind(not-P/procFD magiclink), gateDumpable0held
+  thennormalDumpable1 justbeforeagentexec, exactpassfd(notall), Rootwriter0/0,
+  separateowner/peer/runtimeexe identity andONEpre-spawnARM mandatory.
+  Implementationworker9b4e23ee active(unactivated). CrossGo staticPIE -ldflags=-d
+  apparentELFDYN/nointerp binary segfault139 EMPTYlog beforeSyd/noagent started;
+  STOPPEDbrokenbuild, existingordinaryguestGCC external-static-pie investigation
+  inprivatefreshscratchapproved(noinstalls/globalchanges/debuggers/tracing).
+  Newbuildmustactuallystart andELFverifybeforegatecandidatefixture, norequirePIE
+  orstaticrelaxation. Ordinarychild/proc-exe denial
+  experiment permitted; NOcapstoSyd/gate/broker/workload. Rootcoordinator mayuse
+  ALREADYpresentnormalRootprivileges solelyownchildexe metadata/hash, Rootproc/LSM
+  access mustParentqualify; NOnewcaps/filecaps/globalpolicy/ptrace/tracing grants.
+  UIbridgeworkerb54c6050 isolatedmanagedtree base158037f active trustedRootregistration/
+  boundedbackgroundapply exactreceipts Saved!=Applied, defaultsdisabled.
+  Workercompleted source, native/race/vet Linuxcrossbuild andbrowser29tests/578
+  expectationsPASS; noLinuxRootendpointexecution. Review328dfd50/UIlaunchFAILED
+  missingcwd: harnessautoREMOVEDcompletedmanagedworktree+branch aftercapturingpatch.
+  ParentSTOPPEDreportedlane(noCLI/providerfallback), inspectedhandoff.json, restored
+  EXACTtask-0-worker.patch onbase158037f to /Users/briankemper/Developer/worktrees/
+  syd-guard/ui-live-source branchpi-subagents/ui-live-source-b54c6050 (retained).
+  ImplementationNOTrerun; newreadonlyreview3b494a85 active restored14files.
+  RealexistingLinux managedlive.Exchange +trustedinternalconnfactory (noClienttype),
+  nonLinuxUnavailable permitted. Managedpermissioncards DISABLED: noauthenticated
+  Rootdenial-event transport exists; doNOTrelabellegacypending/relaxmanaged+Learning
+  rejection. Form/JSON manualintent CAS/apply bridge remainsvalidseparateslice;
+  fullUI manageddenial cards stillrequiresRoot/session/bank eventbinding.
+  Networkleasee49fb3a4 completeactualordinaryUnixFD/ARMhelperPASS sourceonly,
+  review4b586617 BLOCKP0 cleanupRelease callback dropsNSFDandreturnsnil afterpoison,
+  erasesdurablejournal andallowsfreshslotreuse despitelostACK; Sourceunwired.
+  Repair5719975c privatecleanup ALWAYSQuarantine(afterauthkill/exactFDdrop) even
+  unpoisonedserver/clientunknownAck, retainsnamespace-onlyDELETING journal durable;
+  actualARM PID264011 realjournal/freshflockrecoverblocked, slot0skipped1selected.
+  Rereviewe9265a5c noissues/sourceOK. Parentmergednetworktracked/untracked/sdk main
+  excludingwatchdogpatchconflict, manuallyretained158 livewatchmode+copiedEXACT
+  acceptedwatchdogCleanup/call; nativeGo/race/vet LinuxARMbuild/vet andNEWcombined
+  actualordinaryLinuxALLhelper PASS SHA7fd1072d2fc97a02056142f953aee82c9968a49e1d87f4b861847e3816542146,
+  logea16118f7cc0300947a35c1d8d9271f9b9bde2fdff31228a3495b8cd34f4972b.
+  Combinedwatchcleanupmerge review289b02b8 noissues/sourceOKforcheckpoint,
+  noRootdeploy/networkactivation. ParentSDKdiffglobalmodulecachev1.3.1 confirms
+  ONLYdocumentedhandle_linux/nl_linux patches+2ownershiptests+PATCHES added.
+  OriginalglobalcacheUNCHANGED/license preserved, noSyd enforcementfork.
+  leasefinite seq1/optionalrecover2/release2or3 (4096 isseparatelive/journalbound).
   No componentresult countedfullworkflowreadiness.
   No Rootcoordinator/transport/listenerdeployed. PREARM sequencing sourceonly proven;
   actualRootstartup mustARMACK BEFOREaccepted/engineIO andcompleteafterCLIRelease.

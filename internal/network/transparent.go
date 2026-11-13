@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -57,6 +58,25 @@ func StartTransparentLearning(synthetic *Synthetic, policy *Policy, session, nam
 	if err != nil {
 		return nil, err
 	}
+	gate := startTransparentListener(listener, synthetic, policy, session, name, agent, serviceHost, servicePort, learning)
+	return gate, nil
+}
+
+// StartTransparentPrebound takes ownership of listener only on success. The
+// caller must independently authenticate its descriptor and network namespace.
+// This entry point does not enable learning or a loopback service exception.
+func StartTransparentPrebound(listener *net.TCPListener, synthetic *Synthetic, policy *Policy, session, name string, agent netip.Addr) (*Transparent, error) {
+	if listener == nil || synthetic == nil || policy == nil || session == "" || !agent.Is4() {
+		return nil, fmt.Errorf("invalid prebound gateway arguments")
+	}
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || address == nil || !address.AddrPort().Addr().Is4() || address.Port == 0 || !socketOpen(listener) {
+		return nil, fmt.Errorf("prebound gateway requires an IPv4 TCP listener")
+	}
+	return startTransparentListener(listener, synthetic, policy, session, name, agent, "", 0, false), nil
+}
+
+func startTransparentListener(listener *net.TCPListener, synthetic *Synthetic, policy *Policy, session, name string, agent netip.Addr, serviceHost string, servicePort uint16, learning bool) *Transparent {
 	ctx := context.Background()
 	cancel := func() {}
 	if learning {
@@ -64,7 +84,7 @@ func StartTransparentLearning(synthetic *Synthetic, policy *Policy, session, nam
 	}
 	gate := &Transparent{Address: listener.Addr().String(), listener: listener, synthetic: synthetic, policy: policy, session: session, name: name, agent: agent, connections: map[net.Conn]bool{}, slots: make(chan struct{}, 16), servicePort: servicePort, serviceHost: serviceHost, learning: learning, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 	go gate.accept()
-	return gate, nil
+	return gate
 }
 
 func (g *Transparent) Close() {

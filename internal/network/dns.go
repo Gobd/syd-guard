@@ -36,6 +36,36 @@ func StartDNS(synthetic *Synthetic, agent netip.Addr) (*DNS, error) {
 		_ = tcp.Close()
 		return nil, err
 	}
+	dns, err := StartDNSPrebound(synthetic, agent, tcp.(*net.TCPListener), udp)
+	if err != nil {
+		_ = tcp.Close()
+		_ = udp.Close()
+		return nil, err
+	}
+	return dns, nil
+}
+
+// StartDNSPrebound takes ownership of both sockets only on success. The caller
+// must independently authenticate the descriptors and their network namespace.
+func StartDNSPrebound(synthetic *Synthetic, agent netip.Addr, tcp *net.TCPListener, udp *net.UDPConn) (*DNS, error) {
+	if synthetic == nil || !agent.Is4() || tcp == nil || udp == nil {
+		return nil, fmt.Errorf("invalid prebound DNS arguments")
+	}
+	tcpAddr, ok := tcp.Addr().(*net.TCPAddr)
+	if !ok || tcpAddr == nil {
+		return nil, fmt.Errorf("invalid prebound DNS TCP address")
+	}
+	udpAddr, ok := udp.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddr == nil || udp.RemoteAddr() != nil {
+		return nil, fmt.Errorf("invalid prebound DNS UDP address")
+	}
+	if !socketOpen(tcp) || !socketOpen(udp) {
+		return nil, fmt.Errorf("prebound DNS socket is closed")
+	}
+	t, u := tcpAddr.AddrPort(), udpAddr.AddrPort()
+	if !t.Addr().Is4() || !u.Addr().Is4() || t.Port() == 0 || t != u {
+		return nil, fmt.Errorf("prebound DNS sockets must share an IPv4 address and port")
+	}
 	dns := &DNS{Address: tcp.Addr().String(), synthetic: synthetic, agent: agent, udp: udp, tcp: tcp}
 	go dns.serveUDP()
 	go dns.serveTCP()

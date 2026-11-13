@@ -252,7 +252,7 @@ func watchdogMainMode(live bool) error {
 	var killErr, cleanupErr error
 	cleanup := func() error {
 		cleanupStart = time.Now()
-		cleanupErr = cleanupSlot(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
+		cleanupErr = watchdogCleanup(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
 			killStart = time.Now()
 			killErr = killCgroup(fd, timeout)
 			killEnd = time.Now()
@@ -285,6 +285,23 @@ func watchdogMainMode(live bool) error {
 	// been attempted; a blocked output pipe cannot delay the safety operation.
 	diagnostic(fmt.Sprintf("watchdog event_time=%s poll_count=%d pidfd_revents=%#x socket_revents=%#x cleanup_start=%s cleanup_end=%s cleanup_ok=%t kill_called=%t kill_start=%s kill_end=%s kill_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), event.count, uint16(event.pidfdRevents), uint16(event.socketRevents), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, !killStart.IsZero(), killStart.Format(time.RFC3339Nano), killEnd.Format(time.RFC3339Nano), !killStart.IsZero() && killErr == nil, ackOK))
 	return errors.Join(waitErr, cleanupErr)
+}
+
+// watchdogCleanup rereads the durable journal: the parent's initial copy can
+// predate a later resource transaction. If rereading fails, kill only the
+// originally pinned cgroup and quarantine everything else.
+func watchdogCleanup(baseFD, groupFD int, slot *launchSlot, initial slotJournal, owner uint32, kill func(int, time.Duration) error) error {
+	current, exists, err := readJournal(baseFD, slot, owner)
+	if err == nil && exists && current.Nonce == initial.Nonce && current.ParentPID == initial.ParentPID && current.ParentIdentity == initial.ParentIdentity && current.AnchorDev == initial.AnchorDev && current.AnchorIno == initial.AnchorIno && current.CgroupDev == initial.CgroupDev && current.CgroupIno == initial.CgroupIno {
+		return cleanupSlot(baseFD, groupFD, slot, current, owner, kill)
+	}
+	fd, openErr := openCheckedDirectory(groupFD, slotName(slot.UID, slot.Index), initial.CgroupDev, initial.CgroupIno, owner)
+	if openErr != nil {
+		return errors.Join(errors.New("watchdog journal changed; slot quarantined"), err, openErr)
+	}
+	killErr := kill(fd, 5*time.Second)
+	_ = unix.Close(fd)
+	return errors.Join(errors.New("watchdog journal changed; slot quarantined"), err, killErr)
 }
 
 type watchdogEvent struct {

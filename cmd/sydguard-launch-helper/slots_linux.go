@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,9 +17,10 @@ const launchSlotsPerUID = 32
 // The base directory is fixed and root-controlled. Slot files are persistent:
 // unlinking one while another process holds its flock would break the limit.
 type launchSlot struct {
-	File  *os.File
-	UID   uint32
-	Index int
+	File        *os.File
+	UID         uint32
+	Index       int
+	lifecycleMu sync.Mutex
 }
 
 func (s *launchSlot) Close() error { return s.File.Close() }
