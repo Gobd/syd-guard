@@ -132,17 +132,70 @@ Latest source state (unmerged isolated worktrees):
   in network_nft_kernel_linux_test.go; sourcecompiled/vet PASS, NOT executedasRoot.
   Fixture changesnoHosttables/interfaces/sysctl/mount/workload; checksactual26msg/
   24ACK commit/GET/mismatch/EEXIST/handleDelete/ENOENT andcallerNSunchanged; namespace
-  destructionfinalcleanup. Safetyreview5e31abad/task2 activebeforeparentRootinvoke.
-  Kernel batchACKemission/CTdirectionU8 expression acceptance stillunproved.
+  destructionfinalcleanup. Safety517e6a50 boundfinding fixed; rereview05a723fe accepted.
+  PARENTROOTKERNEL TEST PASSED inVM: namespace dev4/ino4026532332, table
+  sg_1ac3d0282d3c handle3; actual emittedexpressions/26msgs24ACK/Get/EEXIST/handle-only
+  deletion/ENOENT accepted, originalcallerNS unchanged, 0.04s. NOTpacketpath proof.
+  TESTONLY immutablebinary stagedat stage/nft-kernel-a95142e521b52366.test,
+  dev64769/inode874744/root0500/nlink1/SHAa95142e521b52366cc331528fede84bdc8324358de1bd7b831d7dce1e11332b4;
+  newidentity recordedinstallation.json:nft_kernel_test, log nft-isolated-kernel.log.
+  OriginalRoothelpers/stockengine unchanged; nohosttable/interface/sysctl/mount/workload
+  modified. Actual broker/veth traffic/direct-IP/tuple/flowtable gates stillpending.
+  Sourceadapter99e6ab07 draftedrealnamespace/resolver/firewall/veth/activation/reverse
+  cleanup+scopedroutewrappers; d71f986a addedowned3listenerduplicates/protocol6(notMPTCP),
+  per-instance realnative facade+comprehensive lifecyclefailuretests; workeractual
+  ordinaryARMguest PASS. Review77cb6ec0 P1 lifecyclemutexwaitnotcancellable within
+  five-secondsetup/prebind budget,P2 constructor/recovery/FINALactivationcoverage.
+  Repairffde2fee sharedcontextTryLock/nogoroutine lockwait five-secondstart-beforelock,
+  constructorfailure/recoveryownedFD/occurrence-awareFINALactivation tests; actual
+  ordinaryARM selected+ALLhelper PASS. Rereview59341e90 OKsource/P1fixed;
+  P2 unsafe-directory negative UIDdependent. e49fb3a4 explicitowned0770 fixture fixes
+  andactualARMfocusedPASS; nowrealRootwatchlease onSEPARATEprivateinherited stream,
+  preserves84-bytewatchop ancillaryrejection. LifecycleNonce+UID/slot+nsfsdevino/type+
+  heldFD authority; optionalretentionToken NOTLinuxSO_NETNS_COOKIE, listenercookie
+  gateunchanged. Namespace leasecallback
+  is explicitlytrustedRootassertion AFTERdurableNamespace record, NOTactualwatcherACK;
+  watchFDleasehandoff/recovery/channel remainsunwired/activationblocked.
   LiveReview81d46dfc P1 acceptedIDhistoryunbounded,P2 absoluteauthdeadline/earlyStartupStopped/
   typednil; repairbaf047dd adds4096bound/contextAuth flock/preReady correlatedterminal/
   nilerrorhandling. Rereviewb51a599f nofindings/sourceOK; parent actualordinaryLinux
   repairedmanagedlive/managedstore/ALLhelper suites PASS (ASTguard source-lessskip
   distinguished). Reviewed slice appliedmain; nativeGo/race/vet Linuxbuild/vet PASS.
-  No actuallivebranch/watchwire/UI yet.
+  No actuallivebranch/UI yet. Workerb9086785 addedactualprivateWatch ARMACK/COMPLETEACK/
+  STOP fixedbinarywire+poll originalkernelmonotonicdeadline+boundCGcleanup path in
+  live-root-source; onlydispatchfalse sostilldisabled. Parent actualordinaryLinux
+  ALLWatchWire andALLhelper tests PASS(mockCGcleanup), notprivilegedkillproof.
+  Sourcewatchreview24273e12 nofindings/sourceOK. Coordinatora5e10c6a nowcomposes
+  prevalidation->ARMACK->acceptedState/exactSavedReread/sealedFDengineLoad/ACK/ledger
+  Finish->WatchCompleteACK->Applied andstartupreleasegating; stillunwired.
+  ParentinitialLinuxhelper FAILED recvflags testfixture; repair63009385 fixed
+  MSG_CMSG_CLOEXECflags/rights-leak andjoined cancelcallback. Actualcandidate engine
+  262685/same shell262686 lowertransport sealedMEMFD generated full/empty ACK+SERVER
+  EOF PASSED(NoCloseWrite; upstreamNonInteractiveclosesafterACKflush). ALLhelperLinux
+  finalbin3116d00ec4c8029edf83e0b2f881c445edc5280ff63faa18acfc6cdbb751f5d3 PASS.
+  Ordinaryprivatefixture ~/syd-live-transport.opxx4VAb logs helper-final2/candidate-final2;
+  noRootendpointauthentication/layout/gate/cgroup proof.
+  Review3862d807 P1 ctxcancel/earlierbudget ignored atReady/running/Applied FINAL
+  publicationboundaries, despitewatchoriginalbudgetvalid; fix630e4bf7 addedimmediate
+  budgetchecks afterFinish/COMPLETE +completewaitContext minoriginalWatchbudget/caller
+  ctx20ms cancellationpoll, no timestamp/wire renewal. ActualordinaryLinux helper/store/
+  managedlive/syd ALLPASS, helperSHA bde7dadc245f5cc9a879caca492047a73191e9e37ed325f754ed92d07712c17e.
+  Rereviewb2a90a9d noissues/sourceOK. Rootstartupworker9d7bfada STOPPEDdesignbeforeedits:
+  Sydensure_sealed copies/reexecssealedmemfd soactualexe inode != heldinstalledinode;
+  upstreamnoUIDdrop option, existingUIDdropbeforeSydexec meanspeerUID502not0.
+  DoNOTquickboot/skipseal/runtraceeRoot/inventuidflag. Narrowedsourcequalification:
+  runtimeexe-heldFD exactSHA+ALLseals+pidfd/start continuity, originalRootengineFD
+  retained; existingordinarySyd+workload, RoottakesownershipprivateSocket/dir AFTER
+  trustedbind BEFORERelease, exactordinarypeerUID derivedRootselection notcaller.
+  These are proposalsONLY pending source/independentreview andactualRootfixture;
+  currentRoot0endpointconstructor UNCHANGED/unreachable. No deploymentorReadyclaim.
+  No componentresult countedfullworkflowreadiness.
+  No Rootcoordinator/transport/listenerdeployed. PREARM sequencing sourceonly proven;
+  actualRootstartup mustARMACK BEFOREaccepted/engineIO andcompleteafterCLIRelease.
   Kernel-fixture review517e6a50 acceptednamespaceconfinement butBLOCKED missing5s
   commit budget; parent wrapped EACH initial/duplicate socket-open+commit inshared5s
-  childctx beneath20souter fixture and closes/cancels promptly. NotRootexecuted yet.
+  childctx beneath20souter fixture and closes/cancels promptly. ParentRootfixture
+  subsequentlyPASSED asrecordedabove; doNOTcallthisfullnetwork/agentworkflow proof.
   Originalstage manifestverifieddev64769/inode840172/root0700; nohelpers/engine
   replaced. Candidate/credential/control/nftRootfixtures remainseparate scopedgates.
   Activation/CLI/UI/Rootengineinstallation stillblockedpendingimplementations/proofs.
