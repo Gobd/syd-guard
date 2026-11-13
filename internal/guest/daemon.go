@@ -36,18 +36,20 @@ const (
 )
 
 type Session struct {
-	ID         string   `json:"id"`
-	Project    string   `json:"project"`
-	RulesFile  string   `json:"rulesFile"`
-	Cwd        string   `json:"cwd"`
-	Cmd        []string `json:"cmd"`
-	Learn      bool     `json:"learn"`
-	PID        int      `json:"pid"`
-	IPC        string   `json:"ipc"`
-	ProxyPort  int      `json:"proxyPort"`
-	DNSAddr    string   `json:"dnsAddr,omitempty"` // "" = no private DNS (namespaces unavailable)
-	LocalPorts []int    `json:"localPorts,omitempty"`
-	Overlays   []string `json:"overlays,omitempty"` // build dirs kept on the VM disk
+	ID          string       `json:"id"`
+	Project     string       `json:"project"`
+	RulesFile   string       `json:"rulesFile"`
+	Cwd         string       `json:"cwd"`
+	Cmd         []string     `json:"cmd"`
+	Learn       bool         `json:"learn"`
+	PID         int          `json:"pid"`
+	IPC         string       `json:"ipc"`
+	ProxyPort   int          `json:"proxyPort"`
+	DNSAddr     string       `json:"dnsAddr,omitempty"`
+	Network     bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
+	Connections []Connection `json:"connections,omitempty"`
+	LocalPorts  []int        `json:"localPorts,omitempty"`
+	Overlays    []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
@@ -58,6 +60,7 @@ type Session struct {
 	LastError    string    `json:"lastError,omitempty"`
 	proxy        *http.Server
 	dns          *dnsServer
+	network      *network
 	queue        chan applyOp
 }
 
@@ -130,18 +133,31 @@ func (d *Daemon) adoptSessions() {
 			removeSessionFiles(s.ID)
 			continue
 		}
+		if !s.Network {
+			log.Printf("session %s predates isolated networking; stop and restart this agent", s.ID)
+			continue
+		}
 		if err := d.startProxy(&s); err != nil {
 			log.Printf("adopt %s: %v", s.ID, err)
 			continue
 		}
-		if s.DNSAddr != "" {
-			if err := d.startDNS(&s); err != nil {
-				log.Printf("adopt %s dns: %v", s.ID, err)
-			}
+		if err := d.startDNS(&s); err != nil {
+			d.stopServers(&s)
+			log.Printf("adopt %s dns: %v", s.ID, err)
+			continue
+		}
+		if err := d.startNetwork(&s); err != nil {
+			d.stopServers(&s)
+			log.Printf("adopt %s network: %v", s.ID, err)
+			continue
 		}
 		s.Status = statusApplied
 		d.startQueue(&s)
 		d.sessions[s.ID] = &s
+		if err := d.attachNetwork(&s); err != nil {
+			s.Status, s.LastError = statusUnknown, err.Error()
+			d.stopServers(&s)
+		}
 		log.Printf("adopted session %s (%s)", s.ID, s.Project)
 	}
 }
@@ -150,7 +166,7 @@ func removeSessionFiles(id string) {
 	if id == "" || strings.ContainsAny(id, "/.") {
 		return
 	}
-	for _, ext := range []string{".json", ".syd-3", ".batch", ".resolv", ".dns.json"} {
+	for _, ext := range []string{".json", ".syd-3", ".batch", ".resolv", ".dns.json", ".dns.json.tmp", ".tun.sock"} {
 		_ = os.Remove(filepath.Join(sessionsDir(), id+ext))
 	}
 }
@@ -262,11 +278,21 @@ func (d *Daemon) routes() http.Handler {
 			return nil, err
 		}
 		d.mu.Lock()
-		defer d.mu.Unlock()
-		if s, ok := d.sessions[req.Session]; ok && req.PID > 0 {
-			s.SydPID = req.PID
-			meta, _ := json.Marshal(s)
-			_ = os.WriteFile(filepath.Join(sessionsDir(), s.ID+".json"), meta, 0o600)
+		s, ok := d.sessions[req.Session]
+		if !ok || req.PID <= 0 {
+			d.mu.Unlock()
+			return nil, errors.New("bad session start")
+		}
+		s.SydPID = req.PID
+		meta, _ := json.Marshal(s)
+		err := os.WriteFile(filepath.Join(sessionsDir(), s.ID+".json"), meta, 0o600)
+		d.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := d.attachNetwork(s); err != nil {
+			d.stopServers(s)
+			return nil, err
 		}
 		return map[string]any{}, nil
 	})
@@ -302,6 +328,10 @@ func (d *Daemon) register(s *Session) (any, error) {
 			return nil, errors.New("bad argument")
 		}
 	}
+	s.LocalPorts = slices.Compact(slices.Sorted(slices.Values(s.LocalPorts)))
+	if len(s.LocalPorts) > 64 {
+		return nil, errors.New("at most 64 local ports")
+	}
 	for _, p := range s.LocalPorts {
 		if p < 1 || p > 65535 {
 			return nil, fmt.Errorf("bad local port %d", p)
@@ -310,30 +340,40 @@ func (d *Daemon) register(s *Session) (any, error) {
 	if v := d.store.View(s.RulesFile); v.Pending != "" || v.Error != "" {
 		return nil, fmt.Errorf("%s isn't trusted (%s); run from a terminal to review it", s.RulesFile, v.Error)
 	}
+	if !namespacesOK() {
+		return nil, errors.New("isolated networking requires user/mount/net namespaces; run `sydguard setup`")
+	}
 	s.ID = system.NewID()
+	s.Network = true
 	s.IPC = "@sydguard-" + s.ID + "-" + system.NewID()
 	s.Started = time.Now()
 	s.Status = statusApplied
 	if err := d.startProxy(s); err != nil {
 		return nil, err
 	}
-	ns := namespacesOK()
-	if ns {
-		if err := d.startDNS(s); err != nil {
-			log.Printf("session dns: %v", err)
-			s.DNSAddr = ""
+	registered := false
+	defer func() {
+		if !registered {
+			d.stopServers(s)
+			removeSessionFiles(s.ID)
 		}
-		s.Overlays = overlayDirs(s.Project, s.OverlayNames)
+	}()
+	if err := d.startDNS(s); err != nil {
+		return nil, err
 	}
+	if err := d.startNetwork(s); err != nil {
+		return nil, err
+	}
+	s.Overlays = overlayDirs(s.Project, s.OverlayNames)
 	in := policy.ProfileInput{
 		Project: s.Project, Rules: []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)},
 		Launch: s.Launch, Protect: policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()), ProxyPort: s.ProxyPort,
-		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts, PassEnv: s.EnvNames,
+		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts, PassEnv: s.EnvNames, Network: true,
 	}
 	if s.DNSAddr != "" {
 		resolv := filepath.Join(sessionsDir(), s.ID+".resolv")
 		host, _, _ := net.SplitHostPort(s.DNSAddr)
-		if err := os.WriteFile(resolv, []byte("nameserver "+host+"\noptions timeout:5 attempts:3\n"), 0o644); err != nil {
+		if err := os.WriteFile(resolv, []byte("nameserver "+host+"\noptions timeout:5 attempts:2 ndots:1\n"), 0o644); err != nil {
 			return nil, err
 		}
 		in.DNS, in.ResolvConf = s.DNSAddr, resolv
@@ -357,6 +397,7 @@ func (d *Daemon) register(s *Session) (any, error) {
 	d.startQueue(s)
 	d.mu.Lock()
 	d.sessions[s.ID] = s
+	registered = true
 	d.mu.Unlock()
 	log.Printf("session %s started: %s in %s (rules %s, dns %q, overlays %v)", s.ID, strings.Join(s.Cmd, " "), s.Project, s.RulesFile, s.DNSAddr, s.Overlays)
 	return map[string]any{"id": s.ID, "profile": path, "proxyPort": s.ProxyPort, "dns": s.DNSAddr != "", "overlays": s.Overlays}, nil
@@ -366,8 +407,8 @@ func (d *Daemon) stopServers(s *Session) {
 	if s.proxy != nil {
 		_ = s.proxy.Close()
 	}
-	if s.dns != nil {
-		s.dns.close()
+	if s.network != nil {
+		s.network.close()
 	}
 }
 
@@ -640,8 +681,8 @@ func (d *Daemon) applyChange(rulesFile string, before, after policy.Rules) []app
 		go func() {
 			defer wg.Done()
 			cmds := policy.DiffCommands(before, after)
-			if s.dns != nil {
-				cmds = append(cmds, s.dns.revokeRemoved(before, after)...)
+			if s.network != nil && networkRulesRemoved(before, after) {
+				s.network.revoke()
 			}
 			if len(cmds) == 0 {
 				results[i] = applyResult{Session: s.ID, Applied: true}
@@ -789,16 +830,7 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 		switch {
 		case slices.Contains(caps, "net/connect") && e.Addr != "":
 			kind, target = "connect", strings.TrimPrefix(strings.TrimPrefix(e.Addr, "tcp!"), "udp!")
-			// A raw connect to an address our DNS handed out: ask by name.
-			if ip, port, ok := strings.Cut(target, "!"); ok && s.dns != nil {
-				if name := s.dns.nameOf(ip); name != "" {
-					if s.dns.regrant(ip, name, port) {
-						continue // still approved; its grant had expired. The retry works.
-					}
-					kind, target = "hosts", "tcp://"+net.JoinHostPort(name, port)
-					note = "raw connection (not via the proxy) to " + ip
-				}
-			}
+			// Internet flows are mediated by the isolated stack, not Syd.
 		case slices.Contains(caps, "net/connect") && e.Unix != "" && !strings.HasPrefix(e.Unix, "@"):
 			kind, target = "connect", e.Unix
 		case e.Path == "" || noise(e.Path):
@@ -919,7 +951,11 @@ func (d *Daemon) state() map[string]any {
 	sessions := make([]Session, 0, len(d.sessions))
 	files := map[string]string{} // rules file -> project
 	for _, s := range d.sessions {
-		sessions = append(sessions, *s)
+		view := *s
+		if s.network != nil {
+			view.Connections = s.network.snapshot()
+		}
+		sessions = append(sessions, view)
 		files[s.RulesFile] = s.Project
 	}
 	cards := make([]Card, 0, len(d.cards))

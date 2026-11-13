@@ -19,9 +19,9 @@ import (
 //
 //	read/write: path globs. "*" = one path segment, "**" = anything,
 //	            "/dir/**" (Syd: "/dir/***") = dir and everything below. "~/" ok.
-//	hosts:      [protocol://]host[:port] for the HTTP(S) proxy, by NAME never IP:
+//	hosts:      [protocol://]host[:port] for the per-session network, by NAME:
 //	            "github.com" (any port/protocol), "https://github.com" (443),
-//	            "*.github.com" (subdomains), "tcp://db.example.com:5432".
+//	            "*.github.com" (subdomains), "tcp://db.example.com:5432", "udp://dns:53".
 //	connect:    raw Syd network targets for tools that ignore the proxy, e.g.
 //	            "140.82.112.3!22" or "/run/user/1000/bus". Advanced; prefer hosts.
 //	ignore:     path or host globs that stay denied without asking again.
@@ -117,7 +117,7 @@ func Normalize(kind, pattern string) (string, error) {
 // Host rules ---------------------------------------------------------------
 
 type HostRule struct {
-	Scheme string // "", http, https, tcp
+	Scheme string // "", http, https, tcp, udp
 	Host   string // lowercase name or glob ("*", "*.x.com")
 	Port   string // "" = default for scheme, or any when no scheme
 }
@@ -128,8 +128,8 @@ func ParseHostRule(s string) (HostRule, error) {
 	var h HostRule
 	s = strings.ToLower(strings.TrimSpace(s))
 	if scheme, rest, ok := strings.Cut(s, "://"); ok {
-		if scheme != "http" && scheme != "https" && scheme != "tcp" {
-			return h, fmt.Errorf("protocol must be http, https or tcp: %q", s)
+		if scheme != "http" && scheme != "https" && scheme != "tcp" && scheme != "udp" {
+			return h, fmt.Errorf("protocol must be http, https, tcp or udp: %q", s)
 		}
 		h.Scheme, s = scheme, rest
 	}
@@ -171,7 +171,7 @@ func (h HostRule) Match(scheme, host, port string) bool {
 	switch h.Scheme {
 	case "":
 	case "tcp":
-		if scheme == "http" {
+		if scheme != "tcp" && scheme != "https" {
 			return false
 		}
 	default:
@@ -403,7 +403,8 @@ func Baseline(project string) []BaseRule {
 type Overlay struct{ Source, Target string }
 
 type ProfileInput struct {
-	DNS        string // "127.53.x.y:53": private resolver (needs namespaces)
+	Network    bool   // private user/mount/net namespace with daemon-owned TUN
+	DNS        string // session resolver address
 	ResolvConf string // file bind-mounted over /etc/resolv.conf
 	Overlays   []Overlay
 	LocalPorts []int    // loopback ports of trusted helpers the agent may use
@@ -443,8 +444,13 @@ func CompileProfile(in ProfileInput) (string, error) {
 		fmt.Sprintf("allow/net/connect+127.0.0.1!%d", in.ProxyPort),
 		"allow/read,readdir,chdir+/", "allow/chdir,readlink+" + system.Home(),
 	}
-	if in.DNS != "" || len(in.Overlays) > 0 {
+	if in.Network || in.DNS != "" || len(in.Overlays) > 0 {
 		lines = append(lines, "unshare/user:1", "unshare/mount:1")
+	}
+	if in.Network {
+		// IP sockets stay within the namespace. Only the daemon can relay
+		// them to the host; keep Syd's Unix-socket policy intact.
+		lines = append(lines, "unshare/net:1", "allow/net/connect+0.0.0.0/0!0-65535", "allow/net/connect+::/0!0-65535")
 	}
 	if in.DNS != "" {
 		host, _, err := net.SplitHostPort(in.DNS)

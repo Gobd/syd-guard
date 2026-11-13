@@ -82,7 +82,7 @@ var namespacesOK = sync.OnceValue(func() bool {
 	if err != nil {
 		return false
 	}
-	return exec.Command(engine, "-poff", "-m", "unshare/user:1", "-m", "unshare/mount:1", "--", "/bin/true").Run() == nil
+	return exec.Command(engine, "-poff", "-m", "unshare/user:1", "-m", "unshare/mount:1", "-m", "unshare/net:1", "--", "/bin/true").Run() == nil
 })
 
 // confirmTrust asks on the terminal before using a rules file sydguard didn't
@@ -200,15 +200,21 @@ func Run(o RunOptions) (int, error) {
 		fmt.Fprintf(os.Stderr, "sydguard: kept on the VM disk: %s\n", strings.Join(reg.Overlays, ", "))
 	}
 
+	defer func() { _ = Call("POST", "/internal/end", map[string]string{"Session": reg.ID}, nil) }()
 	logR, logW, err := os.Pipe()
 	if err != nil {
 		return 1, err
 	}
-	cmd := exec.Command(engine, "-P", reg.Profile, "--")
+	defer func() { _ = logR.Close(); _ = logW.Close() }()
+	exe, err := os.Executable()
+	if err != nil {
+		return 1, err
+	}
+	cmd := exec.Command(engine, "-P", reg.Profile, "--", exe, "net-wait", fmt.Sprintf("%s:%d", networkGateway, reg.ProxyPort), "--")
 	cmd.Args = append(cmd.Args, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{logW} // fd 3; Syd closes it before running the agent
-	proxy := fmt.Sprintf("http://127.0.0.1:%d", reg.ProxyPort)
+	proxy := networkProxy(reg.ProxyPort)
 	cmd.Env = append(os.Environ(), "SYD_LOG_FD=3", "SYDGUARD=1", "NODE_USE_ENV_PROXY=1")
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GLOBAL_AGENT_HTTP_PROXY"} {
 		cmd.Env = append(cmd.Env, k+"="+proxy, strings.ToLower(k)+"="+proxy)
@@ -223,7 +229,11 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	_ = logW.Close()
-	_ = Call("POST", "/internal/started", map[string]any{"Session": reg.ID, "PID": cmd.Process.Pid}, nil)
+	if err := Call("POST", "/internal/started", map[string]any{"Session": reg.ID, "PID": cmd.Process.Pid}, nil); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return 1, err
+	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -331,9 +341,10 @@ func Doctor() bool {
 	} else {
 		fmt.Println("✓ engine:", engine)
 		if namespacesOK() {
-			fmt.Println("✓ namespaces: private DNS and build-folder overlays available")
+			fmt.Println("✓ namespaces: isolated TCP/UDP, private DNS and build-folder overlays available")
 		} else {
-			fmt.Println("! namespaces: unavailable (AppArmor?) — run `sydguard setup`; DNS rules and overlays are off")
+			fmt.Println("✗ namespaces: unavailable (AppArmor?) — run `sydguard setup`; isolated sessions cannot start")
+			ok = false
 		}
 	}
 	if _, err := EnsureDaemon(); err != nil {
