@@ -369,6 +369,9 @@ var installScript string
 // Setup installs the pinned Syd engine (and its AppArmor exemption).
 const networkHelper = "/usr/local/libexec/sydguard/net-helper"
 
+// CheckNetworkHelper reports whether the installed helper matches this build.
+func CheckNetworkHelper() error { return checkNetworkHelper() }
+
 func checkNetworkHelper() error {
 	out, err := exec.Command(networkHelper, "version").Output()
 	if err != nil || strings.TrimSpace(string(out)) != system.Version() {

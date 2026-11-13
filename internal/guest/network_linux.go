@@ -172,10 +172,15 @@ func NetworkRun(id string, args []string) error {
 	cmd := exec.Command(exe, append([]string{"net-owner", id, "--"}, args...)...)
 	cmd.Env = append(os.Environ(), "SG_PARENT_NET="+parentNet)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWNET,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		Cloneflags: unix.CLONE_NEWUSER | unix.CLONE_NEWNET,
+		// Keep your own uid/gid inside (not root): tools behave as usual, e.g.
+		// agents that refuse to run unattended as root. The owner gets just
+		// CAP_NET_ADMIN (ambient) to create the TUN and routes in its own
+		// namespace; Syd still drops every capability for the agent.
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: os.Getuid(), HostID: os.Getuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: os.Getgid(), HostID: os.Getgid(), Size: 1}},
 		GidMappingsEnableSetgroups: false,
+		AmbientCaps:                []uintptr{unix.CAP_NET_ADMIN},
 		Pdeathsig:                  syscall.SIGKILL,
 	}
 	return runNetworkChild(cmd)

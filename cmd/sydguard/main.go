@@ -142,8 +142,12 @@ func app() *cli.Command {
 				return guest.Call("POST", "/internal/quit", nil, nil)
 			}},
 			{Name: "engine-check", Hidden: true, Action: func(context.Context, *cli.Command) error {
-				_, err := guest.FindEngine()
-				return err
+				// Engine AND the network helper (it must match this build), so
+				// a VM reinstalls the helper automatically after upgrades.
+				if _, err := guest.FindEngine(); err != nil {
+					return err
+				}
+				return guest.CheckNetworkHelper()
 			}},
 			{Name: "net-run", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
 				args := cmd.Args().Slice()
