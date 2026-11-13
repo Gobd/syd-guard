@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -125,8 +126,8 @@ func samePinnedDirectory(a, b *os.File) error {
 
 // prepareSaved reads only the exact saved revision through generation-bearing
 // store handles and compares both reopened objects with the launch pins.
-func (a *liveAuthority) prepareSaved(revision string, predecessor syd.BankReceipt) (syd.BankBatch, error) {
-	snapshot, err := a.store.OpenPinnedSnapshot(string(a.credential), a.projectID, a.name, revision)
+func (a *liveAuthority) prepareSaved(ctx context.Context, revision string, predecessor syd.BankReceipt) (syd.BankBatch, error) {
+	snapshot, err := a.store.OpenPinnedSnapshotContext(ctx, string(a.credential), a.projectID, a.name, revision)
 	if err != nil {
 		return syd.BankBatch{}, err
 	}
@@ -147,7 +148,18 @@ func (a *liveAuthority) prepareSaved(revision string, predecessor syd.BankReceip
 	if err := validateProjectPaths(snapshot.Project, parsed.Profile()); err != nil {
 		return syd.BankBatch{}, err
 	}
-	return a.ledger.Prepare(predecessor, snapshot.Profile)
+	if err := ctx.Err(); err != nil {
+		return syd.BankBatch{}, err
+	}
+	batch, err := a.ledger.Prepare(predecessor, snapshot.Profile)
+	if err != nil {
+		return syd.BankBatch{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		a.ledger.Stop()
+		return syd.BankBatch{}, err
+	}
+	return batch, nil
 }
 
 func (a *liveAuthority) Close() error {

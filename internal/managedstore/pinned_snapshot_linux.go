@@ -3,6 +3,7 @@
 package managedstore
 
 import (
+	"context"
 	"errors"
 	"os"
 
@@ -28,10 +29,29 @@ func (p *PinnedSnapshot) Close() error {
 // both held directory objects in the same store transaction. Legacy records,
 // unsupported handles and stale objects are rejected; paths are never reopened.
 func (s *Store) OpenPinnedSnapshot(credential, projectID, name, expected string) (*PinnedSnapshot, error) {
+	return s.openPinnedSnapshot(nil, credential, projectID, name, expected)
+}
+
+// OpenPinnedSnapshotContext bounds lock waiting and rejects late snapshots;
+// synchronous filesystem calls remain subject to independent watchdog fail-stop.
+func (s *Store) OpenPinnedSnapshotContext(ctx context.Context, credential, projectID, name, expected string) (*PinnedSnapshot, error) {
+	if ctx == nil {
+		return nil, errors.New("snapshot context required")
+	}
+	return s.openPinnedSnapshot(ctx, credential, projectID, name, expected)
+}
+
+func (s *Store) openPinnedSnapshot(ctx context.Context, credential, projectID, name, expected string) (*PinnedSnapshot, error) {
 	if !validProjectID(projectID) || config.ProfileName(name) != nil || !validProjectID(expected) {
 		return nil, errors.New("invalid pinned snapshot selection")
 	}
-	lock, err := s.transaction(credential, false)
+	var lock *os.File
+	var err error
+	if ctx == nil {
+		lock, err = s.transaction(credential, false)
+	} else {
+		lock, err = s.transactionContext(ctx, credential)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +103,11 @@ func (s *Store) OpenPinnedSnapshot(credential, projectID, name, expected string)
 	}
 	if snapshot.Revision() != expected {
 		return nil, ErrConflict
+	}
+	if ctx != nil {
+		if err := authenticationContextErr(ctx); err != nil {
+			return nil, err
+		}
 	}
 	result := &PinnedSnapshot{Project: project, Policy: policy, Revision: snapshot.Revision(), Profile: snapshot.Bytes()}
 	project, policy = nil, nil

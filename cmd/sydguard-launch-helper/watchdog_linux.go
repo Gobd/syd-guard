@@ -81,6 +81,31 @@ func watchdogProcessAttributes() *syscall.SysProcAttr {
 // finish requests subtree kill/recovery, then waits for watchdog completion.
 // EOF has the same effect when the privileged parent dies unexpectedly.
 func (w *watchdog) finish() error {
+	return w.finishWithRequest(func() error {
+		_, err := w.guard.Write([]byte{'X'})
+		return err
+	})
+}
+
+// finishLive obtains the same cleanup receipt as the non-live protocol. A
+// missing receipt or watchdog failure keeps the slot held or quarantined.
+func (w *watchdog) finishLive(client *liveWatchClient) error {
+	if client == nil || client.fd != int(w.guard.Fd()) {
+		return errors.New("invalid live watchdog client")
+	}
+	return w.finishWithRequest(func() error {
+		now, err := monotonicNanoseconds()
+		if err != nil {
+			return err
+		}
+		if now > ^uint64(0)-uint64(10*time.Second) {
+			return errors.New("watchdog clock overflow")
+		}
+		return client.stop(now + uint64(10*time.Second))
+	})
+}
+
+func (w *watchdog) finishWithRequest(send func() error) error {
 	if w.crashed {
 		_ = w.guard.Close()
 		return errors.New("watchdog exited unexpectedly")
@@ -89,7 +114,7 @@ func (w *watchdog) finish() error {
 	if err := w.guard.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}
-	if _, err := w.guard.Write([]byte{'X'}); err != nil {
+	if err := send(); err != nil {
 		select {
 		case waitErr := <-w.done:
 			w.crashed = true
@@ -121,7 +146,11 @@ func (w *watchdog) finish() error {
 	}
 }
 
-func watchdogMain() error {
+func watchdogMain() error { return watchdogMainMode(false) }
+
+// A future live-only launch may call this fixed mode after all startup gates.
+// No CLI or privileged dispatcher currently enables it.
+func watchdogMainMode(live bool) error {
 	if os.Geteuid() != 0 || os.Getuid() != 0 {
 		return errors.New("watchdog requires root")
 	}
@@ -219,30 +248,43 @@ func watchdogMain() error {
 	}
 	// pidfd detects parent death even if a fork-in-progress briefly inherited
 	// the guard FD before its close-on-exec transition.
-	event, err := waitWatchdogEvent(parentFD, 3)
-	if err != nil {
-		return err
+	var cleanupStart, cleanupEnd, killStart, killEnd time.Time
+	var killErr, cleanupErr error
+	cleanup := func() error {
+		cleanupStart = time.Now()
+		cleanupErr = cleanupSlot(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
+			killStart = time.Now()
+			killErr = killCgroup(fd, timeout)
+			killEnd = time.Now()
+			return killErr
+		})
+		cleanupEnd = time.Now()
+		return nil // Preserve the protocol and cleanup outcomes separately.
 	}
-	cleanupStart := time.Now()
-	var killStart, killEnd time.Time
-	var killErr error
-	cleanupErr := cleanupSlot(baseFD, groupFD, slot, j, 0, func(fd int, timeout time.Duration) error {
-		killStart = time.Now()
-		killErr = killCgroup(fd, timeout)
-		killEnd = time.Now()
-		return killErr
-	})
-	cleanupEnd := time.Now()
+	var event watchdogEvent
+	var waitErr error
+	if live {
+		event, waitErr = serveLiveWatchdog(parentFD, 3, j.Nonce, defaultLiveWatchOps(), cleanup)
+	} else {
+		event, waitErr = waitWatchdogEvent(parentFD, 3)
+		if waitErr != nil {
+			return waitErr
+		}
+		_ = cleanup()
+	}
 	ackOK := false
 	if cleanupErr == nil {
 		// If the parent crashed this write may fail; cleanup has already completed.
+		if live {
+			_ = guard.SetWriteDeadline(time.Now().Add(time.Second))
+		}
 		_, err := guard.Write([]byte{'C'})
 		ackOK = err == nil
 	}
 	// Never emit diagnostics until the kill, cleanup and acknowledgement have
 	// been attempted; a blocked output pipe cannot delay the safety operation.
 	diagnostic(fmt.Sprintf("watchdog event_time=%s poll_count=%d pidfd_revents=%#x socket_revents=%#x cleanup_start=%s cleanup_end=%s cleanup_ok=%t kill_called=%t kill_start=%s kill_end=%s kill_ok=%t ack_ok=%t", event.at.Format(time.RFC3339Nano), event.count, uint16(event.pidfdRevents), uint16(event.socketRevents), cleanupStart.Format(time.RFC3339Nano), cleanupEnd.Format(time.RFC3339Nano), cleanupErr == nil, !killStart.IsZero(), killStart.Format(time.RFC3339Nano), killEnd.Format(time.RFC3339Nano), !killStart.IsZero() && killErr == nil, ackOK))
-	return cleanupErr
+	return errors.Join(waitErr, cleanupErr)
 }
 
 type watchdogEvent struct {

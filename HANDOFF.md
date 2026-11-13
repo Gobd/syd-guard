@@ -189,6 +189,13 @@ Latest source state (unmerged isolated worktrees):
   trustedbind BEFORERelease, exactordinarypeerUID derivedRootselection notcaller.
   These are proposalsONLY pending source/independentreview andactualRootfixture;
   currentRoot0endpointconstructor UNCHANGED/unreachable. No deploymentorReadyclaim.
+  Acceptedcoordinator/watchwire/transport/context source slice copiedMAIN afterworker
+  stoppedwithoutstartupedits; parentnativeGo/race/vet andLinuxARMbuild/vet PASS.
+  Diagnosticstartup report2d5e7919/root-live-startup.md mandatesstartup ipc/uid:0,
+  ipc/gid:0 immutableRootmessageauth (RootUID/GIDboth0), separateRootinodeowner vs
+  ordinarypeer identity, retainedruntimeexeFD compareeachconnection, SINGLEARM
+  beforeEngineSpawn withoriginalframe handedcoordinator(no2ndARM/newbudget).
+  Independentvariantdesignreviewca53b698 active; implementationstillblocked.
   No componentresult countedfullworkflowreadiness.
   No Rootcoordinator/transport/listenerdeployed. PREARM sequencing sourceonly proven;
   actualRootstartup mustARMACK BEFOREaccepted/engineIO andcompleteafterCLIRelease.

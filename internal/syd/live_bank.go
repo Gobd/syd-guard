@@ -247,5 +247,13 @@ func (l *BankLedger) Finish(receipt BankReceipt, acknowledged bool) error {
 	return nil
 }
 
+// Stop permanently quarantines the ledger, including failures before Prepare.
+func (l *BankLedger) Stop() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pending = nil
+	l.stopped = true
+}
+
 // InitialReceipt is the only accepted predecessor for the first update.
 func (l *BankLedger) InitialReceipt() BankReceipt { return BankReceipt{Binding: l.binding} }

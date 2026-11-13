@@ -40,7 +40,7 @@ func TestLiveSourceHasNoLauncherActivationOrListener(t *testing.T) {
 		path    string
 		blocked map[string]bool
 	}{
-		{filepath.Join(root, "cmd/sydguard-launch-helper/main_linux.go"), map[string]bool{"newLiveAuthority": true, "ReceiveOperator": true, "Exchange": true}},
+		{filepath.Join(root, "cmd/sydguard-launch-helper/main_linux.go"), map[string]bool{"newLiveAuthority": true, "newLiveCoordinator": true, "newLiveEngineEndpoint": true, "ReceiveOperator": true, "Exchange": true}},
 		{filepath.Join(root, "internal/managedlive/client_linux.go"), map[string]bool{"Listen": true, "ListenUnix": true, "ListenConfig": true, "Bind": true}},
 		{filepath.Join(root, "internal/managedlive/protocol.go"), map[string]bool{"Listen": true, "ListenUnix": true, "ListenConfig": true, "Bind": true}},
 	}

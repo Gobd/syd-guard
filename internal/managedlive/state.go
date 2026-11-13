@@ -32,8 +32,15 @@ type pending struct {
 	sequence     uint64
 }
 
+func ValidateStartup(binding Binding, ticket, initialID, revision string) error {
+	if !binding.valid() || !hexID(ticket) || !hexID(initialID) || !hexID(revision) {
+		return errors.New("invalid startup state")
+	}
+	return nil
+}
+
 func NewState(binding Binding, ticket, initialID, revision string, now time.Time) (*State, error) {
-	if !binding.valid() || !hexID(ticket) || !hexID(initialID) || !hexID(revision) || now.IsZero() {
+	if ValidateStartup(binding, ticket, initialID, revision) != nil || now.IsZero() {
 		return nil, errors.New("invalid startup state")
 	}
 	return &State{binding: binding, ticket: ticket, phase: "starting", current: BankReceipt{Binding: binding}, pending: &pending{id: initialID, revision: revision, sequence: 1}, used: map[string]bool{initialID: true}, deadline: now.Add(StartupTimeout)}, nil
@@ -74,16 +81,30 @@ func (s *State) Release(ready Receipt, now time.Time) error {
 // success any failure must stop the session. The watchdog must independently
 // ARM this exact id/sequence and acknowledge before saved bytes are opened.
 func (s *State) AcceptUpdate(m ApplySaved, now time.Time) (time.Time, error) {
+	return s.AcceptArmedUpdate(m, func() (time.Time, error) { return now, nil })
+}
+
+// AcceptArmedUpdate holds the state lock across validation, the trusted ARM
+// handshake and commit. The callback must return the original start time only
+// after the watchdog acknowledges this exact request; it must not access State.
+func (s *State) AcceptArmedUpdate(m ApplySaved, arm func() (time.Time, error)) (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := validate(&m); err != nil {
 		return time.Time{}, err
 	}
-	if s.phase != "running" || s.pending != nil || m.Binding != s.binding || m.Predecessor != s.current || s.used[m.RequestID] || now.IsZero() {
+	if s.phase != "running" || s.pending != nil || m.Binding != s.binding || m.Predecessor != s.current || s.used[m.RequestID] || arm == nil {
 		return time.Time{}, errors.New("stale, busy or duplicate update")
 	}
 	if len(s.used) >= MaxAcceptedOperations {
 		return time.Time{}, errors.New("session accepted-operation limit reached")
+	}
+	now, err := arm()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if now.IsZero() {
+		return time.Time{}, errors.New("invalid operation start")
 	}
 	s.used[m.RequestID] = true
 	s.pending = &pending{id: m.RequestID, revision: m.Revision, sequence: m.Sequence}
@@ -108,6 +129,15 @@ func (s *State) CompleteUpdate(id string, bank BankReceipt, ack bool, now time.T
 	s.deadline = time.Time{}
 	s.latest = Receipt{Version: Version, RequestID: id, Phase: "applied", EngineDigest: EngineDigest, Bank: bank}
 	return Applied{Version: Version, Kind: "applied", Receipt: s.latest}, nil
+}
+
+// Stop quarantines the state after an accepted or otherwise uncertain outcome.
+func (s *State) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phase = "stopped"
+	s.pending = nil
+	s.deadline = time.Time{}
 }
 
 // Status returns only the last completed receipt, never a pending update.

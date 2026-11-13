@@ -3,6 +3,7 @@ package managedlive
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -198,6 +199,38 @@ func TestEncodeRejectsTypedNil(t *testing.T) {
 		if err := WriteFrame(&b, v); err == nil || b.Len() != 0 {
 			t.Errorf("WriteFrame(%T) accepted nil or wrote bytes", v)
 		}
+	}
+}
+
+func TestStatePrevalidateBeforeArmedCommit(t *testing.T) {
+	now := time.Unix(100, 0)
+	b := testBinding()
+	s, err := NewState(b, id("1"), id("2"), id("3"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := BankReceipt{Binding: b, Sequence: 1, Revision: id("3")}
+	ready, err := s.CompleteInitial(id("2"), initial, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Release(ready.Receipt, now); err != nil {
+		t.Fatal(err)
+	}
+	m := testUpdate(initial)
+	called := false
+	arm := func() (time.Time, error) { called = true; return time.Time{}, errors.New("ARM failed") }
+	if _, err = s.AcceptArmedUpdate(*m, arm); err == nil || !called {
+		t.Fatal("ARM failure accepted")
+	}
+	phase, bank, deadline := s.Snapshot()
+	if phase != "running" || bank != initial || !deadline.IsZero() || s.pending != nil || s.used[m.RequestID] {
+		t.Fatal("ARM failure changed state")
+	}
+	m.Predecessor.Revision = id("f")
+	called = false
+	if _, err = s.AcceptArmedUpdate(*m, arm); err == nil || called {
+		t.Fatal("stale request reached ARM")
 	}
 }
 

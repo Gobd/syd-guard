@@ -193,26 +193,35 @@ func (s *Store) AuthenticateContext(ctx context.Context, credential string) erro
 	if ctx == nil {
 		return errors.New("authentication context required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := authenticationContextErr(ctx); err != nil {
-		return err
-	}
-	lock, err := s.openAuthenticatedLock(credential, false)
+	lock, err := s.transactionContext(ctx, credential)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Close() }()
-	if err := lockWithContext(ctx, int(lock.Fd())); err != nil {
-		return err
-	}
-	if err := authenticationContextErr(ctx); err != nil {
 		return err
 	}
 	if err := lock.Close(); err != nil {
 		return err
 	}
 	return authenticationContextErr(ctx)
+}
+
+func (s *Store) transactionContext(ctx context.Context, credential string) (*os.File, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := authenticationContextErr(ctx); err != nil {
+		return nil, err
+	}
+	lock, err := s.openAuthenticatedLock(credential, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockWithContext(ctx, int(lock.Fd())); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := authenticationContextErr(ctx); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return lock, nil
 }
 
 func authenticationContextErr(ctx context.Context) error {
