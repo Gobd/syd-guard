@@ -135,6 +135,10 @@ kill $srv
 check "allowed with --local-port" "tail -1 out10 | grep -q 200"
 check "blocked without it" "tail -1 out10b | grep -q 000"
 
+# Leave nothing behind: scratch projects and their trust records.
+for f in "$HOME"/.config/sydguard/trusted/*; do grep -q "$DIR" "$f" 2>/dev/null && rm -f "$f"; done
+rm -rf "$DIR" "$SECRET"
+
 echo
 echo "passed $pass, failed $failed"
 [ "$failed" -eq 0 ]

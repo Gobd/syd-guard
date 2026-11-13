@@ -62,9 +62,18 @@ export interface VM {
   state?: VMState;
 }
 
+export interface Machine {
+  name: string;
+  kind: "lima" | "local";
+  status: string;
+  agents: number;
+  version?: string;
+}
+
 export interface State {
   version: string;
   vms: VM[];
+  machines: Machine[];
   ownsGlobal: boolean;
   global?: RuleFile;
 }
@@ -103,10 +112,11 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const getState = () => call<State>("/api/state");
-export const edit = (
-  op: "allow" | "remove" | "dismiss" | "trust",
-  req: EditRequest,
-) => call<EditResult>(`/api/${op}`, req);
+export type Op = "allow" | "remove" | "dismiss" | "trust" | "forget";
+export const edit = (op: Op, req: EditRequest) =>
+  call<EditResult>(`/api/${op}`, req);
+export const vmAction = (name: string, action: "start" | "stop") =>
+  call<object>("/api/vm", { name, action });
 
 // Subscribe to "something changed" events; returns an unsubscribe function.
 export function onChange(fn: () => void): () => void {

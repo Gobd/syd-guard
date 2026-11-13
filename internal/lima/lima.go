@@ -173,6 +173,27 @@ func Run(o Options) error {
 	return syscall.Exec(limactl, argv, os.Environ())
 }
 
+// Outside runs a command in the VM *outside* the sandbox, at the same project
+// path (a login shell when args is empty): for logging in to agents, or for
+// trusted wrappers that then call sydguard inside the VM themselves.
+func Outside(o Options, args []string) error {
+	vm, err := Prepare(o)
+	if err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	argv := []string{"limactl", "shell"}
+	if guestCwd, err := guestPath(vm, cwd); err == nil {
+		argv = append(argv, "--workdir", guestCwd)
+	}
+	argv = append(argv, vm)
+	if len(args) > 0 {
+		argv = append(append(argv, "--"), args...)
+	}
+	limactl, _ := exec.LookPath("limactl")
+	return syscall.Exec(limactl, argv, os.Environ())
+}
+
 // Shell runs a guest command (doctor, setup) in the VM, replacing this process.
 func Shell(o Options, args ...string) error {
 	vm, err := Prepare(o)

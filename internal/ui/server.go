@@ -251,7 +251,14 @@ func (u *uiServer) routes() http.Handler {
 	mux.Handle("GET /assets/", http.FileServerFS(sub(dist, "dist")))
 	handle("GET /api/ping", func(*http.Request) (any, error) { return map[string]string{"version": system.Version()}, nil })
 	handle("GET /api/state", func(*http.Request) (any, error) { return u.state(), nil })
-	for _, op := range []string{"allow", "remove", "dismiss", "trust"} {
+	handle("POST /api/vm", func(r *http.Request) (any, error) {
+		var req struct{ Name, Action string }
+		if err := api.Decode(r, &req); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, vmAction(req.Name, req.Action, u.agentsIn(req.Name))
+	})
+	for _, op := range []string{"allow", "remove", "dismiss", "trust", "forget"} {
 		handle("POST /api/"+op, func(r *http.Request) (any, error) {
 			var req api.EditReq
 			if err := api.Decode(r, &req); err != nil {
@@ -360,15 +367,77 @@ func (u *uiServer) state() map[string]any {
 	}
 	wg.Wait()
 	sort.Slice(vms, func(i, j int) bool { return vms[i]["name"].(string) < vms[j]["name"].(string) })
-	out := map[string]any{"version": system.Version(), "vms": vms, "ownsGlobal": u.ownsGlob}
+	out := map[string]any{"version": system.Version(), "vms": vms, "ownsGlobal": u.ownsGlob, "machines": machines(vms)}
 	if u.ownsGlob {
 		out["global"] = u.store.View(system.GlobalRulesPath())
 	}
 	return out
 }
 
-// ensureUIServer starts the UI server in the background if needed. Returns
-// true when it was (re)started.
+// Machine is one place agents run: a Lima VM (running or not) or this host.
+type Machine struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`   // "lima" or "local"
+	Status  string `json:"status"` // Running, Stopped, …
+	Agents  int    `json:"agents"`
+	Version string `json:"version,omitempty"` // sydguard build in the VM
+}
+
+func machines(vms []map[string]any) []Machine {
+	agents := map[string]int{}
+	versions := map[string]string{}
+	for _, v := range vms {
+		st, _ := v["state"].(map[string]any)
+		if st == nil {
+			continue
+		}
+		name, _ := v["name"].(string)
+		if s, ok := st["sessions"].([]any); ok {
+			agents[name] = len(s)
+		}
+		versions[name], _ = st["version"].(string)
+	}
+	var out []Machine
+	if system.RunsSyd() {
+		host, _ := os.Hostname()
+		out = append(out, Machine{Name: host, Kind: "local", Status: "Running", Agents: agents[host], Version: versions[host]})
+	}
+	for _, li := range limaInstances() {
+		out = append(out, Machine{Name: li.Name, Kind: "lima", Status: li.Status, Agents: agents[li.Name], Version: versions[li.Name]})
+	}
+	return out
+}
+
+func (u *uiServer) agentsIn(vm string) int {
+	for _, m := range machines(u.state()["vms"].([]map[string]any)) {
+		if m.Name == vm {
+			return m.Agents
+		}
+	}
+	return 0
+}
+
+// vmAction starts or stops a Lima VM (refusing to stop one with agents running).
+func vmAction(name, action string, agents int) error {
+	known := false
+	for _, li := range limaInstances() {
+		known = known || li.Name == name
+	}
+	if !known {
+		return fmt.Errorf("no Lima VM %q", name)
+	}
+	switch action {
+	case "stop":
+		if agents > 0 {
+			return fmt.Errorf("%d agent(s) are running in %s; stop them first", agents, name)
+		}
+		return exec.Command("limactl", "stop", name).Run()
+	case "start":
+		return exec.Command("limactl", "start", "--tty=false", name).Run()
+	}
+	return fmt.Errorf("unknown action %q", action)
+}
+
 // EnsureServer starts the UI server in the background if needed.
 func EnsureServer() (bool, error) {
 	ping := func() string {

@@ -110,9 +110,20 @@ func writeRulesFile(path string, r Rules) ([]byte, error) {
 // Trust: the hash of the last content sydguard wrote or you accepted, per file.
 // The sandbox can't write rules files by path, and any change made another way
 // (hard link, editor, git pull, cloned repo) is Ignored until Trusted again.
+func trustDir() string {
+	dir := filepath.Join(system.ConfigDir(), "trusted")
+	// Earlier builds wrote "Trusted"; move it once.
+	if old := filepath.Join(system.ConfigDir(), "Trusted"); old != dir {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			_ = os.Rename(old, dir)
+		}
+	}
+	return dir
+}
+
 func trustPath(file string) string {
 	sum := sha256.Sum256([]byte(file))
-	return filepath.Join(system.ConfigDir(), "Trusted", hex.EncodeToString(sum[:12]))
+	return filepath.Join(trustDir(), hex.EncodeToString(sum[:12]))
 }
 
 func Trust(file string, data []byte) error {
@@ -130,8 +141,18 @@ func Trusted(file string, data []byte) bool {
 	return err == nil && strings.HasSuffix(strings.TrimSpace(string(b)), system.HashBytes(data))
 }
 
+// Forget drops a rules file from the known list (the file itself stays; using
+// it again asks for trust again if it changed).
+func Forget(file string) error {
+	err := os.Remove(trustPath(file))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 func KnownRulesFiles() []string {
-	files, _ := filepath.Glob(filepath.Join(system.ConfigDir(), "Trusted", "*"))
+	files, _ := filepath.Glob(filepath.Join(trustDir(), "*"))
 	var out []string
 	for _, f := range files {
 		if b, err := os.ReadFile(f); err == nil {
@@ -143,7 +164,7 @@ func KnownRulesFiles() []string {
 	return out
 }
 
-// Store caches Trusted rules in memory so the proxy and live updates never
+// Store caches trusted rules in memory so the proxy and live updates never
 // act on untrusted bytes. All writes go through it.
 type Store struct {
 	mu    sync.Mutex

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -106,6 +107,7 @@ func RunDaemon() error {
 		return err
 	}
 	_ = os.Chmod(system.DaemonSocket(), 0o600)
+	_ = os.WriteFile(filepath.Join(system.StateDir(), "daemon.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	d := &Daemon{sessions: map[string]*Session{}, cards: map[string]*Card{}, store: policy.NewStore(), events: api.NewBroadcaster()}
 	d.adoptSessions()
 	go d.reap()
@@ -201,6 +203,15 @@ func (d *Daemon) routes() http.Handler {
 			return nil, err
 		}
 		return map[string]any{"saved": req.File, "sessions": d.applyChange(req.File, before, after)}, nil
+	})
+	edit("POST /api/forget", func(req api.EditReq) (any, error) {
+		if err := system.SafePath(req.File); err != nil {
+			return nil, err
+		}
+		if len(d.sessionsFor(req.File)) > 0 {
+			return nil, errors.New("an agent is using these rules; stop it first")
+		}
+		return map[string]any{}, policy.Forget(req.File)
 	})
 	// When the UI runs on the VM host it owns the global rules and mirrors them here.
 	api.Handle(mux, "POST /api/global", func(r *http.Request) (any, error) {

@@ -62,7 +62,25 @@ func app() *cli.Command {
 			{Name: "ui", Usage: "open the approvals UI", Action: uiAction},
 			{Name: "doctor", Usage: "check the Syd engine, namespaces and daemon", Action: doctorAction},
 			{Name: "setup", Usage: "install the pinned Syd engine (here, or in the VM)", Action: setupAction},
+			{
+				Name: "vm", Usage: "run a command in the VM outside the sandbox, at this path (default: a shell)",
+				UsageText: "sydguard vm [-- command [args...]]", StopOnNthArg: &one, Action: vmAction,
+			},
 			{Name: "prepare", Usage: "get everything ready (VM, engine, daemon, UI) without running a command", Action: prepareAction},
+			{Name: "status", Usage: "show the UI, daemons and VMs (running? which build?)", Action: func(context.Context, *cli.Command) error {
+				return ui.Status()
+			}},
+			{
+				Name: "stop", Usage: "stop the UI and daemons (refuses while agents run)",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "force", Usage: "stop even with agents running"},
+					&cli.BoolFlag{Name: "vm", Usage: "also shut down the Lima VMs"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error { return ui.Stop(cmd.Bool("force"), cmd.Bool("vm")) },
+			},
+			{Name: "restart", Usage: "restart the UI and daemons with this build (agents keep running)", Action: func(context.Context, *cli.Command) error {
+				return ui.Restart()
+			}},
 			{Name: "version", Usage: "print the build hash", Action: func(context.Context, *cli.Command) error {
 				fmt.Println(system.Version())
 				return nil
@@ -74,6 +92,9 @@ func app() *cli.Command {
 					fmt.Println(map[bool]string{true: "started", false: "running"}[started])
 				}
 				return err
+			}},
+			{Name: "daemon-stop", Hidden: true, Action: func(context.Context, *cli.Command) error {
+				return guest.Call("POST", "/internal/quit", nil, nil)
 			}},
 			{Name: "engine-check", Hidden: true, Action: func(context.Context, *cli.Command) error {
 				_, err := guest.FindEngine()
@@ -148,6 +169,14 @@ func doctorAction(_ context.Context, cmd *cli.Command) error {
 		return cli.Exit("", 1)
 	}
 	return nil
+}
+
+func vmAction(_ context.Context, cmd *cli.Command) error {
+	o := limaOptions(cmd.Root())
+	if !lima.Use(o) {
+		return errors.New("no VM in use here: this machine runs agents directly (pass --vm to use one)")
+	}
+	return lima.Outside(o, cmd.Args().Slice())
 }
 
 func prepareAction(_ context.Context, cmd *cli.Command) error {

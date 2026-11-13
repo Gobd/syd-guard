@@ -7,11 +7,13 @@ import {
   type EditRequest,
   type FileView,
   getState,
+  type Op,
   type Kind,
   onChange,
   type RuleFile,
   short,
   type State,
+  vmAction,
 } from "./api";
 import * as s from "./styles.css";
 
@@ -28,10 +30,7 @@ const KIND_PILL: Record<string, keyof typeof s.pill> = {
   connect: "warn",
 };
 
-type Act = (
-  op: "allow" | "remove" | "dismiss" | "trust",
-  req: EditRequest,
-) => void;
+type Act = (op: Op, req: EditRequest) => void;
 
 export function App() {
   const [state, setState] = useState<State | null>(null);
@@ -72,6 +71,8 @@ export function App() {
     for (const c of vm.state?.cards ?? []) cards.push([vm.name, c]);
     for (const f of vm.state?.files ?? []) files.push([vm.name, f]);
   }
+  const active = files.filter(([, f]) => f.sessions.length > 0);
+  const idle = files.filter(([, f]) => f.sessions.length === 0);
   const pending = cards.filter(([, c]) => !c.learned);
   const learned = cards.filter(([, c]) => c.learned);
   document.title = `${pending.length ? `(${pending.length}) ` : ""}sydguard`;
@@ -123,10 +124,10 @@ export function App() {
         <h2 class={s.section}>Running agents</h2>
         <Sessions state={state} />
 
-        <h2 class={s.section}>Rules</h2>
+        <h2 class={s.section}>Rules for running agents</h2>
         {state?.ownsGlobal && state.global && (
           <RulesView
-            title="All projects (every VM)"
+            title="All projects"
             vm=""
             scope="global"
             file={state.global}
@@ -147,10 +148,16 @@ export function App() {
               />
             ),
         )}
-        {files.map(([vm, f]) => (
+        {active.length === 0 && (
+          <div class={s.empty}>
+            Rules for a project show here while an agent runs in it.
+          </div>
+        )}
+        {active.map(([vm, f]) => (
           <RulesView
             key={vm + f.path}
-            title={`${vm} › ${short(f.project) || "rules"}`}
+            title={projectTitle(f)}
+            where={vm}
             vm={vm}
             scope="rules"
             file={f}
@@ -158,7 +165,96 @@ export function App() {
             running={f.sessions.length}
           />
         ))}
+        {idle.length > 0 && (
+          <details>
+            <summary class={s.summary}>Other projects ({idle.length})</summary>
+            {idle.map(([vm, f]) => (
+              <RulesView
+                key={vm + f.path}
+                title={projectTitle(f)}
+                where={vm}
+                vm={vm}
+                scope="rules"
+                file={f}
+                act={act}
+                forget
+              />
+            ))}
+          </details>
+        )}
+
+        <h2 class={s.section}>Machines</h2>
+        <Machines state={state} onDone={() => void refresh()} />
       </main>
+    </>
+  );
+}
+
+// "myproject" or "myproject · review" for --rules review.
+function projectTitle(f: FileView): string {
+  const name = short(f.project).split("/").pop() || short(f.path);
+  const file = f.path.split("/").pop() ?? "";
+  return file === ".sydguard.json"
+    ? name
+    : `${name} · ${file.replace(/\.json$/, "")}`;
+}
+
+function Machines({
+  state,
+  onDone,
+}: {
+  state: State | null;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const run = (name: string, action: "start" | "stop") => {
+    setBusy(name);
+    setError("");
+    vmAction(name, action)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => {
+        setBusy("");
+        onDone();
+      });
+  };
+  const machines = state?.machines ?? [];
+  if (machines.length === 0)
+    return <div class={s.empty}>No machines found.</div>;
+  return (
+    <>
+      {error && <div class={s.warn}>{error}</div>}
+      {machines.map((m) => (
+        <div key={m.name} class={`${s.card} ${s.row}`}>
+          <span class={s.pill[m.status === "Running" ? "ok" : "plain"]}>
+            {m.status.toLowerCase()}
+          </span>
+          <strong>{m.name}</strong>
+          <span class={s.mute}>
+            {m.kind === "lima" ? "Lima VM" : "this machine"}
+            {m.status === "Running" &&
+              ` · ${m.agents} agent${m.agents === 1 ? "" : "s"} running`}
+          </span>
+          {m.kind === "lima" && (
+            <button
+              type="button"
+              disabled={
+                busy === m.name || (m.status === "Running" && m.agents > 0)
+              }
+              title={m.agents > 0 ? "stop its agents first" : ""}
+              onClick={() =>
+                run(m.name, m.status === "Running" ? "stop" : "start")
+              }
+            >
+              {busy === m.name
+                ? "…"
+                : m.status === "Running"
+                  ? "Stop VM"
+                  : "Start VM"}
+            </button>
+          )}
+        </div>
+      ))}
     </>
   );
 }
@@ -328,20 +424,35 @@ const BLOCKS: [Kind, string, string][] = [
 
 function RulesView(props: {
   title: string;
+  where?: string;
+  forget?: boolean;
   vm: string;
   scope: "rules" | "global";
   file: RuleFile | FileView;
   act: Act;
   running?: number;
 }) {
-  const { title, vm, scope, file: f, act, running } = props;
+  const { title, where, forget, vm, scope, file: f, act, running } = props;
   const baseline = "baseline" in f ? f.baseline : undefined;
   return (
     <div class={s.card}>
       <div class={s.row}>
         <strong>{title}</strong>
-        <span class={s.mute}>{short(f.path)}</span>
         {running ? <span class={s.pill.ok}>{running} running</span> : null}
+        <span class={s.mute}>
+          {where ? `${where} · ` : ""}
+          {short(f.path)}
+        </span>
+        {forget && (
+          <button
+            type="button"
+            class={s.link}
+            title="remove from this list (the file stays)"
+            onClick={() => act("forget", { vm, scope, file: f.path })}
+          >
+            forget
+          </button>
+        )}
       </div>
       {f.error && (
         <div class={s.warn}>⚠ {f.error} — using the last trusted rules</div>
