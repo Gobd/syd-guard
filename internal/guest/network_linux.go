@@ -201,7 +201,7 @@ func NetworkAttach(id string) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	if s.ID != id || !s.Network {
+	if s.ID != id || !s.Network || s.SydPID <= 0 {
 		return errors.New("not a network session")
 	}
 	f, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
@@ -215,7 +215,7 @@ func NetworkAttach(id string) error {
 	}
 	ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI)
 	if err := unix.IoctlIfreq(int(f.Fd()), unix.TUNSETIFF, ifr); err != nil {
-		return err
+		return fmt.Errorf("create session TUN: %w", err)
 	}
 	commands := [][]string{
 		{"link", "set", "lo", "up"},
@@ -226,7 +226,8 @@ func NetworkAttach(id string) error {
 		{"-6", "route", "replace", "default", "dev", "sg0"},
 	}
 	for _, args := range commands {
-		if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
+		cmd := exec.Command("ip", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("ip %v: %w: %s", args, err, out)
 		}
 	}

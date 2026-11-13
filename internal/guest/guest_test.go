@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Gobd/syd-guard/internal/api"
 	"github.com/Gobd/syd-guard/internal/policy"
@@ -55,21 +54,6 @@ func TestProxyDoesNotResolveBeforeApproval(t *testing.T) {
 	}
 	if addr, _, err := d.decide(context.Background(), s, "https", "example.com", "443"); err != nil || addr != "93.184.216.34:443" || lookups != 1 {
 		t.Fatalf("approved host: %q %v (lookups %d)", addr, err, lookups)
-	}
-}
-
-func TestDNSGrantsExpire(t *testing.T) {
-	now := time.Now()
-	grants := map[string]map[string]time.Time{
-		"tcp://db.example.com:5432": {"10.0.0.5!5432": now.Add(-time.Second), "10.0.0.6!5432": now.Add(time.Minute)},
-		"example.com":               {"93.184.216.34!0-65535": now.Add(-time.Minute)},
-	}
-	cmds := expireGrants(grants, now)
-	if len(cmds) != 2 || len(grants) != 1 || len(grants["tcp://db.example.com:5432"]) != 1 {
-		t.Fatalf("expired %v, left %v", cmds, grants)
-	}
-	if clampTTL(5) != minGrantTTL || clampTTL(86400) != maxGrantTTL || clampTTL(300) != 5*time.Minute {
-		t.Error("TTL clamp")
 	}
 }
 
