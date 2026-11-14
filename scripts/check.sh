@@ -6,6 +6,12 @@ cd "$(dirname "$0")/.."
 for tool in go gofumpt golangci-lint shellcheck bun; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
 done
+# Native lint/fmt/check currently require canary. Stable Bun treats these as
+# package scripts and recursively invokes them instead of running native tools.
+case "$(bun --revision)" in
+  *canary*) ;;
+  *) echo "Bun canary is required (bun upgrade --canary); stable Bun cannot run these checks" >&2; exit 1 ;;
+esac
 fix=0
 case "${1:-}" in
   --fix) fix=1 ;;
