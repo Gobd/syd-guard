@@ -108,6 +108,9 @@ func Normalize(kind, pattern string) (string, error) {
 		}
 	case "ignore":
 		pattern = system.ExpandHome(pattern)
+		if strings.HasPrefix(pattern, "/") {
+			return Normalize("read", pattern)
+		}
 	default:
 		return "", fmt.Errorf("unknown rule kind %q", kind)
 	}
@@ -269,7 +272,12 @@ func Overlaps(pattern, x string) bool {
 
 // Protected paths are always denied (and re-denied in every live update).
 // NoAccess: no read or write. NoWrite: readable, never modifiable.
-type Protection struct{ NoAccess, NoWrite []string }
+type Protection struct {
+	NoAccess, NoWrite []string
+	// Protect directory entries/pointer files without making their children
+	// read-only (Git still needs to update refs, objects and the index).
+	NoWriteExact []string
+}
 
 func ProtectedFor(project string, rulesFiles ...string) Protection {
 	h := system.Home()
@@ -286,7 +294,8 @@ func ProtectedFor(project string, rulesFiles ...string) Protection {
 	}
 	if project != "" {
 		p.NoWrite = append(p.NoWrite, filepath.Join(project, DefaultRulesName), filepath.Join(project, DefaultRulesName+".tmp"),
-			filepath.Join(project, RulesDirName), filepath.Join(project, ".git", "hooks"), filepath.Join(project, ".git", "config"))
+			filepath.Join(project, RulesDirName))
+		p = protectGit(p, project)
 	}
 	for _, f := range rulesFiles {
 		if f != "" {
@@ -306,6 +315,11 @@ func (p Protection) Check(kind, pattern string) error {
 		}
 	}
 	if kind == "write" {
+		for _, x := range p.NoWriteExact {
+			if MatchPath(pattern, x) {
+				return fmt.Errorf("%s overlaps write-protected entry %s", pattern, x)
+			}
+		}
 		for _, x := range p.NoWrite {
 			if Overlaps(pattern, x) {
 				return fmt.Errorf("%s Overlaps write-protected %s", pattern, x)
@@ -317,6 +331,9 @@ func (p Protection) Check(kind, pattern string) error {
 
 func (p Protection) Commands() []string {
 	var lines []string
+	for _, x := range p.NoWriteExact {
+		lines = append(lines, "deny/"+ModifyCaps+"+"+x)
+	}
 	for _, x := range p.NoAccess {
 		lines = append(lines, "deny/"+WriteCaps+"+"+x, "deny/"+WriteCaps+"+"+x+"/***")
 	}
@@ -367,7 +384,7 @@ const (
 )
 
 // SydCommands turns a rule into the Syd commands that grant (op "+") or
-// revoke (op "-") it. Hosts and ignores are enforced by sydguard, not Syd.
+// revoke (op "-") it. Host rules and non-path ignores are enforced by sydguard.
 func SydCommands(kind, pattern, op string) []string {
 	switch kind {
 	case "read":
@@ -376,8 +393,27 @@ func SydCommands(kind, pattern, op string) []string {
 		return []string{"allow/" + WriteCaps + op + pattern}
 	case "connect":
 		return []string{"allow/net/connect" + op + pattern}
+	case "ignore":
+		if strings.HasPrefix(pattern, "/") {
+			return []string{"deny/" + WriteCaps + op + pattern}
+		}
 	}
 	return nil
+}
+
+// PathDenies must follow every grant, at startup and in atomic live updates.
+// Reapplying both scopes also preserves a deny when its duplicate is removed
+// from just one rules file.
+func PathDenies(rules ...Rules) []string {
+	var lines []string
+	for _, r := range rules {
+		for _, p := range r.Ignore {
+			if n, err := Normalize("ignore", p); err == nil {
+				lines = append(lines, SydCommands("ignore", n, "+")...)
+			}
+		}
+	}
+	return lines
 }
 
 // Baseline: what every session gets without any rules. Shown in the UI.
@@ -525,6 +561,7 @@ func CompileProfile(in ProfileInput) (string, error) {
 		mounted = append(mounted, o.Target)
 	}
 	lines = append(lines, OverlayGuards(in.OverlayRoots, in.OverlayNames, mounted)...)
+	lines = append(lines, PathDenies(in.Rules...)...)
 	lines = append(lines, in.Protect.Commands()...)
 	lines = append(lines, "ipc:"+in.IPC, "lock:ipc")
 	return strings.Join(lines, "\n") + "\n", nil
@@ -587,6 +624,9 @@ func HostOf(target string) string {
 func Ignored(r []Rules, kind, target string) bool {
 	for _, rules := range r {
 		for _, p := range rules.Ignore {
+			if n, err := Normalize("ignore", p); err == nil {
+				p = n
+			}
 			if kind == "hosts" {
 				host := HostOf(target)
 				if h, err := ParseHostRule(p); err == nil && (h.Host == host || h.Host == "*" || (strings.HasPrefix(h.Host, "*.") && strings.HasSuffix(host, h.Host[1:]))) {

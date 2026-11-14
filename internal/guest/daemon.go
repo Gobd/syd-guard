@@ -594,6 +594,7 @@ func (d *Daemon) withGuards(s *Session, cmds []string) []string {
 	mounted := slices.Clone(s.Overlays)
 	d.mu.Unlock()
 	lines := append(slices.Clone(cmds), policy.OverlayGuards(s.OverlayRoots, s.OverlayNames, mounted)...)
+	lines = append(lines, policy.PathDenies(d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile))...)
 	return append(lines, policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
 }
 
@@ -739,6 +740,7 @@ func (d *Daemon) target(req api.EditReq) (string, policy.Protection, error) {
 		for _, s := range d.sessionsFor("") {
 			p := policy.ProtectedFor(s.Project, s.RulesFile)
 			prot.NoWrite = append(prot.NoWrite, p.NoWrite...)
+			prot.NoWriteExact = append(prot.NoWriteExact, p.NoWriteExact...)
 		}
 		return system.GlobalRulesPath(), prot, nil
 	}

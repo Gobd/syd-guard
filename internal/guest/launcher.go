@@ -200,8 +200,9 @@ func Run(o RunOptions) (int, error) {
 	for k := range env {
 		s.EnvNames = append(s.EnvNames, k)
 	}
-	for _, k := range o.PassEnv {
-		if !validEnvName(k) {
+	passEnv := append(slices.Clone(cfg.PassEnv), o.PassEnv...)
+	for _, k := range passEnv {
+		if !config.ValidPassEnv(k) {
 			return 1, fmt.Errorf("bad --pass-env name %q", k)
 		}
 		s.EnvNames = append(s.EnvNames, k)
@@ -234,7 +235,12 @@ func Run(o RunOptions) (int, error) {
 	protectNetworkCommand(cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{logW} // fd 3; Syd closes it before running the agent
-	cmd.Env = append(os.Environ(), "SYD_LOG_FD=3", "SYDGUARD=1", "SG_BROKER="+networkBroker(reg.ProxyPort))
+	var removed []string
+	cmd.Env, removed = config.FilterAgentEnv(os.Environ(), passEnv, env)
+	if len(removed) > 0 {
+		fmt.Fprintf(os.Stderr, "sydguard: withheld inherited credentials: %s (use --pass-env NAME or config passEnv/env to opt in; explicit values are visible to the agent)\n", strings.Join(removed, ", "))
+	}
+	cmd.Env = append(cmd.Env, "SYD_LOG_FD=3", "SYDGUARD=1", "SG_BROKER="+networkBroker(reg.ProxyPort))
 	// Transparent networking must not inherit the operator's proxy routing.
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GLOBAL_AGENT_HTTP_PROXY", "NO_PROXY"} {
 		cmd.Env = append(cmd.Env, k+"=", strings.ToLower(k)+"=")
@@ -422,16 +428,4 @@ func IPCLoad(ipc, batch string) error {
 	}
 	defer func() { _ = f.Close() }()
 	return LoadFD(ipc, f)
-}
-
-func validEnvName(k string) bool {
-	if k == "" || (k[0] >= '0' && k[0] <= '9') {
-		return false
-	}
-	for _, c := range k {
-		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
 }

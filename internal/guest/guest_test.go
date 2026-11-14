@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Gobd/syd-guard/internal/api"
+	"github.com/Gobd/syd-guard/internal/config"
 	"github.com/Gobd/syd-guard/internal/policy"
 )
 
@@ -73,7 +74,7 @@ func TestTransparentWebIdentity(t *testing.T) {
 		t.Fatalf("matching TLS: %q %q %v", scheme, name, err)
 	}
 	if _, _, _, err := sniffWeb(helloFor(t, "evil.example"), "github.com", "443"); err == nil {
-		t.Fatal("domain fronting allowed")
+		t.Fatal("mismatched TLS SNI allowed")
 	}
 	for _, tc := range []struct {
 		input, port, scheme string
@@ -97,8 +98,8 @@ func TestTransparentWebIdentity(t *testing.T) {
 
 func TestValidEnvName(t *testing.T) {
 	for name, want := range map[string]bool{"ANTHROPIC_BASE_URL": true, "a1": true, "": false, "1A": false, "A=B": false, "A B": false, "A*": false} {
-		if validEnvName(name) != want {
-			t.Errorf("validEnvName(%q) != %v", name, want)
+		if config.ValidPassEnv(name) != want {
+			t.Errorf("ValidPassEnv(%q) != %v", name, want)
 		}
 	}
 }

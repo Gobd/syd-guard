@@ -41,6 +41,21 @@ virtiofsd needs root and doesn't work with rootless Lima); guest kernels need
 `CONFIG_VIRTIO_FS`, standard on current Ubuntu images. Both share `~/Developer`
 writable. Narrow the YAML mounts if you want less host data exposed.
 
+## Credentials without accidental inheritance
+
+Credential-shaped inherited environment variables are withheld by default. To
+intentionally expose one to agents, add `"passEnv": ["ANTHROPIC_API_KEY"]` to
+machine config, or use the existing `env` mapping with a scoped `file:` secret.
+With Lima, config `passEnv` also forwards named host variables through protected
+VM config; per-run `--pass-env NAME` only retains the execution machine's variable.
+These are explicit grants: the agent sees the real value, not a placeholder.
+See [environment and project secrets](../README.md#environment-and-project-secrets).
+
+To exclude project secret files, use absolute path patterns in `ignore` (for
+example `/work/projects/myrepo/.env` and `/work/projects/myrepo/.env.*`). Path
+ignores now enforce read/write denial even inside a writable project; they are
+not merely notification filters. No `.env` files are hidden automatically.
+
 ## Optional Landlock: multiple roots, one fixed ceiling
 
 Landlock is **off by default**. It is available with either backend, including

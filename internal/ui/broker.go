@@ -25,9 +25,10 @@ import (
 // The host half of brokered commands. This process alone decides what runs:
 // global commands come from this machine's config; project commands come
 // from the project's rules file but must be approved here once per
-// definition — so even a compromised VM can't make the host run anything you
-// haven't defined or approved. Commands run in the project directory with
-// your normal environment and credentials, git hooks disabled.
+// definition. This validates argv, not everything the selected program might
+// do with project data. Commands run in the project directory with the host's
+// credentials; repository configuration and executable project files still
+// belong to that command's trust boundary.
 
 const (
 	runTimeout = 10 * time.Minute
@@ -279,12 +280,7 @@ func (u *uiServer) execute(b *backend, j guest.Job, argv []string, stdin string)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	// git (directly or via gh) never runs repository hooks or fsmonitor here:
-	// the agent can edit those files.
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
-		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
-		"GIT_TERMINAL_PROMPT=0")
+	cmd.Env = brokerEnvironment()
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -298,6 +294,26 @@ func (u *uiServer) execute(b *backend, j guest.Job, argv []string, stdin string)
 		res.Exit, res.Error = 1, err.Error()
 	}
 	return res
+}
+
+// brokerEnvironment applies to Git invoked directly and by tools such as gh.
+// Keep the operator's explicit SSH setup, but never take an SSH executable from
+// repository-local core.sshCommand. Restrict transports to normal HTTPS/SSH:
+// ext/custom helpers and local pushes can execute programs outside this broker.
+// This is defense in depth, not a sandbox for arbitrary configured commands.
+func brokerEnvironment() []string {
+	ssh := os.Getenv("GIT_SSH_COMMAND")
+	if ssh == "" {
+		ssh = "ssh"
+		if path := os.Getenv("GIT_SSH"); path != "" {
+			ssh = "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+		}
+	}
+	return append(os.Environ(), "GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
+		"GIT_SSH_COMMAND="+ssh, "GIT_ALLOW_PROTOCOL=https:ssh",
+		"GIT_TERMINAL_PROMPT=0")
 }
 
 type capped struct{ bytes.Buffer }
