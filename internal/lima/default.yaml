@@ -1,0 +1,31 @@
+# sydguard's built-in macOS Lima VM, used when the VM doesn't exist and no
+# --lima file is given. Linux hosts use default-linux.yaml. Generic on purpose; see examples/lima/ for a fuller setup.
+# sydguard installs its Syd engine on first use (`sydguard setup`).
+vmType: vz
+mountType: virtiofs
+base: template:ubuntu-lts
+cpus: 4
+memory: 8GiB
+disk: 60GiB
+
+# Mounted at the SAME path as on the Mac, so project paths (and rules files)
+# are identical on both sides. Only ~/Developer: not your whole home.
+mounts:
+  - location: ~/Developer
+    writable: true
+
+# Guest loopback ports appear on the Mac's loopback (dev servers, OAuth callbacks).
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 65535]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 65535]
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config gperf iproute2

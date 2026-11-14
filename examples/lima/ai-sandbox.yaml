@@ -1,0 +1,124 @@
+# Full AI coding workspace (Ubuntu 24.04, VZ/virtiofs). A starting point:
+# copy it, adjust sizes and tools, then
+#   sydguard --lima examples/lima/ai-sandbox.yaml -- pi   (or set "lima" in config.json)
+# (the VM is named after the file: ai-sandbox). sydguard installs its Syd
+# engine on first use. Tool versions resolve at provisioning time.
+vmType: vz
+mountType: virtiofs
+images:
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+    arch: x86_64
+
+cpus: 6
+memory: 24GiB
+disk: 80GiB
+
+# Same path as on the Mac. Deliberately NOT ~/.ssh, ~/.aws, shell configs or
+# your whole home. Narrow this if ~/Developer holds unrelated secrets.
+mounts:
+  - location: ~/Developer
+    writable: true
+
+# Guest loopback ports appear on the Mac's loopback (OAuth/login callbacks,
+# dev servers). Bound to Mac loopback only, not the LAN.
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPortRange: [1024, 65535]
+    hostIP: 127.0.0.1
+    hostPortRange: [1024, 65535]
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        ca-certificates curl git gh jq zsh strace socat \
+        build-essential pkg-config gperf make unzip zip xz-utils tmux rsync \
+        ripgrep zoxide fd-find fzf bat direnv shellcheck git-lfs sqlite3 \
+        python3 xvfb libgbm1 libnss3 libasound2t64 libatk-bridge2.0-0 libgtk-3-0t64
+
+      # Latest stable Go for this architecture, SHA256-verified.
+      case "$(uname -m)" in
+        aarch64) arch=arm64 ;;
+        x86_64) arch=amd64 ;;
+        *) echo 'Unsupported architecture' >&2; exit 1 ;;
+      esac
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      curl -fsSL 'https://go.dev/dl/?mode=json' -o "$tmp/releases.json"
+      file="$(jq -er --arg arch "$arch" \
+        '[.[] | select(.stable) | .files[] | select(.os == "linux" and .arch == $arch and .kind == "archive")][0].filename' \
+        "$tmp/releases.json")"
+      sha="$(jq -er --arg file "$file" '.[] | .files[] | select(.filename == $file) | .sha256' "$tmp/releases.json")"
+      curl -fsSL "https://go.dev/dl/$file" -o "$tmp/go.tar.gz"
+      printf '%s  %s\n' "$sha" "$tmp/go.tar.gz" | sha256sum -c -
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf "$tmp/go.tar.gz"
+      ln -sf /usr/local/go/bin/go /usr/local/bin/go
+      ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+  - mode: user
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export SHELL=/bin/zsh
+      export PNPM_HOME="$HOME/.local/share/pnpm"
+      export PATH="$HOME/.local/bin:$PNPM_HOME:$PNPM_HOME/bin:$HOME/.bun/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+      mkdir -p "$HOME/.local/bin" "$HOME/.config/ai-sandbox"
+      sudo chsh -s /bin/zsh "$(id -un)"
+
+      # VM-owned shell configuration; never symlink macOS dotfiles/history.
+      cat > "$HOME/.config/ai-sandbox/env.sh" <<'ENV'
+      export PNPM_HOME="$HOME/.local/share/pnpm"
+      export PATH="$HOME/.local/bin:$PNPM_HOME:$PNPM_HOME/bin:$HOME/.bun/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+      ENV
+      for rc in "$HOME/.profile" "$HOME/.zshrc"; do
+        touch "$rc"
+        line='. "$HOME/.config/ai-sandbox/env.sh"'
+        grep -Fqx "$line" "$rc" || printf '\n%s\n' "$line" >> "$rc"
+      done
+
+      # Official installers, downloaded first so curl errors abort provisioning.
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      curl -fsSL https://get.pnpm.io/install.sh -o "$tmp/pnpm.sh"
+      sh "$tmp/pnpm.sh"
+      pnpm env use --global lts
+      pnpm add -g npm@latest # pnpm's Node ships without npm; some installers need it
+
+      # Browser automation (browsers live in the VM, not the mounted tree).
+      pnpm add -g playwright@latest
+      playwright install --with-deps
+
+      curl -fsSL https://bun.sh/install -o "$tmp/bun.sh" && bash "$tmp/bun.sh"
+      curl -fsSL https://astral.sh/uv/install.sh -o "$tmp/uv.sh" && sh "$tmp/uv.sh"
+      curl -fsSL https://claude.ai/install.sh -o "$tmp/claude.sh" && bash "$tmp/claude.sh" latest
+      curl -fsSL https://chatgpt.com/codex/install.sh -o "$tmp/codex.sh" && sh "$tmp/codex.sh" </dev/null
+      curl -fsSL https://pi.dev/install.sh -o "$tmp/pi.sh" && sh "$tmp/pi.sh" </dev/null
+      go install mvdan.cc/gofumpt@latest
+      go install github.com/google/yamlfmt/cmd/yamlfmt@latest
+      go install github.com/mikefarah/yq/v4@latest
+      curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh -o "$tmp/golangci.sh"
+      sh "$tmp/golangci.sh" -b "$HOME/.local/bin"
+      ln -sf /usr/bin/fdfind "$HOME/.local/bin/fd"
+      ln -sf /usr/bin/batcat "$HOME/.local/bin/bat"
+      grep -Fq 'zoxide init zsh' "$HOME/.zshrc" || printf '\neval "$(zoxide init zsh)"\n' >> "$HOME/.zshrc"
+
+      # Headless browser handoff: tools that "open a browser" (OAuth logins)
+      # print the URL instead; open it on the Mac.
+      cat > "$HOME/.local/bin/xdg-open" <<'BROWSER'
+      #!/usr/bin/env sh
+      printf '\nOpen this URL in your Mac browser:\n%s\n\n' "$1" >&2
+      BROWSER
+      chmod +x "$HOME/.local/bin/xdg-open"
+
+      # Optional personal tools: put extra provisioning in a script inside the
+      # mounted tree and it runs here, e.g. building a private CLI from source.
+      extra="$HOME/Developer/.sydguard-provision.sh"
+      [ -f "/Users/$USER/Developer/.sydguard-provision.sh" ] && extra="/Users/$USER/Developer/.sydguard-provision.sh"
+      if [ -f "$extra" ]; then bash "$extra"; fi
