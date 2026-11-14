@@ -126,6 +126,15 @@ func Run(o RunOptions) (int, error) {
 	if len(o.Args) == 0 {
 		return 2, errors.New("usage: sydguard [--learn] [--rules NAME|FILE] -- command [args...]")
 	}
+	argv := slices.Clone(o.Args)
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return 1, fmt.Errorf("command %q is not executable on this machine; install it here or choose another command: %w", argv[0], err)
+	}
+	argv[0], err = filepath.Abs(path) // Syd's PATH search trips over hidden dirs
+	if err != nil {
+		return 1, err
+	}
 	engine, err := FindEngine()
 	if err != nil {
 		return 1, err
@@ -163,16 +172,6 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	localPorts := append(slices.Clone(o.LocalPorts), cfg.LocalPorts...)
-	if _, err := EnsureDaemon(); err != nil {
-		return 1, err
-	}
-	if o.OnReady != nil {
-		o.OnReady()
-	}
-	argv := append([]string(nil), o.Args...)
-	if p, err := exec.LookPath(argv[0]); err == nil {
-		argv[0], _ = filepath.Abs(p) // Syd's own PATH search trips over hidden dirs
-	}
 	var reg struct {
 		ID        string
 		Profile   string
@@ -206,6 +205,13 @@ func Run(o RunOptions) (int, error) {
 			return 1, fmt.Errorf("bad --pass-env name %q", k)
 		}
 		s.EnvNames = append(s.EnvNames, k)
+	}
+	// Validate the launch before starting background services or opening a UI.
+	if _, err := EnsureDaemon(); err != nil {
+		return 1, err
+	}
+	if o.OnReady != nil {
+		o.OnReady()
 	}
 	if err := Call("POST", "/internal/session", s, &reg); err != nil {
 		return 1, err

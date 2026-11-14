@@ -62,6 +62,27 @@ Background processes: the **UI server** runs on the machine where you type
 `sydguard` (started on demand); each machine that runs agents has a **daemon**
 (per VM, started on demand). Both restart themselves when the binary changes.
 
+### Terminal tabs and SSH
+
+Use the same persistent VM from multiple host terminal tabs:
+
+```sh
+# Tab 1
+cd ~/Developer/myproject && sydguard -- claude
+# Tab 2
+cd ~/Developer/myproject && sydguard -- pi
+```
+
+Each invocation gets a separate sandbox session, not a new VM. Project files
+and the default rules file are shared: **Save & allow** affects every session
+using that rules file, now and later. Use `--rules claude` / `--rules pi` if you
+want separate approval policies; this does not isolate their shared files.
+
+`sydguard vm` (or an ordinary SSH login) opens a **trusted, unsandboxed shell**.
+Inside the VM, `cd` to the project and run `sydguard --backend native -- claude`.
+Do the same in each new tab: a new SSH shell does not automatically join another
+tab's sandbox. Keep `sydguard ui` running on the host for Lima approvals.
+
 ## Config
 
 `~/.config/sydguard/config.json` on the machine you run `sydguard` on (the sandbox
