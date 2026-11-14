@@ -121,7 +121,7 @@ export function App() {
           <div class={s.empty}>
             {sessionCount > 0
               ? "Nothing blocked right now."
-              : "No agents running. Start one with: sydguard -- claude (or --learn for a first run)."}
+              : "No agents running. Start one with: sydguard -- claude. Use another terminal tab for another session."}
           </div>
         )}
 
@@ -521,14 +521,19 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
                 ["rules", "This project"],
                 ["global", "All projects"],
               ]}
-              title={`this project = ${base(c.rulesFile)}`}
+              title={
+                scope === "global"
+                  ? "Saved for all projects, including future sessions."
+                  : `Saved to ${base(c.rulesFile)}; shared by every current and future session using that rules file.`
+              }
             />
             <button
               type="button"
               class={s.primary}
+              title="Save this grant and apply it to running sessions in the selected scope. Denied file operations must be retried."
               onClick={() => act("allow", { ...req, kind, pattern })}
             >
-              Allow
+              Save & allow
             </button>
             <button
               type="button"
@@ -539,7 +544,7 @@ function CardView({ vm, card: c, act }: { vm: string; card: Card; act: Act }) {
             <button
               type="button"
               class={s.link}
-              title="deny and never ask again"
+              title="Save a deny rule and stop asking. Remove the rule under Always deny to permit access again."
               onClick={() =>
                 act("allow", { ...req, kind: "ignore", pattern: denyPattern })
               }

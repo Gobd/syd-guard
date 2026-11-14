@@ -327,7 +327,7 @@ func RemoveRule(kind, pattern string) func(*Rules) error {
 // DiffCommands returns the Syd commands that turn rule set a into b.
 func DiffCommands(a, b Rules) []string {
 	var out []string
-	for _, k := range []string{"read", "write", "connect"} {
+	for _, k := range []string{"read", "write", "connect", "ignore"} {
 		old, cur := map[string]bool{}, map[string]bool{}
 		for _, p := range *a.List(k) {
 			old[p] = true

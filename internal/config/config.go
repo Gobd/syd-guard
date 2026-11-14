@@ -23,6 +23,7 @@ type Config struct {
 	Lima       string            `json:"lima,omitempty"`       // Lima file to create it from
 	LocalPorts []int             `json:"localPorts,omitempty"` // like --local-port, for every run
 	Env        map[string]string `json:"env,omitempty"`        // NAME: "value" or "file:PATH" (secret file)
+	PassEnv    []string          `json:"passEnv,omitempty"`    // explicit inherited variables, including credentials
 	Overlays   []string          `json:"keepOnVM,omitempty"`   // folders kept on the VM disk, not the project (node_modules…)
 	// Commands agents may ask to run on this machine (`sydguard cmd NAME`),
 	// for every project. Per-project ones live in rules files.
@@ -66,8 +67,13 @@ func (c Config) validate() error {
 			return fmt.Errorf("%s: bad local port %d", Path(), p)
 		}
 	}
+	for _, k := range c.PassEnv {
+		if !ValidPassEnv(k) {
+			return fmt.Errorf("%s: bad passEnv name %q", Path(), k)
+		}
+	}
 	for k := range c.Env {
-		if !envName.MatchString(k) || strings.HasPrefix(k, "SYD_") {
+		if !ValidPassEnv(k) {
 			return fmt.Errorf("%s: bad env name %q", Path(), k)
 		}
 	}
@@ -132,5 +138,17 @@ func (c Config) ForGuest() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Backend: "native", Landlock: c.Landlock, LocalPorts: c.LocalPorts, Env: env, Overlays: c.Overlays}, nil
+	for _, name := range c.PassEnv {
+		if !ValidPassEnv(name) {
+			return Config{}, fmt.Errorf("bad passEnv name %q", name)
+		}
+		// Transfer explicitly selected host variables through the protected
+		// config stream, never argv. Configured env values take precedence.
+		if _, configured := env[name]; !configured {
+			if value, ok := os.LookupEnv(name); ok {
+				env[name] = value
+			}
+		}
+	}
+	return Config{Backend: "native", Landlock: c.Landlock, LocalPorts: c.LocalPorts, Env: env, PassEnv: c.PassEnv, Overlays: c.Overlays}, nil
 }

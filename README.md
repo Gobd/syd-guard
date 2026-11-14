@@ -10,8 +10,7 @@ within it still work, but widening that ceiling requires a new session.
 ```sh
 make install                             # sydguard + the Linux binaries it puts into VMs
 cd ~/Developer/myproject
-sydguard --learn -- claude               # first run: allow everything, save what it used
-sydguard -- claude                       # then: enforce the rules file, approve the rest
+sydguard -- claude                       # enforce from the first run; approve what it needs
 sydguard ui                              # open the approvals UI (http://127.0.0.1:7878)
 ```
 
@@ -43,7 +42,7 @@ sydguard [flags] [--] command [args...]
   --backend TYPE      lima (default outside guests) or native (explicit Linux opt-in)
   --landlock[=BOOL]   enable/disable a fixed filesystem ceiling; otherwise use config
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
-  --pass-env NAME     keep this environment variable for the agent (Syd strips some by default)
+  --pass-env NAME     explicitly pass this variable, including a credential (visible to the agent)
   --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
   --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
 sydguard ui                       open the approvals UI (starts it if needed)
@@ -62,6 +61,27 @@ sydguard cmd ...                  (inside the sandbox) host commands, see below
 Background processes: the **UI server** runs on the machine where you type
 `sydguard` (started on demand); each machine that runs agents has a **daemon**
 (per VM, started on demand). Both restart themselves when the binary changes.
+
+### Terminal tabs and SSH
+
+Use the same persistent VM from multiple host terminal tabs:
+
+```sh
+# Tab 1
+cd ~/Developer/myproject && sydguard -- claude
+# Tab 2
+cd ~/Developer/myproject && sydguard -- pi
+```
+
+Each invocation gets a separate sandbox session, not a new VM. Project files
+and the default rules file are shared: **Save & allow** affects every session
+using that rules file, now and later. Use `--rules claude` / `--rules pi` if you
+want separate approval policies; this does not isolate their shared files.
+
+`sydguard vm` (or an ordinary SSH login) opens a **trusted, unsandboxed shell**.
+Inside the VM, `cd` to the project and run `sydguard --backend native -- claude`.
+Do the same in each new tab: a new SSH shell does not automatically join another
+tab's sandbox. Keep `sydguard ui` running on the host for Lima approvals.
 
 ## Config
 
@@ -86,6 +106,52 @@ of in your project folder (default `node_modules`, `.venv`, `target`): installs 
 builds inside the VM never write Linux binaries or install-script output into the
 host's copy of the project, which just sees an empty folder. With a VM, the needed parts (resolved) are copied into the VM's
 own protected config dir before each run.
+
+## Environment and project secrets
+
+Inherited credential-shaped environment variables are withheld by default, on
+both backends and in learn mode. This includes names ending in `_TOKEN`, `_SECRET`,
+`_PASSWORD`, `_API_KEY`, `_ACCESS_KEY`, etc., common database connection variables,
+and credential-agent pointers such as `SSH_AUTH_SOCK`. A startup notice lists
+**names only**, with instructions for opting in. Ordinary toolchain variables
+such as `PATH`, `TERM`, and `NODE_ENV` are unchanged.
+
+For tools that need a key, opt in for one run:
+
+```sh
+sydguard --pass-env ANTHROPIC_API_KEY -- claude
+```
+
+Or save the choice in machine config:
+
+```json
+"passEnv": ["ANTHROPIC_API_KEY"]
+```
+
+On Lima, **config `passEnv`** variables present on the host are transferred via
+its protected guest-config stream, not argv. These are machine-wide opt-ins,
+just like config `env`. Per-run `--pass-env` retains variables already present
+in the **execution machine's** environment (the guest for Lima); it does not
+copy a host-shell variable into the VM. Configured `env` values (including
+`file:` values) are also explicit opt-ins and take precedence. `SYD_*` and `SG_*`
+names are reserved.
+
+**This is inheritance filtering, not credential substitution.** The name heuristic
+cannot recognize every secret, and every explicitly passed value is visible to
+the agent. It does not redact output or prevent use of a credential against an
+allowed service. Prefer scoped credentials. Greywall-style placeholder tokens
+and destination-bound HTTPS credential substitution are not implemented.
+
+Files inside the project, including `.env`, remain accessible unless denied.
+To exclude one, add an absolute path to the rules file's `ignore` list via the UI,
+for example `/path/to/project/.env` and `/path/to/project/.env.*`. These are actual
+read/write denies, even within an otherwise allowed project. Removing the deny
+restores whatever access the other rules permit; it cannot undo completed I/O
+or revoke an already-open file descriptor.
+
+Use `--learn` only to calibrate **trusted** tools and repositories. It allows
+otherwise unapproved activity and records grants; it is not a safe way to discover
+what unfamiliar code does. Explicit path denies and fixed protections still apply.
 
 ## Optional Landlock filesystem ceiling
 
@@ -161,10 +227,17 @@ sydguard cmd --propose --why "need issue labels" -- gh issue edit 12 --add-label
   all projects and ask / allow), or **Deny**.
 - **Safety**: argv is fixed — the agent only fills `{placeholders}`, each matched
   against its regex as a whole; values can't start with `-` or contain newlines; no
-  shell. git (directly or via `gh`) runs with hooks and fsmonitor disabled. The host
-  checks every request itself, so a compromised VM can't make it run anything you
-  haven't defined or approved. Beyond that, what you allow is up to you: a command
-  like `pnpm run build` runs project code on your host.
+  shell. Git (directly or via `gh`) runs with hooks and fsmonitor disabled,
+  uses the host's SSH command rather than repository-local `core.sshCommand`, and
+  permits only HTTPS/SSH transports (not local, `ext`, or custom helpers).
+  Explicit host `GIT_SSH_COMMAND` / `GIT_SSH` settings are retained.
+  The host checks templates and arguments itself, but **this is not a sandbox
+  for the selected host program**. Other repository configuration, included Git
+  configuration, credential helpers and executable project files remain part of
+  that program's trust boundary. Use trusted repositories/configuration for host
+  commands; a compromised VM or an explicitly allowed build command must not be
+  assumed harmless merely because its argv matched. For example, `pnpm run build`
+  executes project code with your host privileges.
 - The `sydguard` binary inside the sandbox is just a client; it has no more power
   than any other program there.
 
@@ -194,7 +267,9 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
   `udp://service.example.com:9000`, `*.example.com` (subdomains only).
   Each session has a private TUN and tun2socks/gVisor TCP/UDP stack, not an
   HTTP/SOCKS proxy. HTTPS on port 443 checks TLS SNI against the DNS identity
-  (no domain fronting, TLS interception, or URL-path rules). Other ports use
+  (no TLS interception or URL-path rules). Encrypted HTTP hostnames and payloads
+  are not inspected, so this is not a general domain-fronting or exfiltration
+  prevention guarantee. Other ports use
   raw `tcp://` grants. Plain HTTP on port 80 also requires `tcp://host:80`:
   only its initial Host is inspected, not every request on a reused connection.
   Existing `http://` grants must be replaced with an explicit raw TCP grant.
@@ -209,8 +284,17 @@ in `~/.config/sydguard/global.json` where the UI runs (mirrored to every VM):
   legacy unprefixed IP/port rules permit both.
 - **Protected**: the sandbox can't read `~/.config/sydguard`, sydguard's state,
   `~/.ssh`, `~/.gnupg`, `~/.lima`, and can't modify rules files, `.sydguard/`,
-  `~/.local/bin`, shell rc files, `.git/hooks`, `.git/config`. Grants overlapping
-  these are refused, and every live update re-applies the denies atomically.
+  `~/.local/bin`, shell rc files, `.git/hooks`, `.git/config`. Git pointer files,
+  resolved worktree/common-directory configuration and the project/metadata
+  directory entries are protected against replacement too; ordinary index,
+  object and ref updates remain writable where otherwise allowed. Existing
+  worktree metadata outside the project still needs appropriate access grants.
+  Grants overlapping protections are refused, and every live update re-applies
+  the denies atomically.
+- **Always deny** (`ignore`): absolute filesystem patterns deny reads and writes,
+  not just notifications, and are re-applied after grants in every live update.
+  Host/IP ignores remain network denies. Existing path ignores from earlier
+  versions now enforce denial even if a broader rule or the baseline allows access.
 - **Integrity**: only rules content sydguard wrote or you trusted is used. A file
   changed elsewhere (editor, `git pull`, clone, a hard link) is shown in the UI /
   terminal and ignored until trusted; files with extra hard links are refused.
@@ -291,11 +375,17 @@ never starts or creates a VM. With `--backend native` it checks this machine.
 make                       # web UI, Linux arm64/amd64 + host binary into bin/
 scripts/check.sh [--fix]   # gofumpt, golangci-lint, go test -race, bun lint/fmt/check/test/build, shellcheck
 scripts/e2e.sh             # inside the VM: real-Syd acceptance tests
+SYDGUARD_TEST_SYD=/usr/local/libexec/sydguard/syd go test -count=1 -run '^TestSecurity' ./internal/guest
+                          # Linux: isolated real-engine Git and live-deny regressions
 scripts/overlay-e2e.sh     # inside the VM: live keepOnVM overlays on the host share
 python3 scripts/network-e2e.py /path/to/sydguard # Linux: real TLS, TCP/UDP, restart + live IPC
 E2E_LANDLOCK=1 python3 scripts/network-e2e.py /path/to/sydguard # same with ceiling enabled
 python3 scripts/landlock-e2e.py /path/to/sydguard # Linux: live grants, revocation, kernel enforcement
 ```
+
+CI also runs the isolated real-Syd security regressions above (with a cached,
+pinned engine). They use a temporary HOME/project and do not restart existing
+sessions or require the network helper.
 
 Layout: `cmd/sydguard` (CLI, urfave/cli v3); `internal/policy` (rules, trust,
 Syd profile); `internal/guest` (daemon, TUN/gVisor, DNS, launcher, engine setup);

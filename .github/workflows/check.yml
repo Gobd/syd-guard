@@ -36,3 +36,33 @@ jobs:
           sudo apt-get install -y shellcheck
       - name: Check formatting, lint, tests, cross-builds and generated UI
         run: scripts/check.sh
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache pinned Syd engine
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sydguard-security-engine
+          key: syd-security-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('internal/guest/install-syd.sh') }}
+      - name: Install pinned engine and AppArmor profile
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          if [ -x "$HOME/.cache/sydguard-security-engine/syd" ]; then
+            sudo install -D -m 0755 "$HOME/.cache/sydguard-security-engine/syd" /usr/local/libexec/sydguard/syd
+          fi
+          sudo apt-get update
+          bash internal/guest/install-syd.sh
+          mkdir -p "$HOME/.cache/sydguard-security-engine"
+          cp /usr/local/libexec/sydguard/syd "$HOME/.cache/sydguard-security-engine/syd"
+      - name: Real-Syd security regressions (isolated HOME, no daemon)
+        env:
+          SYDGUARD_TEST_SYD: /usr/local/libexec/sydguard/syd
+        run: go test -count=1 -v -run '^TestSecurity' ./internal/guest

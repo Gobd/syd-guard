@@ -126,6 +126,15 @@ func Run(o RunOptions) (int, error) {
 	if len(o.Args) == 0 {
 		return 2, errors.New("usage: sydguard [--learn] [--rules NAME|FILE] -- command [args...]")
 	}
+	argv := slices.Clone(o.Args)
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return 1, fmt.Errorf("command %q is not executable on this machine; install it here or choose another command: %w", argv[0], err)
+	}
+	argv[0], err = filepath.Abs(path) // Syd's PATH search trips over hidden dirs
+	if err != nil {
+		return 1, err
+	}
 	engine, err := FindEngine()
 	if err != nil {
 		return 1, err
@@ -163,16 +172,6 @@ func Run(o RunOptions) (int, error) {
 		return 1, err
 	}
 	localPorts := append(slices.Clone(o.LocalPorts), cfg.LocalPorts...)
-	if _, err := EnsureDaemon(); err != nil {
-		return 1, err
-	}
-	if o.OnReady != nil {
-		o.OnReady()
-	}
-	argv := append([]string(nil), o.Args...)
-	if p, err := exec.LookPath(argv[0]); err == nil {
-		argv[0], _ = filepath.Abs(p) // Syd's own PATH search trips over hidden dirs
-	}
 	var reg struct {
 		ID        string
 		Profile   string
@@ -200,11 +199,19 @@ func Run(o RunOptions) (int, error) {
 	for k := range env {
 		s.EnvNames = append(s.EnvNames, k)
 	}
-	for _, k := range o.PassEnv {
-		if !validEnvName(k) {
+	passEnv := append(slices.Clone(cfg.PassEnv), o.PassEnv...)
+	for _, k := range passEnv {
+		if !config.ValidPassEnv(k) {
 			return 1, fmt.Errorf("bad --pass-env name %q", k)
 		}
 		s.EnvNames = append(s.EnvNames, k)
+	}
+	// Validate the launch before starting background services or opening a UI.
+	if _, err := EnsureDaemon(); err != nil {
+		return 1, err
+	}
+	if o.OnReady != nil {
+		o.OnReady()
 	}
 	if err := Call("POST", "/internal/session", s, &reg); err != nil {
 		return 1, err
@@ -234,7 +241,12 @@ func Run(o RunOptions) (int, error) {
 	protectNetworkCommand(cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.ExtraFiles = []*os.File{logW} // fd 3; Syd closes it before running the agent
-	cmd.Env = append(os.Environ(), "SYD_LOG_FD=3", "SYDGUARD=1", "SG_BROKER="+networkBroker(reg.ProxyPort))
+	var removed []string
+	cmd.Env, removed = config.FilterAgentEnv(os.Environ(), passEnv, env)
+	if len(removed) > 0 {
+		fmt.Fprintf(os.Stderr, "sydguard: withheld inherited credentials: %s (use --pass-env NAME or config passEnv/env to opt in; explicit values are visible to the agent)\n", strings.Join(removed, ", "))
+	}
+	cmd.Env = append(cmd.Env, "SYD_LOG_FD=3", "SYDGUARD=1", "SG_BROKER="+networkBroker(reg.ProxyPort))
 	// Transparent networking must not inherit the operator's proxy routing.
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GLOBAL_AGENT_HTTP_PROXY", "NO_PROXY"} {
 		cmd.Env = append(cmd.Env, k+"=", strings.ToLower(k)+"=")
@@ -422,16 +434,4 @@ func IPCLoad(ipc, batch string) error {
 	}
 	defer func() { _ = f.Close() }()
 	return LoadFD(ipc, f)
-}
-
-func validEnvName(k string) bool {
-	if k == "" || (k[0] >= '0' && k[0] <= '9') {
-		return false
-	}
-	for _, c := range k {
-		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
 }

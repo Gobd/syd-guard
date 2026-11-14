@@ -6,12 +6,15 @@ import (
 	"crypto/tls"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Gobd/syd-guard/internal/api"
+	"github.com/Gobd/syd-guard/internal/config"
 	"github.com/Gobd/syd-guard/internal/policy"
+	"github.com/Gobd/syd-guard/internal/system"
 )
 
 func TestAddrClass(t *testing.T) {
@@ -73,7 +76,7 @@ func TestTransparentWebIdentity(t *testing.T) {
 		t.Fatalf("matching TLS: %q %q %v", scheme, name, err)
 	}
 	if _, _, _, err := sniffWeb(helloFor(t, "evil.example"), "github.com", "443"); err == nil {
-		t.Fatal("domain fronting allowed")
+		t.Fatal("mismatched TLS SNI allowed")
 	}
 	for _, tc := range []struct {
 		input, port, scheme string
@@ -95,10 +98,29 @@ func TestTransparentWebIdentity(t *testing.T) {
 	}
 }
 
+func TestMissingCommandFailsBeforeStartingServices(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	ready := false
+	code, err := Run(RunOptions{
+		Args:    []string{"sydguard-nonexistent-test-command"},
+		OnReady: func() { ready = true },
+	})
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "sydguard-nonexistent-test-command") || !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("missing actionable command error: code=%d err=%v", code, err)
+	}
+	if ready {
+		t.Fatal("opened the UI for a command that cannot run")
+	}
+	if _, err := os.Stat(system.StateDir()); !os.IsNotExist(err) {
+		t.Fatal("created service state for a command that cannot run")
+	}
+}
+
 func TestValidEnvName(t *testing.T) {
 	for name, want := range map[string]bool{"ANTHROPIC_BASE_URL": true, "a1": true, "": false, "1A": false, "A=B": false, "A B": false, "A*": false} {
-		if validEnvName(name) != want {
-			t.Errorf("validEnvName(%q) != %v", name, want)
+		if config.ValidPassEnv(name) != want {
+			t.Errorf("ValidPassEnv(%q) != %v", name, want)
 		}
 	}
 }
