@@ -560,14 +560,19 @@ func (d *Daemon) pushOne(s *Session, cmds []string) applyResult {
 	lines := append(slices.Clone(cmds), policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
 	done := make(chan error, 1)
 	res := applyResult{Session: s.ID}
-	func() {
-		defer func() {
-			if recover() != nil { // queue closed: session ended
-				done <- errors.New("session ended")
-			}
-		}()
-		s.queue <- applyOp{lines: lines, done: done}
-	}()
+	// endLocked closes the queue under d.mu, so sending under it never races
+	// the close. Don't block while holding the lock if the queue is full.
+	d.mu.Lock()
+	if d.sessions[s.ID] != s || s.queue == nil {
+		done <- errors.New("session ended")
+	} else {
+		select {
+		case s.queue <- applyOp{lines: lines, done: done}:
+		default:
+			done <- errors.New("session update queue full; retry")
+		}
+	}
+	d.mu.Unlock()
 	select {
 	case err := <-done:
 		res.Applied = err == nil

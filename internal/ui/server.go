@@ -102,7 +102,7 @@ func (u *uiServer) discover() {
 		u.mu.Unlock()
 		for _, b := range list {
 			u.check(b)
-			if b.ok {
+			if u.snapshotBackend(b).ok {
 				u.pollJobs(b)
 			}
 		}
@@ -344,6 +344,14 @@ func (u *uiServer) editGlobal(op string, req api.EditReq) (any, error) {
 	return map[string]any{"saved": system.GlobalRulesPath(), "vms": results}, nil
 }
 
+// snapshotBackend copies mutable discovery state under the same lock used by
+// check and forward. Network requests must not hold that lock.
+func (u *uiServer) snapshotBackend(b *backend) backend {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return *b
+}
+
 func (u *uiServer) state() map[string]any {
 	u.mu.Lock()
 	list := make([]*backend, 0, len(u.backends))
@@ -359,10 +367,11 @@ func (u *uiServer) state() map[string]any {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v := map[string]any{"name": b.name, "ok": b.ok, "error": b.err}
-			if b.ok {
+			snapshot := u.snapshotBackend(b)
+			v := map[string]any{"name": snapshot.name, "ok": snapshot.ok, "error": snapshot.err}
+			if snapshot.ok {
 				var st map[string]any
-				if err := api.Call(b.client, "GET", "/api/state", nil, &st); err == nil {
+				if err := api.Call(snapshot.client, "GET", "/api/state", nil, &st); err == nil {
 					v["state"] = st
 				} else {
 					v["ok"], v["error"] = false, err.Error()
