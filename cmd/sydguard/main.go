@@ -58,6 +58,7 @@ func app() *cli.Command {
 			&cli.BoolFlag{Name: "learn", Usage: "allow everything and save what the command used into the rules file"},
 			&cli.BoolFlag{Name: "landlock", Usage: "enable a fixed filesystem ceiling (config landlock.read/write); --landlock=false disables it"},
 			&cli.IntSliceFlag{Name: "local-port", Usage: "let the agent reach 127.0.0.1:`PORT` (a trusted helper you started, e.g. an auth proxy)"},
+			&cli.StringSliceFlag{Name: "pass-env", Usage: "keep environment variable `NAME` for the agent (Syd strips some by default; repeatable)"},
 			&cli.StringFlag{Name: "backend", Usage: "lima (default) or native (explicit Linux opt-in); $SYDGUARD_BACKEND or config"},
 			&cli.StringFlag{Name: "vm", Usage: "Lima VM name ($SYDGUARD_VM, config, or " + lima.DefaultVM + ")"},
 			&cli.StringFlag{Name: "lima", Usage: "Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, or built in)"},
@@ -211,7 +212,7 @@ func landlockOverride(cmd *cli.Command) *bool {
 func limaOptions(cmd *cli.Command) lima.Options {
 	return lima.Options{
 		Backend: cmd.String("backend"), VM: cmd.String("vm"), LimaFile: cmd.String("lima"), Rules: cmd.String("rules"),
-		Landlock: landlockOverride(cmd), Learn: cmd.Bool("learn"), LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(),
+		Landlock: landlockOverride(cmd), Learn: cmd.Bool("learn"), LocalPorts: cmd.IntSlice("local-port"), PassEnv: cmd.StringSlice("pass-env"), Args: cmd.Args().Slice(),
 	}
 }
 
@@ -228,7 +229,7 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	}
 	code, err := guest.Run(guest.RunOptions{
 		Landlock: landlockOverride(cmd), Rules: cmd.String("rules"), Learn: cmd.Bool("learn"),
-		LocalPorts: cmd.IntSlice("local-port"), Args: cmd.Args().Slice(), OnReady: func() {
+		LocalPorts: cmd.IntSlice("local-port"), PassEnv: cmd.StringSlice("pass-env"), Args: cmd.Args().Slice(), OnReady: func() {
 			if system.InLima() {
 				return // the machine hosting the VM runs the UI
 			}

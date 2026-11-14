@@ -113,7 +113,8 @@ type RunOptions struct {
 	Landlock   *bool  // nil uses config; false explicitly disables the ceiling
 	Rules      string // --rules NAME|FILE
 	Learn      bool
-	LocalPorts []int // loopback ports of trusted helpers (e.g. an auth proxy)
+	LocalPorts []int    // loopback ports of trusted helpers (e.g. an auth proxy)
+	PassEnv    []string // variables to keep from this environment (Syd strips some)
 	Args       []string
 	// OnReady is called once the daemon is up, before the agent starts (the
 	// CLI uses it to start the UI when not driven from the Mac).
@@ -197,6 +198,12 @@ func Run(o RunOptions) (int, error) {
 		Launch: launch, LocalPorts: localPorts, OverlayNames: cfg.OverlayNames(),
 	}
 	for k := range env {
+		s.EnvNames = append(s.EnvNames, k)
+	}
+	for _, k := range o.PassEnv {
+		if !validEnvName(k) {
+			return 1, fmt.Errorf("bad --pass-env name %q", k)
+		}
 		s.EnvNames = append(s.EnvNames, k)
 	}
 	if err := Call("POST", "/internal/session", s, &reg); err != nil {
@@ -415,4 +422,16 @@ func IPCLoad(ipc, batch string) error {
 	}
 	defer func() { _ = f.Close() }()
 	return LoadFD(ipc, f)
+}
+
+func validEnvName(k string) bool {
+	if k == "" || (k[0] >= '0' && k[0] <= '9') {
+		return false
+	}
+	for _, c := range k {
+		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }

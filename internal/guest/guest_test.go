@@ -94,3 +94,11 @@ func TestTransparentWebIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestValidEnvName(t *testing.T) {
+	for name, want := range map[string]bool{"ANTHROPIC_BASE_URL": true, "a1": true, "": false, "1A": false, "A=B": false, "A B": false, "A*": false} {
+		if validEnvName(name) != want {
+			t.Errorf("validEnvName(%q) != %v", name, want)
+		}
+	}
+}
