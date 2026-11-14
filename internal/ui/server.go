@@ -266,7 +266,7 @@ func (u *uiServer) routes() http.Handler {
 		}
 		return map[string]any{}, vmAction(req.Name, req.Action, u.agentsIn(req.Name))
 	})
-	for _, op := range []string{"allow", "remove", "dismiss", "trust", "forget"} {
+	for _, op := range []string{"allow", "remove", "dismiss", "trust", "forget", "overlay"} {
 		handle("POST /api/"+op, func(r *http.Request) (any, error) {
 			var req api.EditReq
 			if err := api.Decode(r, &req); err != nil {

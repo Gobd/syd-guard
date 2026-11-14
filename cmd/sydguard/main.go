@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"github.com/urfave/cli/v3"
 
@@ -129,6 +130,13 @@ func app() *cli.Command {
 					return nil
 				},
 			},
+			{Name: "overlay-mount", Hidden: true, Action: func(_ context.Context, cmd *cli.Command) error {
+				pid, err := strconv.Atoi(cmd.Args().Get(0))
+				if cmd.Args().Len() != 3 || err != nil || pid <= 0 {
+					return errors.New("usage: sydguard overlay-mount PID SOURCE TARGET")
+				}
+				return guest.OverlayMount(pid, cmd.Args().Get(1), cmd.Args().Get(2))
+			}},
 			{Name: "version", Usage: "print the build hash", Action: func(context.Context, *cli.Command) error {
 				fmt.Println(system.Version())
 				return nil

@@ -54,8 +54,9 @@ type Session struct {
 	Network        bool         `json:"network,omitempty"` // isolated TUN/gVisor namespace
 	Connections    []Connection `json:"connections,omitempty"`
 	LocalPorts     []int        `json:"localPorts,omitempty"`
-	Overlays       []string     `json:"overlays,omitempty"` // build dirs kept on the VM disk
-	Ports          []PortView   `json:"ports,omitempty"`    // dev servers mirrored onto the VM's loopback
+	Overlays       []string     `json:"overlays,omitempty"`     // build dirs kept on the VM disk (absolute)
+	OverlayRoots   []string     `json:"overlayRoots,omitempty"` // where keepOnVM folders are guarded
+	Ports          []PortView   `json:"ports,omitempty"`        // dev servers mirrored onto the VM's loopback
 	// From the launcher: overlay folder names to look for, env var names to pass.
 	OverlayNames []string  `json:"overlayNames,omitempty"`
 	EnvNames     []string  `json:"envNames,omitempty"`
@@ -73,6 +74,7 @@ type Session struct {
 
 type applyOp struct {
 	lines []string
+	mount string // absolute keepOnVM folder to back with VM storage first
 	done  chan error
 }
 
@@ -90,6 +92,7 @@ type Card struct {
 	Waiting   int       `json:"waiting"` // requests/lookups paused on this card
 	Options   []string  `json:"options"`
 	Note      string    `json:"note,omitempty"`
+	Overlay   string    `json:"overlay,omitempty"` // keepOnVM folder the write needs
 	waiters   []chan bool
 }
 
@@ -206,6 +209,7 @@ func (d *Daemon) routes() http.Handler {
 	}
 	edit("POST /api/allow", d.allow)
 	edit("POST /api/remove", d.remove)
+	edit("POST /api/overlay", d.addOverlay)
 	edit("POST /api/dismiss", func(req api.EditReq) (any, error) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -395,8 +399,22 @@ func (d *Daemon) register(s *Session) (any, error) {
 	if err := d.startNetwork(s); err != nil {
 		return nil, err
 	}
-	s.Overlays = overlayDirs(s.Project, s.OverlayNames)
+	s.OverlayRoots = overlayRoots(s.Project)
+	for _, rel := range overlayDirs(s.Project, s.OverlayNames) {
+		s.Overlays = append(s.Overlays, filepath.Join(s.Project, rel))
+	}
+	for _, t := range d.wantedOverlays(s) {
+		if slices.Contains(s.Overlays, t) {
+			continue
+		}
+		if err := prepareOverlayTarget(t); err != nil {
+			log.Printf("session %s: saved overlay skipped: %v", s.ID, err)
+			continue
+		}
+		s.Overlays = append(s.Overlays, t)
+	}
 	in := policy.ProfileInput{
+		OverlayNames: s.OverlayNames, OverlayRoots: s.OverlayRoots,
 		Project: s.Project, Rules: []policy.Rules{d.store.Get(system.GlobalRulesPath()), d.store.Get(s.RulesFile)},
 		Launch: s.Launch, Protect: policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()), ProxyPort: s.ProxyPort,
 		IPC: s.IPC, Learn: s.Learn, LocalPorts: s.LocalPorts, PassEnv: s.EnvNames, Network: true,
@@ -412,12 +430,15 @@ func (d *Daemon) register(s *Session) (any, error) {
 			s.Landlock.Read = append(s.Landlock.Read, resolv)
 		}
 	}
-	for _, o := range s.Overlays {
-		source := overlaySource(s.Project, o)
-		in.Overlays = append(in.Overlays, policy.Overlay{Source: source, Target: filepath.Join(s.Project, o)})
-		if s.Landlock.Enabled {
-			s.Landlock.Write = append(s.Landlock.Write, source)
+	for _, t := range s.Overlays {
+		in.Overlays = append(in.Overlays, policy.Overlay{Source: overlaySource(t), Target: t})
+	}
+	if s.Landlock.Enabled && len(s.OverlayNames) > 0 {
+		// The whole store, so folders added live are inside the ceiling.
+		if err := os.MkdirAll(overlayStore(), 0o755); err != nil {
+			return nil, err
 		}
+		s.Landlock.Write = append(s.Landlock.Write, overlayStore())
 	}
 	in.Landlock = s.Landlock
 	s.OutsideCeiling = outsideCeiling(s.Landlock, in.Rules...)
@@ -503,7 +524,19 @@ func (d *Daemon) startQueue(s *Session) {
 				op.done <- errors.New("session policy state unknown after an earlier failed update; restart the agent to resync")
 				continue
 			}
-			err := sydLoad(s, op.lines)
+			if op.mount != "" {
+				if err := d.mountOverlay(s, op.mount); err != nil {
+					// Nothing reached Syd: the policy state is still known.
+					d.mu.Lock()
+					s.Status = statusApplied
+					d.mu.Unlock()
+					op.done <- err
+					continue
+				}
+			} else {
+				d.mountWanted(s)
+			}
+			err := sydLoad(s, d.withGuards(s, op.lines))
 			d.mu.Lock()
 			if err != nil {
 				s.Status, s.LastError = statusUnknown, err.Error()
@@ -554,11 +587,25 @@ func outsideCeiling(l policy.Landlock, rules ...policy.Rules) []string {
 	return slices.Compact(slices.Sorted(slices.Values(out)))
 }
 
-// pushOne applies Syd commands to one session, followed by its protection
-// denies, as one atomic batch. Never called with d.mu held.
+// withGuards appends the keepOnVM guards and protection denies to a batch:
+// they must stay the last matching rules after any newly added grant.
+func (d *Daemon) withGuards(s *Session, cmds []string) []string {
+	d.mu.Lock()
+	mounted := slices.Clone(s.Overlays)
+	d.mu.Unlock()
+	lines := append(slices.Clone(cmds), policy.OverlayGuards(s.OverlayRoots, s.OverlayNames, mounted)...)
+	return append(lines, policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
+}
+
+// pushOne applies Syd commands to one session as one atomic batch.
+// Never called with d.mu held.
 func (d *Daemon) pushOne(s *Session, cmds []string) applyResult {
-	lines := append(slices.Clone(cmds), policy.ProtectedFor(s.Project, s.RulesFile, system.GlobalRulesPath()).Commands()...)
+	return d.enqueue(s, applyOp{lines: cmds})
+}
+
+func (d *Daemon) enqueue(s *Session, op applyOp) applyResult {
 	done := make(chan error, 1)
+	op.done = done
 	res := applyResult{Session: s.ID}
 	// endLocked closes the queue under d.mu, so sending under it never races
 	// the close. Don't block while holding the lock if the queue is full.
@@ -567,7 +614,7 @@ func (d *Daemon) pushOne(s *Session, cmds []string) applyResult {
 		done <- errors.New("session ended")
 	} else {
 		select {
-		case s.queue <- applyOp{lines: lines, done: done}:
+		case s.queue <- op:
 		default:
 			done <- errors.New("session update queue full; retry")
 		}
@@ -579,7 +626,7 @@ func (d *Daemon) pushOne(s *Session, cmds []string) applyResult {
 		if err != nil {
 			res.Error = err.Error()
 		}
-	case <-time.After(8 * time.Second):
+	case <-time.After(15 * time.Second):
 		res.Error = "timed out; state unknown"
 	}
 	return res
@@ -618,10 +665,7 @@ func loadViaNamespace(s *Session, batch string) error {
 	if s.SydPID <= 0 || !system.Alive(s.SydPID) {
 		return errors.New("syd process unknown; state unknown")
 	}
-	exe, err := os.Executable()
-	if err != nil || strings.HasSuffix(exe, " (deleted)") {
-		exe = filepath.Join(system.Home(), ".local", "bin", "sydguard")
-	}
+	exe := sydguardExe()
 	ns := fmt.Sprintf("/proc/%d/ns/", s.SydPID)
 	if s.NetworkPID <= 0 || !system.Alive(s.NetworkPID) {
 		return errors.New("network owner unavailable")
@@ -635,6 +679,14 @@ func loadViaNamespace(s *Session, batch string) error {
 		return fmt.Errorf("syd ipc (via namespace): %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func sydguardExe() string {
+	exe, err := os.Executable()
+	if err != nil || strings.HasSuffix(exe, " (deleted)") {
+		exe = filepath.Join(system.Home(), ".local", "bin", "sydguard")
+	}
+	return exe
 }
 
 // LoadFD sends an open batch file to Syd's IPC socket as one "load" and
@@ -959,6 +1011,17 @@ func (d *Daemon) syslog(sessionID string, lines []string) bool {
 			root := policy.LearnRoot(target)
 			if s.Landlock.Check(kind, root+"/***") == nil {
 				target, dir = root, true
+			}
+		}
+		if kind == "write" {
+			if root := policy.OverlayRoot(s.OverlayRoots, s.OverlayNames, target); root != "" && !slices.Contains(s.Overlays, root) {
+				// Blocked by the keepOnVM guard: one card per folder, offering the overlay.
+				if c := d.addCardLocked(s, kind, root, e.Cmd, false, true, ""); c != nil {
+					c.Overlay, c.Options = root, nil
+					c.Note = "build folder kept off the host disk: keep it on the VM, then retry (it stays there for every session)"
+				}
+				changed = true
+				continue
 			}
 		}
 		d.addCardLocked(s, kind, target, e.Cmd, learned, dir, note)
