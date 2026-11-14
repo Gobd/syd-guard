@@ -43,6 +43,7 @@ sydguard [flags] [--] command [args...]
   --backend TYPE      lima (default outside guests) or native (explicit Linux opt-in)
   --landlock[=BOOL]   enable/disable a fixed filesystem ceiling; otherwise use config
   --local-port PORT   let the agent reach 127.0.0.1:PORT (a trusted helper you run outside)
+  --pass-env NAME     keep this environment variable for the agent (Syd strips some by default)
   --vm NAME           run in this Lima VM ($SYDGUARD_VM, config, default ai-sandbox)
   --lima FILE         Lima file to create the VM from if missing ($SYDGUARD_LIMA, config, built in)
 sydguard ui                       open the approvals UI (starts it if needed)

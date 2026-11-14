@@ -44,6 +44,7 @@ type Options struct {
 	VM, LimaFile, Rules string
 	Learn               bool
 	LocalPorts          []int
+	PassEnv             []string
 	Args                []string
 }
 
@@ -200,6 +201,9 @@ func Run(o Options) error {
 	}
 	if o.Landlock != nil {
 		argv = append(argv, "--landlock="+strconv.FormatBool(*o.Landlock))
+	}
+	for _, k := range o.PassEnv {
+		argv = append(argv, "--pass-env", k)
 	}
 	for _, p := range o.LocalPorts {
 		argv = append(argv, "--local-port", strconv.Itoa(p))
